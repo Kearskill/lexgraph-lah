@@ -1,0 +1,37 @@
+﻿name: LexGraph-LAH CI Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  quality-and-tests:
+    name: Lint, Typecheck & Unit Tests (Python 3.12)
+    runs-on: ubuntu-latest
+
+    env:
+      APP_ENV: test
+      GEMINI_API_KEY: mock-ci-key-zero-cost
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv and set up Python 3.12
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Sync locked dependencies from uv.lock
+        run: uv sync --all-extras --dev --frozen
+
+      - name: Run Ruff Linter
+        run: uv run ruff check src/ tests/
+
+      - name: Run Mypy Static Type Checker
+        run: uv run mypy src/ --ignore-missing-imports
+
+      - name: Run Deterministic Pytest Suite
+        run: uv run pytest -v
