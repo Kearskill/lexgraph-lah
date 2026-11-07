@@ -1,0 +1,36 @@
+[project]
+name = "lexgraph-lah"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Kearney Leith", email = "81835624+Kearskill@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "arize-phoenix-otel>=0.17.3",
+    "fastapi>=0.162.0",
+    "langchain-core>=1.7.6",
+    "langchain-google-genai>=4.4.3",
+    "langgraph>=1.2.20",
+    "openinference-instrumentation-langchain>=0.1.82",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.2",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+lexgraph-lah = "lexgraph_lah:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "ruff>=0.17.4",
+]
