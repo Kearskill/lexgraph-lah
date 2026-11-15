@@ -1,0 +1,29 @@
+# Virtual environments & caches
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Version control & IDE
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+
+# Secrets & local environment files
+.env
+.env.*
+!.env.example
+
+# Build & local trace artifacts
+dist/
+build/
+*.egg-info/
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store

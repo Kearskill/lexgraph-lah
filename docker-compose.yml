@@ -1,0 +1,47 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: lexgraph-phoenix
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    environment:
+      - PHOENIX_PORT=6006
+    restart: unless-stopped
+
+  lexgraph-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lexgraph-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - APP_ENV=${APP_ENV:-production}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-mock-key-for-ci}
+      - MODEL_NAME=${MODEL_NAME:-gemini-2.5-flash}
+      - USD_TO_MYR_RATE=${USD_TO_MYR_RATE:-4.40}
+      - INPUT_COST_PER_1M_USD=${INPUT_COST_PER_1M_USD:-0.15}
+      - OUTPUT_COST_PER_1M_USD=${OUTPUT_COST_PER_1M_USD:-0.60}
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces
+    depends_on:
+      - phoenix
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "uv",
+          "run",
+          "--no-dev",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
