@@ -1,4 +1,4 @@
-﻿name: LexGraph-LAH CI Pipeline
+name: LexGraph-LAH CI Pipeline
 
 on:
   push:
@@ -28,10 +28,13 @@ jobs:
         run: uv sync --all-extras --dev --frozen
 
       - name: Run Ruff Linter
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ evals/
 
       - name: Run Mypy Static Type Checker
-        run: uv run mypy src/ --ignore-missing-imports
+        run: uv run mypy src/ evals/ --ignore-missing-imports
 
       - name: Run Deterministic Pytest Suite
         run: uv run pytest -v
+
+      - name: Run Determinism & FinOps Benchmark (Mock Mode)
+        run: uv run python -m evals.run_benchmark --mode mock --trials 2

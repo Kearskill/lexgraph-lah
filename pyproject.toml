@@ -1,7 +1,7 @@
 [project]
 name = "lexgraph-lah"
 version = "0.1.0"
-description = "Add your description here"
+description = "Deterministic Multi-Agent Legal Compliance Engine with Point-in-Time Graph-RAG, Arize Phoenix OpenTelemetry, and FinOps MYR/USD Cost Tracking"
 readme = "README.md"
 authors = [
     { name = "Kearney Leith", email = "81835624+Kearskill@users.noreply.github.com" }
@@ -33,4 +33,11 @@ dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "ruff>=0.17.4",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "live: marks integration tests requiring a live GEMINI_API_KEY or external collector",
 ]
