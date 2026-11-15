@@ -1,13 +1,16 @@
 import hashlib
+import json
 import time
 import uuid
 from datetime import date
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from lexgraph_lah.agents.graph import _DEFAULT_TEMPORAL_STORE, build_compliance_graph
+from lexgraph_lah.config import settings
 from lexgraph_lah.graph.temporal_store import build_point_in_time_cypher
 from lexgraph_lah.schemas.domain import (
     ClauseAudit,
@@ -26,6 +29,26 @@ from lexgraph_lah.telemetry.tracer import (
 )
 
 router = APIRouter()
+
+
+def _resolve_fixtures_dir() -> Path:
+    repo_root_candidate = Path(__file__).resolve().parents[3] / "examples" / "fixtures"
+    if repo_root_candidate.is_dir():
+        return repo_root_candidate
+    return Path.cwd() / "examples" / "fixtures"
+
+
+def _load_all_fixtures() -> list[dict[str, Any]]:
+    fixtures_dir = _resolve_fixtures_dir()
+    if not fixtures_dir.is_dir():
+        return []
+    items: list[dict[str, Any]] = []
+    for path in sorted(fixtures_dir.glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.setdefault("fixture_id", path.stem)
+        data.setdefault("filename", path.name)
+        items.append(data)
+    return items
 
 # Semantic/exact-match response cache to avoid redundant LLM billing on identical (text, reference_date, act_filter)
 _COMPLIANCE_CACHE: dict[str, ContractAuditResponse] = {}
@@ -71,6 +94,7 @@ async def check_compliance(
             latency_ms=0.1,
             retry_count=0,
             is_verified_grounded=cached.telemetry.is_verified_grounded,
+            trace_id=cached.telemetry.trace_id or "span-cached",
         )
         return cached.model_copy(
             update={
@@ -100,17 +124,19 @@ async def check_compliance(
 
     clauses: list[ClauseAudit] = final_state.get("extracted_clauses", [])
     active_statutes = final_state.get("retrieved_statutes", [])
+    span_id = f"span-{uuid.uuid4().hex[:8]}"
     telemetry = compute_telemetry_summary(
         prompt_tokens=final_state.get("prompt_tokens", 0),
         completion_tokens=final_state.get("completion_tokens", 0),
         latency_ms=elapsed_holder[0],
         retry_count=final_state.get("retry_count", 0),
         is_verified_grounded=final_state.get("is_grounded", False),
+        trace_id=span_id,
     )
 
     telemetry_registry.record_span(
         ComplianceSpanRecord(
-            span_id=f"span-{uuid.uuid4().hex[:8]}",
+            span_id=span_id,
             document_id=payload.document_id,
             reference_date=effective_date.isoformat(),
             active_statute_count=len(active_statutes),
@@ -454,3 +480,403 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 async def get_dashboard() -> HTMLResponse:
     """Serves the interactive Cytoscape.js statutory graph & FinOps telemetry dashboard."""
     return HTMLResponse(content=DASHBOARD_HTML)
+
+
+@router.get("/health")
+async def get_health() -> dict[str, Any]:
+    """Liveness and readiness probe for Docker Compose and CI orchestration."""
+    return {
+        "status": "ok",
+        "service": "lexgraph-lah",
+        "version": "0.1.0",
+        "model_name": settings.model_name,
+        "usd_to_myr_rate": settings.usd_to_myr_rate,
+        "phoenix_collector_endpoint": settings.phoenix_collector_endpoint,
+    }
+
+
+@router.get("/fixtures")
+async def list_fixtures() -> dict[str, Any]:
+    """Returns the Malaysian regulatory compliance test fixtures from examples/fixtures/."""
+    fixtures = _load_all_fixtures()
+    return {"count": len(fixtures), "fixtures": fixtures}
+
+
+@router.get("/fixtures/{fixture_id}")
+async def get_fixture(fixture_id: str) -> dict[str, Any]:
+    """Returns a single compliance fixture by its fixture_id or filename stem."""
+    normalized = fixture_id.removesuffix(".json")
+    for item in _load_all_fixtures():
+        if item.get("fixture_id") == normalized or item.get("filename") == fixture_id:
+            return item
+    raise HTTPException(status_code=404, detail=f"Fixture '{fixture_id}' not found.")
+
+
+DEMO_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>lexgraph-lah | Deterministic Multi-Agent Compliance & FinOps Audit Studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-10">
+    <div class="max-w-7xl mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-3">
+          <span class="px-2.5 py-1 text-xs font-mono font-bold uppercase tracking-wider rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">v0.1.0</span>
+          <h1 class="text-xl font-bold tracking-tight text-white">lexgraph-lah <span class="text-sky-400 font-normal">// Compliance & FinOps Audit Studio</span></h1>
+        </div>
+        <p class="text-xs text-slate-400 mt-1">Point-in-Time Malaysian Statutory Graph-RAG &bull; Verbatim Substring Critic &bull; FinOps USD/MYR Receipt &bull; OpenTelemetry</p>
+      </div>
+      <div class="flex items-center gap-3 text-xs font-medium">
+        <a href="/dashboard" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">Cytoscape Graph Console (/dashboard)</a>
+        <a href="/docs" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">OpenAPI (/docs)</a>
+        <a href="http://localhost:6006" target="_blank" rel="noopener noreferrer" class="px-3 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 transition flex items-center gap-1.5">
+          <span>Arize Phoenix OTel UI (:6006)</span>
+          <span>&nearr;</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <!-- Left Column: Fixture Loader & Input Form -->
+    <section class="lg:col-span-5 space-y-5">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-sky-400">1. Load Malaysian Compliance Fixture</h2>
+          <span class="text-xs text-slate-400 font-mono">examples/fixtures/</span>
+        </div>
+
+        <div>
+          <label for="fixtureSelect" class="block text-xs text-slate-400 mb-1.5">Select Preset Scenario or Custom Input:</label>
+          <select id="fixtureSelect" onchange="onFixtureSelect()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-400">
+            <option value="01_compliant_clause">01 — Compliant PDPA 2024 Amendment DPA (Clean Pass)</option>
+            <option value="02_non_compliant_violation" selected>02 — Non-Compliant Processor Exclusion & 14-Day Breach Delay (Violation)</option>
+            <option value="03_ambiguous_edge_case">03 — 2024 Pre-Amendment Legacy Contract & Escalation (Edge Case)</option>
+            <option value="custom">Custom Clause / JSON Payload</option>
+          </select>
+          <p id="fixtureDesc" class="text-xs text-slate-400 mt-2 italic"></p>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="docIdInput" class="block text-xs text-slate-400 mb-1">Document ID</label>
+            <input id="docIdInput" type="text" value="MY-PDPA-2026-VIOLATION-02" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
+          </div>
+          <div>
+            <label for="refDateInput" class="block text-xs text-slate-400 mb-1">Point-in-Time Reference Date</label>
+            <input id="refDateInput" type="date" value="2026-03-15" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
+          </div>
+        </div>
+
+        <div>
+          <label for="actFilterInput" class="block text-xs text-slate-400 mb-1">Statutory Act Filter</label>
+          <input id="actFilterInput" type="text" value="Personal Data Protection Act 2010" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-100" />
+        </div>
+
+        <div>
+          <label for="rawTextInput" class="block text-xs text-slate-400 mb-1">Contract / Policy Clauses to Audit</label>
+          <textarea id="rawTextInput" rows="7" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-sm font-mono text-slate-100 leading-relaxed focus:outline-none focus:border-sky-400"></textarea>
+        </div>
+
+        <div class="flex items-center justify-between pt-1">
+          <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input id="useCacheCheckbox" type="checkbox" class="rounded bg-slate-950 border-slate-700 text-sky-500" />
+            <span>Enable SHA-256 FinOps Cache (<code class="text-sky-400">$0.00</code> on repeat run)</span>
+          </label>
+        </div>
+
+        <button id="runAuditBtn" onclick="runComplianceAudit()" class="w-full py-2.5 px-4 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-sm shadow transition flex items-center justify-center gap-2">
+          <span>Run Compliance Audit</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Right Column: Output Cards -->
+    <section class="lg:col-span-7 space-y-5">
+      <!-- Top Row: FinOps Receipt Card & Agent Execution Trail -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <!-- (c) FinOps Receipt Card -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-emerald-400">FinOps Receipt (USD & MYR)</h2>
+            <span id="receiptTraceBadge" class="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">span-ready</span>
+          </div>
+          <div class="grid grid-cols-2 gap-3 mb-3">
+            <div class="bg-slate-950 border border-slate-800 rounded-lg p-3">
+              <div class="text-[11px] uppercase text-slate-400">Audit Cost (USD)</div>
+              <div id="receiptUsd" class="text-lg font-bold font-mono text-emerald-400 mt-0.5">$0.000000</div>
+            </div>
+            <div class="bg-slate-950 border border-slate-800 rounded-lg p-3">
+              <div class="text-[11px] uppercase text-slate-400">Audit Cost (MYR)</div>
+              <div id="receiptMyr" class="text-lg font-bold font-mono text-sky-400 mt-0.5">RM 0.000000</div>
+            </div>
+          </div>
+          <div class="space-y-1.5 text-xs font-mono border-t border-slate-800 pt-3">
+            <div class="flex justify-between"><span class="text-slate-400">Input (Prompt) Tokens:</span><span id="receiptPromptTokens" class="text-slate-200">0</span></div>
+            <div class="flex justify-between"><span class="text-slate-400">Output (Completion) Tokens:</span><span id="receiptCompletionTokens" class="text-slate-200">0</span></div>
+            <div class="flex justify-between"><span class="text-slate-400">Total Tokens Billed:</span><span id="receiptTotalTokens" class="text-white font-bold">0</span></div>
+            <div class="flex justify-between"><span class="text-slate-400">End-to-End Latency:</span><span id="receiptLatency" class="text-slate-200">0.00 ms</span></div>
+            <div class="flex justify-between"><span class="text-slate-400">Critic Retry Loops:</span><span id="receiptRetries" class="text-slate-200">0 / 2</span></div>
+          </div>
+          <div class="mt-3 pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+            <span class="text-slate-400">OpenTelemetry Collector:</span>
+            <a href="http://localhost:6006" target="_blank" rel="noopener noreferrer" class="text-amber-400 hover:underline font-mono">Inspect Trace in Phoenix (:6006) &nearr;</a>
+          </div>
+        </div>
+
+        <!-- (b) Agent Node Execution Trail -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="text-sm font-semibold uppercase tracking-wider text-sky-400">LangGraph Execution Trail</h2>
+              <span id="groundingBadge" class="text-xs font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">GROUNDED</span>
+            </div>
+            <ol id="agentTrailList" class="space-y-2.5 text-xs">
+              <li class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
+                <div>
+                  <div class="font-mono font-semibold text-sky-300">01. temporal_retriever_node</div>
+                  <div id="trailNode0Desc" class="text-slate-400 mt-0.5">Point-in-time Graph-RAG statutory filter (0 LLM tokens)</div>
+                </div>
+                <span class="font-mono text-emerald-400">0 tok</span>
+              </li>
+              <li class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
+                <div>
+                  <div class="font-mono font-semibold text-purple-300">02. risk_assessor_node</div>
+                  <div id="trailNode1Desc" class="text-slate-400 mt-0.5">Gemini 2.5 Flash Pydantic v2 structured clause extraction</div>
+                </div>
+                <span id="trailNode1Tokens" class="font-mono text-purple-300">0 tok</span>
+              </li>
+              <li class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
+                <div>
+                  <div class="font-mono font-semibold text-emerald-300">03. citation_auditor_node</div>
+                  <div id="trailNode2Desc" class="text-slate-400 mt-0.5">Deterministic verbatim substring critic (route_after_audit)</div>
+                </div>
+                <span class="font-mono text-emerald-400">0 tok</span>
+              </li>
+            </ol>
+          </div>
+          <div class="mt-3 pt-2 border-t border-slate-800 text-[11px] text-slate-400 font-mono flex justify-between">
+            <span>StateGraph(AgentState)</span>
+            <span>MAX_RETRIES = 2</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- (a) Deterministic Verdict & Citations Card -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+          <div>
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-sky-400">Deterministic Compliance Verdict & Citations</h2>
+            <p id="verdictSubheader" class="text-xs text-slate-400 mt-0.5">Select a fixture and click "Run Compliance Audit" to inspect point-in-time statutory grounding.</p>
+          </div>
+          <div id="overallRiskBadge" class="px-3 py-1 rounded-full text-xs font-bold font-mono uppercase bg-slate-800 text-slate-300 border border-slate-700">
+            READY
+          </div>
+        </div>
+
+        <!-- Point-in-Time Active Statutes Resolved -->
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Active Point-in-Time Statutes Resolved (TemporalGraphStore):</div>
+          <div id="activeStatutesContainer" class="flex flex-wrap gap-2 text-xs"></div>
+        </div>
+
+        <!-- Extracted Clause Audit Cards -->
+        <div class="space-y-3" id="findingsContainer"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    let FIXTURES_MAP = {};
+
+    const FALLBACK_FIXTURES = {
+      "01_compliant_clause": {
+        fixture_id: "01_compliant_clause",
+        title: "01 — Compliant PDPA 2024 Amendment DPA (Clean Pass)",
+        description: "2026 Malaysian Data Processing Agreement adhering to Section 9 direct processor security obligations and Section 12B 72-hour mandatory breach notification.",
+        document_id: "MY-PDPA-2026-COMPLIANT-01",
+        reference_date: "2026-03-15",
+        act_filter: "Personal Data Protection Act 2010",
+        raw_text: "SEC-1.1 Security Principle Compliance: Both the Data User and the Data Processor shall implement ISO/IEC 27001 technical and organizational security controls in strict compliance with Section 9 of the Personal Data Protection Act 2010 (as amended by the Personal Data Protection (Amendment) Act 2024). SEC-1.2 Mandatory Data Breach Notification: In the event of any personal data breach, the Data Processor shall notify the Data User within 24 hours of discovery, and the Data User shall notify the Personal Data Protection Commissioner within 72 hours in accordance with Section 12B."
+      },
+      "02_non_compliant_violation": {
+        fixture_id: "02_non_compliant_violation",
+        title: "02 — Non-Compliant Processor Exclusion & 14-Day Breach Delay (Statutory Violation)",
+        description: "2026 Cloud Vendor Contract violating PDPA (Amendment) Act 2024 Section 9 direct processor liability and Section 12B 72-hour breach notification mandate.",
+        document_id: "MY-PDPA-2026-VIOLATION-02",
+        reference_date: "2026-03-15",
+        act_filter: "Personal Data Protection Act 2010",
+        raw_text: "SEC-8.1 Processor Liability Exclusion: The Data Processor shall bear zero statutory liability for unauthorized data disclosure or security failures. SEC-8.2 Breach Notice: Notification of a personal data breach shall be provided within 14 days of confirmation."
+      },
+      "03_ambiguous_edge_case": {
+        fixture_id: "03_ambiguous_edge_case",
+        title: "03 — 2024 Pre-Amendment Legacy Contract & Discretionary Incident Escalation (Edge Case)",
+        description: "Point-in-time audit as of 2024-06-15 (prior to the 2025-01-01 PDPA Amendment) demonstrating temporal statutory routing (PDPA-2010-SEC-9-V1) and multi-agent audit escalation.",
+        document_id: "MY-PDPA-2024-LEGACY-EDGE-03",
+        reference_date: "2024-06-15",
+        act_filter: "Personal Data Protection Act 2010",
+        raw_text: "SEC-4.1 Data Security: The Data Processor shall implement commercially reasonable technical safeguards to protect personal data. SEC-4.2 Incident Reporting: The Data Processor may report security incidents within 14 business days at its sole discretion. SEC-4.3 Cross-Border Subprocessing: Personal data may be mirrored to regional recovery nodes subject to periodic review."
+      }
+    };
+
+    async function initFixtures() {
+      FIXTURES_MAP = { ...FALLBACK_FIXTURES };
+      try {
+        const res = await fetch('/fixtures');
+        if (res.ok) {
+          const data = await res.json();
+          (data.fixtures || []).forEach(f => {
+            FIXTURES_MAP[f.fixture_id] = f;
+          });
+        }
+      } catch (_) {}
+      onFixtureSelect();
+      await runComplianceAudit();
+    }
+
+    function onFixtureSelect() {
+      const sel = document.getElementById('fixtureSelect').value;
+      if (sel === 'custom') {
+        document.getElementById('fixtureDesc').textContent = 'Custom input mode: edit Document ID, Reference Date, or Contract Clauses below.';
+        return;
+      }
+      const f = FIXTURES_MAP[sel];
+      if (!f) return;
+      document.getElementById('fixtureDesc').textContent = f.description || '';
+      document.getElementById('docIdInput').value = f.document_id;
+      document.getElementById('refDateInput').value = f.reference_date;
+      document.getElementById('actFilterInput').value = f.act_filter || '';
+      document.getElementById('rawTextInput').value = f.raw_text;
+    }
+
+    function riskBadgeClasses(risk) {
+      if (risk === 'LOW') return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+      if (risk === 'MEDIUM') return 'bg-amber-500/20 text-amber-300 border-amber-500/40';
+      return 'bg-rose-500/20 text-rose-300 border-rose-500/40';
+    }
+
+    async function runComplianceAudit() {
+      const btn = document.getElementById('runAuditBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span>Auditing Contract via LangGraph...</span>';
+
+      const useCache = document.getElementById('useCacheCheckbox').checked;
+      const payload = {
+        document_id: document.getElementById('docIdInput').value.trim() || 'CUSTOM-DOC-01',
+        raw_text: document.getElementById('rawTextInput').value.trim(),
+        reference_date: document.getElementById('refDateInput').value || null,
+        act_filter: document.getElementById('actFilterInput').value.trim() || null
+      };
+
+      try {
+        const res = await fetch(`/compliance/check?use_cache=${useCache}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        renderAuditResponse(data);
+      } catch (err) {
+        document.getElementById('verdictSubheader').textContent = `Error running compliance audit: ${err}`;
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Run Compliance Audit</span>';
+      }
+    }
+
+    function renderAuditResponse(data) {
+      const t = data.telemetry || {};
+      const promptTok = t.prompt_tokens ?? Math.round((t.total_tokens || 0) * 0.75);
+      const compTok = t.completion_tokens ?? ((t.total_tokens || 0) - promptTok);
+
+      document.getElementById('receiptTraceBadge').textContent = t.trace_id || 'span-recorded';
+      document.getElementById('receiptUsd').textContent = `$${(t.estimated_cost_usd || 0).toFixed(6)}`;
+      document.getElementById('receiptMyr').textContent = `RM ${(t.estimated_cost_myr || 0).toFixed(6)}`;
+      document.getElementById('receiptPromptTokens').textContent = promptTok;
+      document.getElementById('receiptCompletionTokens').textContent = compTok;
+      document.getElementById('receiptTotalTokens').textContent = t.total_tokens || 0;
+      document.getElementById('receiptLatency').textContent = `${(t.latency_ms || 0).toFixed(2)} ms`;
+      document.getElementById('receiptRetries').textContent = `${t.retry_count || 0} / 2`;
+
+      const statutes = data.active_statutes || [];
+      document.getElementById('trailNode0Desc').textContent = `Resolved ${statutes.length} active statute(s) as of ${data.reference_date}`;
+      document.getElementById('trailNode1Tokens').textContent = `${t.total_tokens || 0} tok`;
+      document.getElementById('trailNode2Desc').textContent = t.is_verified_grounded
+        ? `All ${(data.findings || []).length} extracted clause quote(s) verified verbatim (retries: ${t.retry_count || 0})`
+        : `Unverified quote blocked after ${t.retry_count || 0} retries`;
+
+      const gBadge = document.getElementById('groundingBadge');
+      gBadge.textContent = t.is_verified_grounded ? 'VERBATIM GROUNDED' : 'UNGROUNDED';
+      gBadge.className = `text-xs font-mono px-2 py-0.5 rounded border ${t.is_verified_grounded ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border-rose-500/30'}`;
+
+      const risk = data.overall_risk || 'LOW';
+      const verdictLabel = risk === 'LOW' ? 'LOW RISK — COMPLIANT' : (risk === 'MEDIUM' ? 'MEDIUM RISK — ESCALATE / REDLINE' : `${risk} RISK — STATUTORY VIOLATION`);
+      const rBadge = document.getElementById('overallRiskBadge');
+      rBadge.textContent = verdictLabel;
+      rBadge.className = `px-3 py-1 rounded-full text-xs font-bold font-mono uppercase border ${riskBadgeClasses(risk)}`;
+
+      document.getElementById('verdictSubheader').textContent = `Document ${data.document_id} audited as of point-in-time date ${data.reference_date}`;
+
+      const statContainer = document.getElementById('activeStatutesContainer');
+      statContainer.innerHTML = '';
+      statutes.forEach(s => {
+        const pill = document.createElement('div');
+        pill.className = 'px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono';
+        pill.innerHTML = `<span class="text-sky-400 font-bold">${s.node_id}</span> <span class="text-slate-400">(${s.section_code} v${s.version}, valid_from=${s.valid_from})</span>`;
+        statContainer.appendChild(pill);
+      });
+
+      const findingsContainer = document.getElementById('findingsContainer');
+      findingsContainer.innerHTML = '';
+      const findings = data.findings || [];
+      if (findings.length === 0) {
+        findingsContainer.innerHTML = '<div class="p-4 rounded-lg bg-emerald-950/30 border border-emerald-800/40 text-emerald-300 text-xs">No high-risk clauses detected. Contract complies with active point-in-time statutes.</div>';
+        return;
+      }
+
+      findings.forEach(c => {
+        const card = document.createElement('div');
+        card.className = 'p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5';
+        const violatedPills = (c.violated_statute_ids || []).map(id =>
+          `<span class="px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300 font-mono text-[11px]">${id}</span>`
+        ).join(' ');
+        card.innerHTML = `
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <span class="font-mono font-bold text-sm text-white">${c.clause_id}</span>
+              <span class="text-xs text-slate-400">&bull; ${c.category}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              ${violatedPills}
+              <span class="px-2.5 py-0.5 rounded text-xs font-mono font-bold border ${riskBadgeClasses(c.severity)}">${c.severity}</span>
+            </div>
+          </div>
+          <div class="p-2.5 rounded bg-slate-900 border-l-2 border-sky-400 font-mono text-xs text-slate-200">
+            <div class="text-[10px] uppercase text-sky-400 mb-1">Verbatim Grounded Substring (exact_quote):</div>
+            "${c.exact_quote}"
+          </div>
+          <div class="text-xs text-slate-300"><strong class="text-slate-100">Legal & Statutory Rationale:</strong> ${c.rationale}</div>
+          <div class="text-xs text-emerald-300 bg-emerald-950/20 border border-emerald-800/40 rounded p-2.5">
+            <strong class="text-emerald-400">Recommended Remediation / Redline:</strong> ${c.recommended_redline}
+          </div>
+        `;
+        findingsContainer.appendChild(card);
+      });
+    }
+
+    initFixtures();
+  </script>
+</body>
+</html>
+"""
+
+
+@router.get("/", response_class=HTMLResponse)
+@router.get("/demo", response_class=HTMLResponse)
+async def get_demo_ui() -> HTMLResponse:
+    """Serves the interactive Judge-Friendly Compliance & FinOps Demo UI at `/` and `/demo`."""
+    return HTMLResponse(content=DEMO_HTML)

@@ -1,0 +1,9 @@
+{
+  "fixture_id": "02_non_compliant_violation",
+  "title": "02 — Non-Compliant Processor Exclusion & 14-Day Breach Delay (Statutory Violation)",
+  "description": "2026 Cloud Vendor Contract violating PDPA (Amendment) Act 2024 Section 9 direct processor liability and Section 12B 72-hour breach notification mandate.",
+  "document_id": "MY-PDPA-2026-VIOLATION-02",
+  "reference_date": "2026-03-15",
+  "act_filter": "Personal Data Protection Act 2010",
+  "raw_text": "SEC-8.1 Processor Liability Exclusion: The Data Processor shall bear zero statutory liability for unauthorized data disclosure or security failures. SEC-8.2 Breach Notice: Notification of a personal data breach shall be provided within 14 days of confirmation."
+}

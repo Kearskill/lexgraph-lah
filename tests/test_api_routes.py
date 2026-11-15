@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from lexgraph_lah.api.routes import _COMPLIANCE_CACHE
@@ -133,3 +134,61 @@ async def test_graph_nodes_and_dashboard_endpoints():
         assert dash_res.status_code == 200
         assert "cytoscape" in dash_res.text
         assert "OpenTelemetry & FinOps Trace Spans" in dash_res.text
+
+
+def test_demo_ui_health_and_malaysian_fixtures_endpoints():
+    """
+    Verifies via FastAPI TestClient:
+    1. GET / and GET /demo return 200 OK with the interactive Demo UI & FinOps Receipt card.
+    2. GET /health returns 200 OK with service readiness metadata.
+    3. GET /fixtures and GET /fixtures/{fixture_id} return 200 OK for all 3 Malaysian compliance fixtures.
+    4. POST /compliance/check deterministically audits all 3 fixtures offline without a live API key.
+    """
+    _COMPLIANCE_CACHE.clear()
+    client = TestClient(app)
+
+    for route in ("/", "/demo"):
+        ui_res = client.get(route)
+        assert ui_res.status_code == 200
+        assert "FinOps Receipt (USD & MYR)" in ui_res.text
+        assert "LangGraph Execution Trail" in ui_res.text
+        assert "http://localhost:6006" in ui_res.text
+
+    health_res = client.get("/health")
+    assert health_res.status_code == 200
+    assert health_res.json()["status"] == "ok"
+
+    fixtures_res = client.get("/fixtures")
+    assert fixtures_res.status_code == 200
+    fixtures_payload = fixtures_res.json()
+    assert fixtures_payload["count"] == 3
+    fixture_ids = [f["fixture_id"] for f in fixtures_payload["fixtures"]]
+    assert fixture_ids == [
+        "01_compliant_clause",
+        "02_non_compliant_violation",
+        "03_ambiguous_edge_case",
+    ]
+
+    expected_verdicts = {
+        "01_compliant_clause": "LOW",
+        "02_non_compliant_violation": "CRITICAL",
+        "03_ambiguous_edge_case": "MEDIUM",
+    }
+
+    for fid, expected_risk in expected_verdicts.items():
+        single_res = client.get(f"/fixtures/{fid}")
+        assert single_res.status_code == 200
+        fixture_doc = single_res.json()
+        assert fixture_doc["fixture_id"] == fid
+
+        audit_res = client.post("/compliance/check?use_cache=false", json=fixture_doc)
+        assert audit_res.status_code == 200
+        audit_data = audit_res.json()
+        assert audit_data["overall_risk"] == expected_risk
+        assert audit_data["telemetry"]["is_verified_grounded"] is True
+        assert audit_data["telemetry"]["total_tokens"] > 0
+        assert audit_data["telemetry"]["estimated_cost_usd"] > 0.0
+        assert audit_data["telemetry"]["estimated_cost_myr"] > 0.0
+
+    missing_res = client.get("/fixtures/non_existent_fixture")
+    assert missing_res.status_code == 404

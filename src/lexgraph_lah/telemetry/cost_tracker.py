@@ -15,6 +15,7 @@ def compute_telemetry_summary(
     input_cost_per_1m_usd: float | None = None,
     output_cost_per_1m_usd: float | None = None,
     usd_to_myr_rate: float | None = None,
+    trace_id: str | None = None,
 ) -> TelemetrySummary:
     """
     Deterministically computes USD and MYR token costs from raw usage metadata
@@ -44,12 +45,15 @@ def compute_telemetry_summary(
     cost_myr = cost_usd * fx_rate
 
     return TelemetrySummary(
+        prompt_tokens=safe_prompt,
+        completion_tokens=safe_completion,
         total_tokens=total_tokens,
         estimated_cost_usd=round(cost_usd, 6),
         estimated_cost_myr=round(cost_myr, 6),
         latency_ms=round(max(0.0, latency_ms), 2),
         retry_count=max(0, retry_count),
         is_verified_grounded=is_verified_grounded,
+        trace_id=trace_id,
     )
 
 

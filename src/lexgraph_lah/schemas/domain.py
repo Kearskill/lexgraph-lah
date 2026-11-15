@@ -107,12 +107,15 @@ class ClauseExtractionList(BaseModel):
 
 
 class TelemetrySummary(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     total_tokens: int
     estimated_cost_usd: float
     estimated_cost_myr: float
     latency_ms: float
     retry_count: int
     is_verified_grounded: bool
+    trace_id: str | None = None
 
 
 class ContractAuditResponse(BaseModel):

@@ -1,0 +1,9 @@
+{
+  "fixture_id": "01_compliant_clause",
+  "title": "01 — Compliant PDPA 2024 Amendment DPA (Clean Pass)",
+  "description": "2026 Malaysian Data Processing Agreement adhering to Section 9 direct processor security obligations and Section 12B 72-hour mandatory breach notification.",
+  "document_id": "MY-PDPA-2026-COMPLIANT-01",
+  "reference_date": "2026-03-15",
+  "act_filter": "Personal Data Protection Act 2010",
+  "raw_text": "SEC-1.1 Security Principle Compliance: Both the Data User and the Data Processor shall implement ISO/IEC 27001 technical and organizational security controls in strict compliance with Section 9 of the Personal Data Protection Act 2010 (as amended by the Personal Data Protection (Amendment) Act 2024). SEC-1.2 Mandatory Data Breach Notification: In the event of any personal data breach, the Data Processor shall notify the Data User within 24 hours of discovery, and the Data User shall notify the Personal Data Protection Commissioner within 72 hours in accordance with Section 12B."
+}

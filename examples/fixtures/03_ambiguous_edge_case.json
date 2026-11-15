@@ -1,0 +1,9 @@
+{
+  "fixture_id": "03_ambiguous_edge_case",
+  "title": "03 — 2024 Pre-Amendment Legacy Contract & Discretionary Incident Escalation (Edge Case)",
+  "description": "Point-in-time audit as of 2024-06-15 (prior to the 2025-01-01 PDPA Amendment) demonstrating temporal statutory routing (PDPA-2010-SEC-9-V1) and multi-agent audit escalation.",
+  "document_id": "MY-PDPA-2024-LEGACY-EDGE-03",
+  "reference_date": "2024-06-15",
+  "act_filter": "Personal Data Protection Act 2010",
+  "raw_text": "SEC-4.1 Data Security: The Data Processor shall implement commercially reasonable technical safeguards to protect personal data. SEC-4.2 Incident Reporting: The Data Processor may report security incidents within 14 business days at its sole discretion. SEC-4.3 Cross-Border Subprocessing: Personal data may be mirrored to regional recovery nodes subject to periodic review."
+}
