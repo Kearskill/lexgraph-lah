@@ -1,9 +1,8 @@
 from datetime import date
 
+from lexgraph_lah.config import settings
 from lexgraph_lah.graph.bilingual_router import normalize_and_expand_query
 from lexgraph_lah.graph.reranker import rerank_statutes_and_spans
-
-from lexgraph_lah.config import settings
 from lexgraph_lah.graph.temporal_store import (
     TemporalGraphStore,
     get_default_temporal_store,

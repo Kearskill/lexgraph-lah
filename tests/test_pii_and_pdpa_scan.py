@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
 
 from lexgraph_lah.agents.graph import build_compliance_graph
 from lexgraph_lah.main import app
+from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
 from lexgraph_lah.schemas.domain import ClauseAudit, ClauseExtractionList, RiskSeverity
 
 
