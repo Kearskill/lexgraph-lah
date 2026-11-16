@@ -10,6 +10,7 @@ from lexgraph_lah.graph.temporal_store import (
     TemporalGraphStore,
     get_default_temporal_store,
 )
+from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
 from lexgraph_lah.schemas.domain import ClauseAudit, ClauseExtractionList, RiskSeverity
 from lexgraph_lah.schemas.state import AgentState
 
@@ -30,13 +31,23 @@ def _extract_verbatim_sentence(raw_text: str, prefix: str) -> str:
     return rest.strip()
 
 
-def _offline_deterministic_assess(state: AgentState) -> dict:
+def _span_ids_for(statute_ids: list[str]) -> list[str]:
+    span_ids: list[str] = []
+    for sid in statute_ids:
+        node = _DEFAULT_TEMPORAL_STORE.nodes.get(sid)
+        if node:
+            for sp in node.source_spans:
+                if sp.span_id not in span_ids:
+                    span_ids.append(sp.span_id)
+    return span_ids
+
+
+def _offline_deterministic_assess(state: AgentState, safe_text: str) -> dict:
     """
     Deterministic offline fallback when running Demo UI or CLI without a live GEMINI_API_KEY.
-    Produces strictly verbatim ClauseAudit findings grounded in `state['raw_text']` and
-    point-in-time `retrieved_statutes`.
+    Produces strictly verbatim ClauseAudit findings grounded in `safe_text` (post-PII-scrub)
+    and point-in-time `retrieved_statutes`.
     """
-    raw_text = state["raw_text"]
     retrieved_statutes = state.get("retrieved_statutes") or []
     active_ids = {s.node_id for s in retrieved_statutes}
     primary_pdpa_id = (
@@ -46,10 +57,11 @@ def _offline_deterministic_assess(state: AgentState) -> dict:
     )
 
     clauses: list[ClauseAudit] = []
-    lower_text = raw_text.lower()
+    lower_text = safe_text.lower()
 
     if "sec-8.1" in lower_text or "zero statutory liability" in lower_text:
-        quote_8_1 = _extract_verbatim_sentence(raw_text, "SEC-8.1")
+        quote_8_1 = _extract_verbatim_sentence(safe_text, "SEC-8.1")
+        violated = [primary_pdpa_id]
         clauses.append(
             ClauseAudit(
                 clause_id="SEC-8.1",
@@ -64,7 +76,8 @@ def _offline_deterministic_assess(state: AgentState) -> dict:
                     "The Data Processor shall comply with all direct statutory obligations under "
                     "Section 9 of the Personal Data Protection Act 2010 (as amended)."
                 ),
-                violated_statute_ids=[primary_pdpa_id],
+                violated_statute_ids=violated,
+                source_span_ids=_span_ids_for(violated),
             )
         )
 
@@ -72,7 +85,12 @@ def _offline_deterministic_assess(state: AgentState) -> dict:
         "breach notice" in lower_text
         and ("14 days" in lower_text or "10 days" in lower_text)
     ):
-        quote_8_2 = _extract_verbatim_sentence(raw_text, "SEC-8.2")
+        quote_8_2 = _extract_verbatim_sentence(safe_text, "SEC-8.2")
+        violated = (
+            [primary_pdpa_id, "PDPA-2010-SEC-12B-V1"]
+            if "PDPA-2010-SEC-12B-V1" in active_ids
+            else [primary_pdpa_id]
+        )
         clauses.append(
             ClauseAudit(
                 clause_id="SEC-8.2",
@@ -87,12 +105,14 @@ def _offline_deterministic_assess(state: AgentState) -> dict:
                     "Notification of a personal data breach shall be provided within 24 hours "
                     "to enable the Data User to meet the 72-hour statutory deadline."
                 ),
-                violated_statute_ids=[primary_pdpa_id],
+                violated_statute_ids=violated,
+                source_span_ids=_span_ids_for(violated),
             )
         )
 
     if "sec-4.2" in lower_text or "14 business days at its sole discretion" in lower_text:
-        quote_4_2 = _extract_verbatim_sentence(raw_text, "SEC-4.2")
+        quote_4_2 = _extract_verbatim_sentence(safe_text, "SEC-4.2")
+        violated = [primary_pdpa_id]
         clauses.append(
             ClauseAudit(
                 clause_id="SEC-4.2",
@@ -108,12 +128,14 @@ def _offline_deterministic_assess(state: AgentState) -> dict:
                     "The Data Processor shall notify the Data User within 48 hours of any "
                     "suspected personal data security incident."
                 ),
-                violated_statute_ids=[primary_pdpa_id],
+                violated_statute_ids=violated,
+                source_span_ids=_span_ids_for(violated),
             )
         )
 
     if "sec-4.3" in lower_text and "cross-border" in lower_text:
-        quote_4_3 = _extract_verbatim_sentence(raw_text, "SEC-4.3")
+        quote_4_3 = _extract_verbatim_sentence(safe_text, "SEC-4.3")
+        violated = [primary_pdpa_id]
         clauses.append(
             ClauseAudit(
                 clause_id="SEC-4.3",
@@ -128,13 +150,14 @@ def _offline_deterministic_assess(state: AgentState) -> dict:
                     "Personal data may only be transferred outside Malaysia with prior written "
                     "consent of the Data User and equivalent statutory protection safeguards."
                 ),
-                violated_statute_ids=[primary_pdpa_id],
+                violated_statute_ids=violated,
+                source_span_ids=_span_ids_for(violated),
             )
         )
 
     if not clauses:
         if "sec-1.1" in lower_text or "within 72 hours" in lower_text:
-            quote_ok = _extract_verbatim_sentence(raw_text, "SEC-1.1")
+            quote_ok = _extract_verbatim_sentence(safe_text, "SEC-1.1")
             clauses.append(
                 ClauseAudit(
                     clause_id="SEC-1.1",
@@ -147,14 +170,23 @@ def _offline_deterministic_assess(state: AgentState) -> dict:
                     ),
                     recommended_redline="No redline required — clause is compliant with active statutes.",
                     violated_statute_ids=[],
+                    source_span_ids=_span_ids_for([primary_pdpa_id]),
                 )
             )
         else:
-            snippet = raw_text.strip()
+            snippet = safe_text.strip()
             is_risky = any(
                 kw in lower_text
-                for kw in ("unlimited", "waive", "sole discretion", "without notice", "exclude")
+                for kw in (
+                    "unlimited",
+                    "waive",
+                    "sole discretion",
+                    "without notice",
+                    "exclude",
+                    "without consent",
+                )
             )
+            violated = [primary_pdpa_id] if is_risky else []
             clauses.append(
                 ClauseAudit(
                     clause_id="SEC-1.0",
@@ -169,11 +201,12 @@ def _offline_deterministic_assess(state: AgentState) -> dict:
                         if is_risky
                         else "No redline required — clause is compliant."
                     ),
-                    violated_statute_ids=[primary_pdpa_id] if is_risky else [],
+                    violated_statute_ids=violated,
+                    source_span_ids=_span_ids_for([primary_pdpa_id]),
                 )
             )
 
-    est_prompt_tokens = max(420, len(raw_text) // 3 + 380)
+    est_prompt_tokens = max(420, len(safe_text) // 3 + 380)
     est_completion_tokens = max(140, len(clauses) * 95 + 45)
     return {
         "extracted_clauses": clauses,
@@ -194,16 +227,18 @@ async def temporal_retriever_node(state: AgentState) -> dict:
     """
     Node 0: Point-in-time Graph-RAG statutory resolver.
     Deterministically filters active statutes as of `reference_date` (or today)
-    and resolves multi-hop CITES edges before LLM invocation (0 LLM tokens used).
+    and `territorial_scope`, resolving multi-hop CITES edges before LLM invocation.
     """
     raw_ref_date = state.get("reference_date")
     as_of_date = date.fromisoformat(raw_ref_date) if raw_ref_date else date.today()
     act_filter = state.get("act_filter")
+    territorial_scope = state.get("territorial_scope")
 
     active_statutes = _DEFAULT_TEMPORAL_STORE.query_point_in_time(
         as_of_date=as_of_date,
         act_name=act_filter,
         include_citations=True,
+        territorial_scope=territorial_scope,
     )
 
     return {
@@ -214,13 +249,23 @@ async def temporal_retriever_node(state: AgentState) -> dict:
 
 
 async def risk_assessor_node(state: AgentState) -> dict:
-    """Node 1: Extracts risky clauses using strict Pydantic structured output."""
+    """
+    Node 1: Masks Malaysian PII pre-flight (<50ms) and extracts risky clauses
+    using strict Pydantic structured output.
+    """
+    raw_text = state["raw_text"]
+    pii_summary = scrub_malaysian_pii(raw_text) if settings.pii_scrub_enabled else None
+    safe_text = pii_summary.masked_text if pii_summary else raw_text
+    pii_dict = pii_summary.model_dump(mode="json") if pii_summary else None
+
     llm = get_llm()
     if (
         isinstance(llm, ChatGoogleGenerativeAI)
         and settings.gemini_api_key.strip() in _OFFLINE_KEYS
     ):
-        return _offline_deterministic_assess(state)
+        offline_out = _offline_deterministic_assess(state, safe_text=safe_text)
+        offline_out["pii_scrub"] = pii_dict
+        return offline_out
 
     structured_llm = llm.with_structured_output(ClauseExtractionList, include_raw=True)
 
@@ -233,7 +278,7 @@ async def risk_assessor_node(state: AgentState) -> dict:
     retrieved_statutes = state.get("retrieved_statutes") or []
     if retrieved_statutes:
         statute_block = "\n".join(
-            f"- [{s.node_id}] ({s.act_name} {s.section_code}, v{s.version}, "
+            f"- [{s.node_id}] ({s.act_name} {s.section_code}, Tier {int(s.authority_tier)}, v{s.version}, "
             f"valid_from={s.valid_from}, valid_to={s.valid_to or 'PRESENT'}): {s.text}"
             for s in retrieved_statutes
         )
@@ -248,7 +293,7 @@ async def risk_assessor_node(state: AgentState) -> dict:
     result = await structured_llm.ainvoke(
         [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"CONTRACT TEXT:\n{state['raw_text']}"),
+            HumanMessage(content=f"CONTRACT TEXT:\n{safe_text}"),
         ]
     )
 
@@ -258,6 +303,7 @@ async def risk_assessor_node(state: AgentState) -> dict:
 
     return {
         "extracted_clauses": parsed.clauses if parsed else [],
+        "pii_scrub": pii_dict,
         "prompt_tokens": usage.get("input_tokens", 0),
         "completion_tokens": usage.get("output_tokens", 0),
     }
@@ -266,10 +312,13 @@ async def risk_assessor_node(state: AgentState) -> dict:
 async def citation_auditor_node(state: AgentState) -> dict:
     """Node 2: Deterministic zero-hallucination guardrail checking verbatim quotes."""
     raw_text = state["raw_text"]
+    pii_dict = state.get("pii_scrub") or {}
+    masked_text = pii_dict.get("masked_text", raw_text) if isinstance(pii_dict, dict) else raw_text
+
     unverified_ids = [
         clause.clause_id
         for clause in state["extracted_clauses"]
-        if clause.exact_quote not in raw_text
+        if clause.exact_quote not in raw_text and clause.exact_quote not in masked_text
     ]
 
     if unverified_ids:

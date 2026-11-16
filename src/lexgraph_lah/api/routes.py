@@ -8,17 +8,31 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
 from lexgraph_lah.agents.graph import _DEFAULT_TEMPORAL_STORE, build_compliance_graph
+from lexgraph_lah.compliance.pdpa_scanner import scan_pdpa_compliance
 from lexgraph_lah.config import settings
+from lexgraph_lah.graph.reranker import filter_by_territorial_scope
 from lexgraph_lah.graph.temporal_store import build_point_in_time_cypher
+from lexgraph_lah.mcp.tools import MCP_TOOL_DEFINITIONS, dispatch_mcp_tool
+from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
 from lexgraph_lah.schemas.domain import (
+    DEFAULT_LEGAL_DISCLAIMER,
+    BilingualClausePair,
     ClauseAudit,
     ComplianceCheckRequest,
     ContractAuditResponse,
     GraphTopologyResponse,
+    IRACAnalysis,
+    PDPAComplianceScanRequest,
+    PDPAComplianceScanResponse,
+    PIIScrubSummary,
+    RakyatGuidance,
+    RetrievalSearchResponse,
     RiskSeverity,
     TelemetryMetricsResponse,
+    TerritorialScope,
 )
 from lexgraph_lah.schemas.state import AgentState
 from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
@@ -29,6 +43,15 @@ from lexgraph_lah.telemetry.tracer import (
 )
 
 router = APIRouter()
+
+
+class PIIScrubRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+
+
+class MCPToolCallRequest(BaseModel):
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
 
 def _resolve_fixtures_dir() -> Path:
@@ -50,6 +73,7 @@ def _load_all_fixtures() -> list[dict[str, Any]]:
         items.append(data)
     return items
 
+
 # Semantic/exact-match response cache to avoid redundant LLM billing on identical (text, reference_date, act_filter)
 _COMPLIANCE_CACHE: dict[str, ContractAuditResponse] = {}
 
@@ -68,8 +92,67 @@ def _compute_overall_risk(clauses: list[ClauseAudit]) -> RiskSeverity:
 
 
 def _cache_key(req: ComplianceCheckRequest) -> str:
-    payload = f"{req.raw_text.strip()}|{req.reference_date or 'TODAY'}|{req.act_filter or 'ALL'}"
+    scope_val = req.territorial_scope.value if req.territorial_scope else TerritorialScope.ALL_MALAYSIA.value
+    payload = (
+        f"{req.raw_text.strip()}|{req.reference_date or 'TODAY'}|"
+        f"{req.act_filter or 'ALL'}|{scope_val}|{req.persona.value}"
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _build_audit_persona_blocks(
+    document_id: str,
+    effective_date: date,
+    clauses: list[ClauseAudit],
+    overall_risk: RiskSeverity,
+) -> tuple[IRACAnalysis, RakyatGuidance]:
+    violated = sorted({sid for c in clauses for sid in c.violated_statute_ids})
+    stat_str = ", ".join(violated) if violated else "Act 709 (PDPA) Part II Principles"
+    high_risk_clauses = [c for c in clauses if c.severity in {RiskSeverity.MEDIUM, RiskSeverity.HIGH, RiskSeverity.CRITICAL}]
+
+    if not high_risk_clauses:
+        irac = IRACAnalysis(
+            issue=f"Whether {document_id} complies with Malaysian statutory provisions effective on {effective_date.isoformat()}.",
+            rule=f"Applicable Malaysian provisions ({stat_str}) active as of {effective_date.isoformat()}.",
+            application="All reviewed clauses satisfy baseline statutory safeguards without exclusionary waivers or delayed breach SLAs.",
+            conclusion=f"Overall Risk: {overall_risk.value}. Clauses align with active Malaysian statutory mandates.",
+        )
+        rakyat = RakyatGuidance(
+            plain_summary_en="This agreement meets Malaysia's personal data security and breach reporting timelines as of the selected date.",
+            plain_summary_bm="Perjanjian ini mematuhi piawaian keselamatan data peribadi dan tempoh pemberitahuan kebocoran data Malaysia bagi tarikh ini.",
+            gov_my_checklist=[
+                "Keep your bilingual Bahasa Melayu and English privacy notice updated.",
+                "Verify your Data Protection Officer (DPO) contact details at https://portal.pdp.gov.my.",
+                "Retain signed compliance records for inspection by JPDP (https://www.pdp.gov.my).",
+            ],
+            official_portals=["https://www.pdp.gov.my", "https://portal.pdp.gov.my", "https://lom.agc.gov.my"],
+        )
+        return irac, rakyat
+
+    cats = ", ".join(c.category for c in high_risk_clauses)
+    irac = IRACAnalysis(
+        issue=f"Whether {document_id} breaches statutory duties under {stat_str} as of {effective_date.isoformat()}.",
+        rule=f"Malaysian statutory mandates ({stat_str}) governing data processor security liability and 72-hour breach notification.",
+        application=f"Identified {len(high_risk_clauses)} exposed clause(s) across {cats}.",
+        conclusion=f"Overall Risk: {overall_risk.value}. Adopt the recommended redlines prior to contract execution.",
+    )
+    rakyat = RakyatGuidance(
+        plain_summary_en=(
+            f"Attention ({overall_risk.value} Risk): This contract has {len(high_risk_clauses)} clause(s) "
+            "that do not protect your personal data properly under Malaysian law (for example, shifting blame away from the vendor or delaying data leak alerts past 72 hours)."
+        ),
+        plain_summary_bm=(
+            f"Perhatian (Risiko {overall_risk.value}): Kontrak ini mengandungi {len(high_risk_clauses)} klausa "
+            "berisiko di bawah undang-undang Malaysia, seperti mengecualikan liabiliti pemproses data atau melambatkan notis kebocoran data."
+        ),
+        gov_my_checklist=[
+            "Ask the vendor to remove any clause saying they have 'zero liability' if your data leaks.",
+            "Ensure confirmed personal data breaches must be escalated in <= 24h so JPDP can be notified within 72h at https://portal.pdp.gov.my.",
+            "Check official Malaysian PDPA guidance or file a public complaint at https://www.pdp.gov.my.",
+        ],
+        official_portals=["https://www.pdp.gov.my", "https://portal.pdp.gov.my", "https://lom.agc.gov.my"],
+    )
+    return irac, rakyat
 
 
 @router.post("/compliance/check", response_model=ContractAuditResponse)
@@ -81,9 +164,9 @@ async def check_compliance(
 ) -> ContractAuditResponse:
     """
     Executes the multi-stage temporal Graph-RAG & compliance pipeline:
-    1. Resolves point-in-time statutes active on `reference_date`.
-    2. Runs `risk_assessor_node` and `citation_auditor_node` with bounded self-correction.
-    3. Records OpenTelemetry / FinOps cost metrics (USD & MYR).
+    1. Resolves point-in-time statutes active on `reference_date` & `territorial_scope`.
+    2. Masks Malaysian PII pre-flight (<50ms) and runs `risk_assessor_node` + `citation_auditor_node`.
+    3. Records OpenTelemetry / FinOps cost metrics (USD & MYR) and bilingual/persona metadata.
     """
     key = _cache_key(payload)
     if use_cache and key in _COMPLIANCE_CACHE:
@@ -104,6 +187,7 @@ async def check_compliance(
         )
 
     effective_date = payload.reference_date or date.today()
+    scope = payload.territorial_scope or TerritorialScope.ALL_MALAYSIA
     graph = build_compliance_graph()
 
     initial_state: AgentState = {
@@ -111,6 +195,9 @@ async def check_compliance(
         "raw_text": payload.raw_text,
         "reference_date": effective_date.isoformat(),
         "act_filter": payload.act_filter,
+        "territorial_scope": scope.value,
+        "persona": payload.persona.value,
+        "abstention_threshold": payload.abstention_threshold or settings.abstention_threshold,
         "extracted_clauses": [],
         "auditor_feedback": "",
         "is_grounded": False,
@@ -124,6 +211,27 @@ async def check_compliance(
 
     clauses: list[ClauseAudit] = final_state.get("extracted_clauses", [])
     active_statutes = final_state.get("retrieved_statutes", [])
+    pii_dict = final_state.get("pii_scrub")
+    pii_scrub = PIIScrubSummary(**pii_dict) if isinstance(pii_dict, dict) else None
+    overall_risk = _compute_overall_risk(clauses)
+
+    bilingual_pairs: list[BilingualClausePair] = []
+    seen_pairs: set[str] = set()
+    for stat in active_statutes:
+        pair = _DEFAULT_TEMPORAL_STORE.get_bilingual_pair(stat.node_id)
+        if pair:
+            pair_key = f"{pair.act_number}:{pair.section_code}"
+            if pair_key not in seen_pairs:
+                seen_pairs.add(pair_key)
+                bilingual_pairs.append(pair)
+
+    irac_summary, rakyat_summary = _build_audit_persona_blocks(
+        document_id=payload.document_id,
+        effective_date=effective_date,
+        clauses=clauses,
+        overall_risk=overall_risk,
+    )
+
     span_id = f"span-{uuid.uuid4().hex[:8]}"
     telemetry = compute_telemetry_summary(
         prompt_tokens=final_state.get("prompt_tokens", 0),
@@ -148,14 +256,84 @@ async def check_compliance(
     response = ContractAuditResponse(
         document_id=payload.document_id,
         reference_date=effective_date,
-        overall_risk=_compute_overall_risk(clauses),
+        overall_risk=overall_risk,
         findings=clauses,
         active_statutes=active_statutes,
         telemetry=telemetry,
+        persona=payload.persona,
+        territorial_scope=scope,
+        pii_scrub=pii_scrub,
+        bilingual_provisions=bilingual_pairs,
+        irac_summary=irac_summary,
+        rakyat_summary=rakyat_summary,
+        disclaimer=DEFAULT_LEGAL_DISCLAIMER,
     )
     if use_cache:
         _COMPLIANCE_CACHE[key] = response
     return response
+
+
+@router.post("/api/v1/compliance/scan", response_model=PDPAComplianceScanResponse)
+async def api_v1_compliance_scan(
+    payload: PDPAComplianceScanRequest,
+) -> PDPAComplianceScanResponse:
+    """
+    Pre-flight PII-scrubbed Act 709 (PDPA) Compliance Gap Scanner returning strict
+    Pydantic/JSON gap analysis mapped to Act 709 principles, 5-tier authority weights,
+    bilingual EN/BM provisions, and verifiable SourceSpan IDs.
+    """
+    return scan_pdpa_compliance(payload, store=_DEFAULT_TEMPORAL_STORE)
+
+
+@router.post("/api/v1/pii/scrub", response_model=PIIScrubSummary)
+async def api_v1_pii_scrub(payload: PIIScrubRequest) -> PIIScrubSummary:
+    """Masks Malaysian NRIC, Passport, Phone, Email, and SSM numbers in <50ms."""
+    return scrub_malaysian_pii(payload.text)
+
+
+@router.get("/api/v1/retrieval/search", response_model=RetrievalSearchResponse)
+async def api_v1_retrieval_search(
+    q: Annotated[str, Query(..., min_length=1, description="BM, EN, or code-switched legal query")],
+    as_of_date: Annotated[date | None, Query(description="Point-in-time date (YYYY-MM-DD)")] = None,
+    territorial_scope: Annotated[str | None, Query(description="Peninsular Malaysia | Sabah | Sarawak | Federal Territories | All Malaysia")] = None,
+    threshold: Annotated[float | None, Query(ge=0.0, le=1.0, description="Abstention relevance threshold (default 0.78)")] = None,
+) -> RetrievalSearchResponse:
+    """
+    Hybrid bilingual statutory search with 5-tier Malaysian authority reranking,
+    territorial scope filtering, and deterministic 0.78 Abstention Gate.
+    """
+    effective_threshold = threshold if threshold is not None else settings.abstention_threshold
+    return _DEFAULT_TEMPORAL_STORE.search_with_abstention(
+        query=q,
+        as_of_date=as_of_date or date.today(),
+        territorial_scope=territorial_scope,
+        abstention_threshold=effective_threshold,
+    )
+
+
+@router.get("/api/v1/statutes/{node_id}/bilingual", response_model=BilingualClausePair)
+async def api_v1_bilingual_statute(node_id: str) -> BilingualClausePair:
+    """Returns synchronized English (Section) & Bahasa Melayu (Seksyen) statutory pair + SourceSpans."""
+    pair = _DEFAULT_TEMPORAL_STORE.get_bilingual_pair(node_id)
+    if not pair:
+        raise HTTPException(status_code=404, detail=f"Statutory node '{node_id}' not found.")
+    return pair
+
+
+@router.get("/api/v1/mcp/tools")
+async def api_v1_mcp_tools() -> dict[str, Any]:
+    """Lists MCP-compatible tools exposed by lexgraph-lah."""
+    return {"tools": MCP_TOOL_DEFINITIONS}
+
+
+@router.post("/api/v1/mcp/call")
+async def api_v1_mcp_call(payload: MCPToolCallRequest) -> dict[str, Any]:
+    """Invokes an MCP tool wrapper cleanly via HTTP."""
+    try:
+        result = dispatch_mcp_tool(payload.name, payload.arguments)
+        return {"tool": payload.name, "result": result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/graph/nodes", response_model=GraphTopologyResponse)
@@ -169,25 +347,43 @@ async def get_graph_nodes(
     act_name: Annotated[
         str | None, Query(description="Optional canonical act name filter")
     ] = None,
+    territorial_scope: Annotated[
+        str | None, Query(description="Optional Malaysian territorial jurisdiction filter")
+    ] = None,
+    language: Annotated[
+        str | None, Query(description="Optional language filter ('en' or 'bm')")
+    ] = None,
 ) -> GraphTopologyResponse:
     """
-    Returns statutory graph nodes, temporal/citation edges (`AMENDED_BY`, `REPEALED_BY`, `CITES`),
-    and the corresponding parameterized Cypher query for visualization.
+    Returns statutory graph nodes, temporal/citation edges (`AMENDED_BY`, `REPEALED_BY`, `CITES`,
+    `HAS_TRANSLATION`), and the corresponding parameterized Cypher query for visualization.
     """
     if as_of_date is not None:
         nodes = _DEFAULT_TEMPORAL_STORE.query_point_in_time(
             as_of_date=as_of_date,
             act_name=act_name,
             include_citations=True,
+            language=language,
+            territorial_scope=territorial_scope,
         )
         cypher_bundle = build_point_in_time_cypher(
-            as_of_date=as_of_date, act_name=act_name
+            as_of_date=as_of_date,
+            act_name=act_name,
+            territorial_scope=territorial_scope,
         )
     else:
         all_nodes = list(_DEFAULT_TEMPORAL_STORE.nodes.values())
-        nodes = [n for n in all_nodes if act_name is None or n.act_name == act_name]
+        nodes = [
+            n
+            for n in all_nodes
+            if (act_name is None or n.act_name == act_name)
+            and (language is None or n.language == language)
+        ]
+        nodes = filter_by_territorial_scope(nodes, territorial_scope)
         cypher_bundle = build_point_in_time_cypher(
-            as_of_date=date.today(), act_name=act_name
+            as_of_date=date.today(),
+            act_name=act_name,
+            territorial_scope=territorial_scope,
         )
 
     node_id_set = {n.node_id for n in nodes}
