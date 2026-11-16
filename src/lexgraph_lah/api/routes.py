@@ -713,20 +713,32 @@ DEMO_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>lexgraph-lah | Deterministic Multi-Agent Compliance & FinOps Audit Studio</title>
+  <title>lexgraph-lah | Malaysian Bilingual Legal GraphRAG &amp; PDPA Studio</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
-  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-10">
-    <div class="max-w-7xl mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+  <!-- Persistent Legal-Information Disclaimer Banner -->
+  <div id="legalDisclaimerBanner" role="alert" class="bg-amber-950/90 border-b border-amber-500/40 text-amber-200 px-6 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
+    <div>
+      <strong class="uppercase tracking-wider text-amber-300 font-mono">[LEGAL INFORMATION NOTICE &mdash; NOT LEGAL ADVICE]</strong>
+      <span>lexgraph-lah provides automated Malaysian statutory retrieval and PDPA compliance analysis for informational use only. It does not constitute legal advice or create an advocate-solicitor relationship under the Legal Profession Act 1976 [Act 166].</span>
+    </div>
+    <span class="font-mono text-[11px] px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/30 text-amber-300">Act 709 &bull; P.U. (A) 342/2024 &bull; 0.78 Abstention Gate</span>
+  </div>
+
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-20">
+    <div class="max-w-7xl mx-auto px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
       <div>
         <div class="flex items-center gap-3">
-          <span class="px-2.5 py-1 text-xs font-mono font-bold uppercase tracking-wider rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">v0.1.0</span>
-          <h1 class="text-xl font-bold tracking-tight text-white">lexgraph-lah <span class="text-sky-400 font-normal">// Compliance & FinOps Audit Studio</span></h1>
+          <span class="px-2.5 py-1 text-xs font-mono font-bold uppercase tracking-wider rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">v0.2.0</span>
+          <h1 class="text-xl font-bold tracking-tight text-white">lexgraph-lah <span class="text-sky-400 font-normal">// Bilingual Legal GraphRAG &amp; PDPA Studio</span></h1>
         </div>
-        <p class="text-xs text-slate-400 mt-1">Point-in-Time Malaysian Statutory Graph-RAG &bull; Verbatim Substring Critic &bull; FinOps USD/MYR Receipt &bull; OpenTelemetry</p>
+        <p class="text-xs text-slate-400 mt-1">Bi-Temporal Point-in-Time Statutes &bull; BM &harr; EN Alignment &bull; Pre-Flight PII Scrubber &bull; FinOps USD/MYR</p>
       </div>
-      <div class="flex items-center gap-3 text-xs font-medium">
+      <div class="flex flex-wrap items-center gap-2.5 text-xs font-medium">
+        <button id="openBilingualDrawerBtn" onclick="openBilingualDrawer()" class="px-3 py-2 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/40 text-indigo-300 transition font-semibold">
+          Bilingual Clause Diff &amp; SourceSpan Drawer
+        </button>
         <a href="/dashboard" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">Cytoscape Graph Console (/dashboard)</a>
         <a href="/docs" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">OpenAPI (/docs)</a>
         <a href="http://localhost:6006" target="_blank" rel="noopener noreferrer" class="px-3 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 transition flex items-center gap-1.5">
@@ -738,20 +750,52 @@ DEMO_HTML = """<!DOCTYPE html>
   </header>
 
   <main class="max-w-7xl mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-    <!-- Left Column: Fixture Loader & Input Form -->
+    <!-- Left Column: Controls, Territorial Scope Chips, Persona Toggle & Bilingual Search -->
     <section class="lg:col-span-5 space-y-5">
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-semibold uppercase tracking-wider text-sky-400">1. Load Malaysian Compliance Fixture</h2>
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-sky-400">1. Malaysian Compliance Controls</h2>
           <span class="text-xs text-slate-400 font-mono">examples/fixtures/</span>
+        </div>
+
+        <!-- Output Persona Toggle: Practitioner Mode vs Rakyat Literacy Mode -->
+        <div class="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-300">Output Persona Mode</span>
+            <span id="personaActiveBadge" class="text-[11px] font-mono text-sky-400">PRACTITIONER (IRAC)</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2" id="personaToggleGroup">
+            <button id="personaPractitionerBtn" type="button" onclick="setPersona('PRACTITIONER')" class="py-2 px-3 rounded-lg text-xs font-semibold border transition bg-sky-500/20 border-sky-400 text-sky-300">
+              Practitioner Mode (IRAC)
+            </button>
+            <button id="personaRakyatBtn" type="button" onclick="setPersona('RAKYAT')" class="py-2 px-3 rounded-lg text-xs font-semibold border transition bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200">
+              Rakyat Literacy (gov.my)
+            </button>
+          </div>
+        </div>
+
+        <!-- Territorial Scope Filter Chips -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-slate-400">Territorial Scope Filter:</span>
+            <span id="activeScopeLabel" class="text-[11px] font-mono text-emerald-400">All Malaysia</span>
+          </div>
+          <div id="scopeChipsContainer" class="flex flex-wrap gap-1.5">
+            <button type="button" data-scope="All Malaysia" onclick="setScope('All Malaysia')" class="scope-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-emerald-500/20 border-emerald-400 text-emerald-300">All Malaysia</button>
+            <button type="button" data-scope="Peninsular Malaysia" onclick="setScope('Peninsular Malaysia')" class="scope-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-slate-950 border-slate-700 text-slate-300 hover:border-slate-500">Peninsular Malaysia</button>
+            <button type="button" data-scope="Sabah" onclick="setScope('Sabah')" class="scope-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-slate-950 border-slate-700 text-slate-300 hover:border-slate-500">Sabah</button>
+            <button type="button" data-scope="Sarawak" onclick="setScope('Sarawak')" class="scope-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-slate-950 border-slate-700 text-slate-300 hover:border-slate-500">Sarawak</button>
+            <button type="button" data-scope="Federal Territories" onclick="setScope('Federal Territories')" class="scope-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-slate-950 border-slate-700 text-slate-300 hover:border-slate-500">Federal Territories</button>
+          </div>
         </div>
 
         <div>
           <label for="fixtureSelect" class="block text-xs text-slate-400 mb-1.5">Select Preset Scenario or Custom Input:</label>
           <select id="fixtureSelect" onchange="onFixtureSelect()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-sky-400">
             <option value="01_compliant_clause">01 — Compliant PDPA 2024 Amendment DPA (Clean Pass)</option>
-            <option value="02_non_compliant_violation" selected>02 — Non-Compliant Processor Exclusion & 14-Day Breach Delay (Violation)</option>
-            <option value="03_ambiguous_edge_case">03 — 2024 Pre-Amendment Legacy Contract & Escalation (Edge Case)</option>
+            <option value="02_non_compliant_violation" selected>02 — Non-Compliant Processor Exclusion &amp; 14-Day Breach Delay (Violation)</option>
+            <option value="03_ambiguous_edge_case">03 — 2024 Pre-Amendment Legacy Contract &amp; Escalation (Edge Case)</option>
+            <option value="04_pdpa_pii_scan">04 — Synthetic Malaysian NRIC/Phone/SSM PII + Act 709 Gap Scan</option>
             <option value="custom">Custom Clause / JSON Payload</option>
           </select>
           <p id="fixtureDesc" class="text-xs text-slate-400 mt-2 italic"></p>
@@ -763,19 +807,19 @@ DEMO_HTML = """<!DOCTYPE html>
             <input id="docIdInput" type="text" value="MY-PDPA-2026-VIOLATION-02" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
           </div>
           <div>
-            <label for="refDateInput" class="block text-xs text-slate-400 mb-1">Point-in-Time Reference Date</label>
+            <label for="refDateInput" class="block text-xs text-slate-400 mb-1">Point-in-Time Date (as_of_date)</label>
             <input id="refDateInput" type="date" value="2026-03-15" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
           </div>
         </div>
 
         <div>
-          <label for="actFilterInput" class="block text-xs text-slate-400 mb-1">Statutory Act Filter</label>
+          <label for="actFilterInput" class="block text-xs text-slate-400 mb-1">Statutory Act Filter (optional for Audit)</label>
           <input id="actFilterInput" type="text" value="Personal Data Protection Act 2010" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-100" />
         </div>
 
         <div>
-          <label for="rawTextInput" class="block text-xs text-slate-400 mb-1">Contract / Policy Clauses to Audit</label>
-          <textarea id="rawTextInput" rows="7" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-sm font-mono text-slate-100 leading-relaxed focus:outline-none focus:border-sky-400"></textarea>
+          <label for="rawTextInput" class="block text-xs text-slate-400 mb-1">Contract / Policy Clauses to Audit or Scan</label>
+          <textarea id="rawTextInput" rows="6" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-sm font-mono text-slate-100 leading-relaxed focus:outline-none focus:border-sky-400"></textarea>
         </div>
 
         <div class="flex items-center justify-between pt-1">
@@ -785,9 +829,29 @@ DEMO_HTML = """<!DOCTYPE html>
           </label>
         </div>
 
-        <button id="runAuditBtn" onclick="runComplianceAudit()" class="w-full py-2.5 px-4 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-sm shadow transition flex items-center justify-center gap-2">
-          <span>Run Compliance Audit</span>
-        </button>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <button id="runAuditBtn" onclick="runComplianceAudit()" class="py-2.5 px-4 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs shadow transition flex items-center justify-center">
+            <span>Run Compliance Audit</span>
+          </button>
+          <button id="runPdpaScanBtn" onclick="runPdpaScan()" class="py-2.5 px-4 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs shadow transition flex items-center justify-center">
+            <span>Act 709 Scan + PII Scrub</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Bilingual Statutory Search & 0.78 Abstention Gate Tester -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-indigo-400">2. Bilingual Search &amp; 0.78 Abstention Gate</h2>
+          <span class="text-[11px] font-mono text-slate-400">BM / EN / Code-Switched</span>
+        </div>
+        <div class="flex gap-2">
+          <input id="statutorySearchInput" type="text" value="notis kebocoran data 72 jam pemproses data" placeholder="Query in BM, English, or Manglish..." class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100" />
+          <button id="runSearchBtn" onclick="runBilingualSearch()" class="px-3 py-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-semibold text-xs transition">Search</button>
+        </div>
+        <div id="searchResultsBox" class="text-xs text-slate-300 bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
+          Run a bilingual search or click a scope chip to test 5-tier authority reranking and the 0.78 Abstention Gate.
+        </div>
       </div>
     </section>
 
@@ -842,7 +906,7 @@ DEMO_HTML = """<!DOCTYPE html>
               <li class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
                 <div>
                   <div class="font-mono font-semibold text-purple-300">02. risk_assessor_node</div>
-                  <div id="trailNode1Desc" class="text-slate-400 mt-0.5">Gemini 2.5 Flash Pydantic v2 structured clause extraction</div>
+                  <div id="trailNode1Desc" class="text-slate-400 mt-0.5">Pre-flight PII scrub + Pydantic v2 structured extraction</div>
                 </div>
                 <span id="trailNode1Tokens" class="font-mono text-purple-300">0 tok</span>
               </li>
@@ -862,11 +926,31 @@ DEMO_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- Pre-Flight Malaysian PII Scrubber Telemetry Card -->
+      <div id="piiScrubCard" class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg flex flex-wrap items-center justify-between gap-3">
+        <div class="space-y-0.5">
+          <div class="text-xs font-semibold uppercase tracking-wider text-teal-400">Pre-Flight Malaysian PII Scrubber (&lt;50ms Gate)</div>
+          <div id="piiScrubStatus" class="text-xs text-slate-300 font-mono">0 redactions &bull; Ready to mask NRIC, Passport, Phone, Email &amp; SSM before LLM/Embedding calls.</div>
+        </div>
+        <div id="piiPlaceholderBadges" class="flex flex-wrap gap-1.5"></div>
+      </div>
+
+      <!-- Persona-Aware Synthesis Card (Practitioner IRAC vs Rakyat Literacy Mode) -->
+      <div id="personaOutputCard" class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-3">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+          <h2 id="personaCardTitle" class="text-sm font-semibold uppercase tracking-wider text-sky-400">Practitioner Mode &mdash; IRAC Legal Analysis</h2>
+          <span id="personaCardTag" class="text-[11px] font-mono px-2 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">IRAC + CITATIONS</span>
+        </div>
+        <div id="personaCardBody" class="text-xs text-slate-300 space-y-2">
+          Run an audit or PDPA scan to view Practitioner IRAC analysis or toggle to Rakyat Literacy Mode.
+        </div>
+      </div>
+
       <!-- (a) Deterministic Verdict & Citations Card -->
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
           <div>
-            <h2 class="text-sm font-semibold uppercase tracking-wider text-sky-400">Deterministic Compliance Verdict & Citations</h2>
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-sky-400">Deterministic Compliance Verdict &amp; Citations</h2>
             <p id="verdictSubheader" class="text-xs text-slate-400 mt-0.5">Select a fixture and click "Run Compliance Audit" to inspect point-in-time statutory grounding.</p>
           </div>
           <div id="overallRiskBadge" class="px-3 py-1 rounded-full text-xs font-bold font-mono uppercase bg-slate-800 text-slate-300 border border-slate-700">
@@ -876,18 +960,38 @@ DEMO_HTML = """<!DOCTYPE html>
 
         <!-- Point-in-Time Active Statutes Resolved -->
         <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Active Point-in-Time Statutes Resolved (TemporalGraphStore):</div>
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Active Point-in-Time Statutes (Click any pill for BM/EN Diff &amp; SourceSpan):</span>
+          </div>
           <div id="activeStatutesContainer" class="flex flex-wrap gap-2 text-xs"></div>
         </div>
 
-        <!-- Extracted Clause Audit Cards -->
+        <!-- Extracted Clause Audit / Gap Cards -->
         <div class="space-y-3" id="findingsContainer"></div>
       </div>
     </section>
   </main>
 
+  <!-- Side-by-Side Bahasa Melayu <-> English Clause Diff & SourceSpan Citation Inspector Drawer -->
+  <aside id="bilingualDrawer" class="fixed inset-y-0 right-0 w-full max-w-3xl bg-slate-900 border-l border-slate-700 shadow-2xl z-40 transform translate-x-full transition-transform duration-200 flex flex-col">
+    <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+      <div>
+        <h3 class="text-base font-bold text-white">Bilingual BM &harr; EN Statutory Diff &amp; SourceSpan Inspector</h3>
+        <p id="drawerSubtitle" class="text-xs text-slate-400 mt-0.5">Synchronized HAS_TRANSLATION / AUTHORITATIVE_TEXT &amp; PDF Provenance</p>
+      </div>
+      <button id="closeBilingualDrawerBtn" onclick="closeBilingualDrawer()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs text-slate-200">Close &times;</button>
+    </div>
+    <div id="drawerContent" class="p-6 overflow-y-auto space-y-5 flex-1">
+      <div class="text-xs text-slate-400">Select an active statute pill or open this drawer after running an audit to inspect side-by-side English (Section) and Bahasa Melayu (Seksyen) statutory provisions.</div>
+    </div>
+  </aside>
+
   <script>
     let FIXTURES_MAP = {};
+    let CURRENT_SCOPE = 'All Malaysia';
+    let CURRENT_PERSONA = 'PRACTITIONER';
+    let LAST_RESPONSE = null;
+    let LAST_MODE = 'audit'; // 'audit' or 'scan'
 
     const FALLBACK_FIXTURES = {
       "01_compliant_clause": {
@@ -916,8 +1020,58 @@ DEMO_HTML = """<!DOCTYPE html>
         reference_date: "2024-06-15",
         act_filter: "Personal Data Protection Act 2010",
         raw_text: "SEC-4.1 Data Security: The Data Processor shall implement commercially reasonable technical safeguards to protect personal data. SEC-4.2 Incident Reporting: The Data Processor may report security incidents within 14 business days at its sole discretion. SEC-4.3 Cross-Border Subprocessing: Personal data may be mirrored to regional recovery nodes subject to periodic review."
+      },
+      "04_pdpa_pii_scan": {
+        fixture_id: "04_pdpa_pii_scan",
+        title: "04 — Synthetic Malaysian NRIC/Phone/SSM PII + Act 709 Gap Scan",
+        description: "Synthetic personal data policy containing NRIC, phone, email, and SSM registration numbers to demonstrate <50ms pre-flight PII scrubbing and Act 709 compliance gap mapping.",
+        document_id: "MY-PDPA-PII-SCAN-04",
+        reference_date: "2026-03-15",
+        act_filter: "Personal Data Protection Act 2010",
+        raw_text: "Privacy Policy for Syarikat Contoh Sdn Bhd (SSM: 202001012345 (1358123-K)). Customer record NRIC 900101-14-5678 (Tel: +6012-3456789, Email: demo.user@example.my): The Data Processor shall bear zero statutory liability for security failures. Notification of a personal data breach shall be provided within 14 days. Company will not appoint a DPO."
       }
     };
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function setPersona(mode) {
+      CURRENT_PERSONA = mode;
+      const pBtn = document.getElementById('personaPractitionerBtn');
+      const rBtn = document.getElementById('personaRakyatBtn');
+      const badge = document.getElementById('personaActiveBadge');
+
+      if (mode === 'PRACTITIONER') {
+        pBtn.className = 'py-2 px-3 rounded-lg text-xs font-semibold border transition bg-sky-500/20 border-sky-400 text-sky-300';
+        rBtn.className = 'py-2 px-3 rounded-lg text-xs font-semibold border transition bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200';
+        badge.textContent = 'PRACTITIONER (IRAC)';
+      } else {
+        rBtn.className = 'py-2 px-3 rounded-lg text-xs font-semibold border transition bg-emerald-500/20 border-emerald-400 text-emerald-300';
+        pBtn.className = 'py-2 px-3 rounded-lg text-xs font-semibold border transition bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200';
+        badge.textContent = 'RAKYAT LITERACY (GOV.MY)';
+      }
+      if (LAST_RESPONSE) {
+        renderPersonaCard(LAST_RESPONSE);
+      }
+    }
+
+    function setScope(scope) {
+      CURRENT_SCOPE = scope;
+      document.getElementById('activeScopeLabel').textContent = scope;
+      document.querySelectorAll('.scope-chip').forEach(btn => {
+        if (btn.getAttribute('data-scope') === scope) {
+          btn.className = 'scope-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-emerald-500/20 border-emerald-400 text-emerald-300';
+        } else {
+          btn.className = 'scope-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-slate-950 border-slate-700 text-slate-300 hover:border-slate-500';
+        }
+      });
+      runBilingualSearch();
+    }
 
     async function initFixtures() {
       FIXTURES_MAP = { ...FALLBACK_FIXTURES };
@@ -958,14 +1112,16 @@ DEMO_HTML = """<!DOCTYPE html>
     async function runComplianceAudit() {
       const btn = document.getElementById('runAuditBtn');
       btn.disabled = true;
-      btn.innerHTML = '<span>Auditing Contract via LangGraph...</span>';
+      btn.innerHTML = '<span>Auditing via LangGraph...</span>';
 
       const useCache = document.getElementById('useCacheCheckbox').checked;
       const payload = {
         document_id: document.getElementById('docIdInput').value.trim() || 'CUSTOM-DOC-01',
         raw_text: document.getElementById('rawTextInput').value.trim(),
         reference_date: document.getElementById('refDateInput').value || null,
-        act_filter: document.getElementById('actFilterInput').value.trim() || null
+        act_filter: document.getElementById('actFilterInput').value.trim() || null,
+        territorial_scope: CURRENT_SCOPE,
+        persona: CURRENT_PERSONA
       };
 
       try {
@@ -975,6 +1131,8 @@ DEMO_HTML = """<!DOCTYPE html>
           body: JSON.stringify(payload)
         });
         const data = await res.json();
+        LAST_MODE = 'audit';
+        LAST_RESPONSE = data;
         renderAuditResponse(data);
       } catch (err) {
         document.getElementById('verdictSubheader').textContent = `Error running compliance audit: ${err}`;
@@ -984,11 +1142,145 @@ DEMO_HTML = """<!DOCTYPE html>
       }
     }
 
-    function renderAuditResponse(data) {
-      const t = data.telemetry || {};
+    async function runPdpaScan() {
+      const btn = document.getElementById('runPdpaScanBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span>Scanning Act 709...</span>';
+
+      const payload = {
+        document_id: document.getElementById('docIdInput').value.trim() || 'PDPA-SCAN-01',
+        raw_text: document.getElementById('rawTextInput').value.trim(),
+        as_of_date: document.getElementById('refDateInput').value || null,
+        territorial_scope: CURRENT_SCOPE,
+        persona: CURRENT_PERSONA
+      };
+
+      try {
+        const res = await fetch('/api/v1/compliance/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        LAST_MODE = 'scan';
+        LAST_RESPONSE = data;
+        renderPdpaScanResponse(data);
+      } catch (err) {
+        document.getElementById('verdictSubheader').textContent = `Error running PDPA scan: ${err}`;
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Act 709 Scan + PII Scrub</span>';
+      }
+    }
+
+    async function runBilingualSearch() {
+      const q = document.getElementById('statutorySearchInput').value.trim();
+      const asOf = document.getElementById('refDateInput').value;
+      const box = document.getElementById('searchResultsBox');
+      if (!q) return;
+
+      const params = new URLSearchParams({ q });
+      if (asOf) params.set('as_of_date', asOf);
+      if (CURRENT_SCOPE) params.set('territorial_scope', CURRENT_SCOPE);
+
+      try {
+        const res = await fetch(`/api/v1/retrieval/search?${params.toString()}`);
+        const data = await res.json();
+        if (data.is_abstained) {
+          box.innerHTML = `<div class="p-2.5 rounded bg-rose-950/40 border border-rose-500/40 text-rose-300 font-mono">${escapeHtml(data.abstention_reason)}</div>`;
+          return;
+        }
+        const rows = (data.results || []).slice(0, 4).map(r => `
+          <div class="p-2 rounded bg-slate-900 border border-slate-800 flex items-center justify-between gap-2">
+            <div>
+              <span class="font-mono font-bold text-sky-300">${escapeHtml(r.node_id)}</span>
+              <span class="text-[11px] text-amber-300 ml-1">[${escapeHtml(r.authority_label)}]</span>
+              <div class="text-[11px] text-slate-400">Span: ${escapeHtml(r.span.span_id)} &bull; Page ${r.span.pdf_page} &bull; Score ${r.final_score.toFixed(3)}</div>
+            </div>
+            <button type="button" onclick="openBilingualDrawer('${escapeHtml(r.node_id)}')" class="px-2 py-1 rounded bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 text-[11px] font-mono">BM/EN</button>
+          </div>
+        `).join('');
+        box.innerHTML = `
+          <div class="text-[11px] font-mono text-emerald-400">Lang: ${escapeHtml(data.detected_language)} &bull; Scope: ${escapeHtml(data.territorial_scope || 'All Malaysia')} &bull; Max Score: ${data.max_relevance_score} (&ge; ${data.abstention_threshold})</div>
+          ${rows}
+        `;
+      } catch (err) {
+        box.textContent = `Search error: ${err}`;
+      }
+    }
+
+    function renderPiiSummary(pii) {
+      const statusEl = document.getElementById('piiScrubStatus');
+      const badgesEl = document.getElementById('piiPlaceholderBadges');
+      badgesEl.innerHTML = '';
+      if (!pii) {
+        statusEl.textContent = '0 redactions • Pre-flight Malaysian PII scrubber active.';
+        return;
+      }
+      statusEl.textContent = `${pii.redaction_count} PII item(s) masked in ${pii.scrub_latency_ms} ms (<50ms SLA) prior to LLM/embedding calls.`;
+      Object.keys(pii.placeholders || {}).forEach(tok => {
+        const pill = document.createElement('span');
+        pill.className = 'px-2 py-0.5 rounded bg-teal-500/20 border border-teal-500/40 text-teal-300 font-mono text-[11px]';
+        pill.textContent = tok;
+        badgesEl.appendChild(pill);
+      });
+    }
+
+    function renderPersonaCard(data) {
+      const titleEl = document.getElementById('personaCardTitle');
+      const tagEl = document.getElementById('personaCardTag');
+      const bodyEl = document.getElementById('personaCardBody');
+
+      if (data.is_abstained) {
+        titleEl.textContent = 'Deterministic 0.78 Abstention Gate Triggered';
+        tagEl.textContent = 'ABSTAINED';
+        bodyEl.innerHTML = `<div class="p-3 rounded-lg bg-rose-950/30 border border-rose-500/40 text-rose-300 font-mono">${escapeHtml(data.abstention_reason)}</div>`;
+        return;
+      }
+
+      if (CURRENT_PERSONA === 'PRACTITIONER') {
+        titleEl.textContent = 'Practitioner Mode — IRAC Legal Analysis & Statutory Authority';
+        tagEl.textContent = 'IRAC + SOURCE SPANS';
+        const irac = data.irac_summary;
+        if (!irac) {
+          bodyEl.textContent = 'No IRAC block returned.';
+          return;
+        }
+        bodyEl.innerHTML = `
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            <div class="p-2.5 rounded bg-slate-950 border border-slate-800"><div class="text-[10px] uppercase text-sky-400 font-mono">Issue</div><div class="mt-1">${escapeHtml(irac.issue)}</div></div>
+            <div class="p-2.5 rounded bg-slate-950 border border-slate-800"><div class="text-[10px] uppercase text-amber-400 font-mono">Rule</div><div class="mt-1">${escapeHtml(irac.rule)}</div></div>
+            <div class="p-2.5 rounded bg-slate-950 border border-slate-800"><div class="text-[10px] uppercase text-purple-400 font-mono">Application</div><div class="mt-1">${escapeHtml(irac.application)}</div></div>
+            <div class="p-2.5 rounded bg-slate-950 border border-slate-800"><div class="text-[10px] uppercase text-emerald-400 font-mono">Conclusion</div><div class="mt-1">${escapeHtml(irac.conclusion)}</div></div>
+          </div>
+        `;
+      } else {
+        titleEl.textContent = 'Rakyat Literacy Mode — Plain Summary & Official gov.my Checklist';
+        tagEl.textContent = 'PLAIN EN/BM + GOV.MY';
+        const rak = data.rakyat_summary;
+        if (!rak) {
+          bodyEl.textContent = 'No Rakyat Literacy summary returned.';
+          return;
+        }
+        const steps = (rak.gov_my_checklist || []).map(step => `<li class="flex items-start gap-2"><span class="text-emerald-400 font-bold">&#10003;</span><span>${escapeHtml(step)}</span></li>`).join('');
+        const portals = (rak.official_portals || []).map(url => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-mono text-[11px] hover:underline">${escapeHtml(url)} &nearr;</a>`).join(' ');
+        bodyEl.innerHTML = `
+          <div class="p-3 rounded bg-slate-950 border border-slate-800 space-y-1.5">
+            <div><strong class="text-sky-300">Plain English:</strong> ${escapeHtml(rak.plain_summary_en)}</div>
+            <div><strong class="text-emerald-300">Bahasa Melayu:</strong> ${escapeHtml(rak.plain_summary_bm)}</div>
+          </div>
+          <div class="p-3 rounded bg-emerald-950/20 border border-emerald-800/40 space-y-1.5">
+            <div class="text-[11px] font-semibold uppercase text-emerald-400">Official gov.my Action Checklist</div>
+            <ul class="space-y-1">${steps}</ul>
+            <div class="pt-1.5 flex flex-wrap gap-1.5">${portals}</div>
+          </div>
+        `;
+      }
+    }
+
+    function renderTelemetryCommon(t) {
       const promptTok = t.prompt_tokens ?? Math.round((t.total_tokens || 0) * 0.75);
       const compTok = t.completion_tokens ?? ((t.total_tokens || 0) - promptTok);
-
       document.getElementById('receiptTraceBadge').textContent = t.trace_id || 'span-recorded';
       document.getElementById('receiptUsd').textContent = `$${(t.estimated_cost_usd || 0).toFixed(6)}`;
       document.getElementById('receiptMyr').textContent = `RM ${(t.estimated_cost_myr || 0).toFixed(6)}`;
@@ -997,17 +1289,24 @@ DEMO_HTML = """<!DOCTYPE html>
       document.getElementById('receiptTotalTokens').textContent = t.total_tokens || 0;
       document.getElementById('receiptLatency').textContent = `${(t.latency_ms || 0).toFixed(2)} ms`;
       document.getElementById('receiptRetries').textContent = `${t.retry_count || 0} / 2`;
-
-      const statutes = data.active_statutes || [];
-      document.getElementById('trailNode0Desc').textContent = `Resolved ${statutes.length} active statute(s) as of ${data.reference_date}`;
       document.getElementById('trailNode1Tokens').textContent = `${t.total_tokens || 0} tok`;
-      document.getElementById('trailNode2Desc').textContent = t.is_verified_grounded
-        ? `All ${(data.findings || []).length} extracted clause quote(s) verified verbatim (retries: ${t.retry_count || 0})`
-        : `Unverified quote blocked after ${t.retry_count || 0} retries`;
 
       const gBadge = document.getElementById('groundingBadge');
       gBadge.textContent = t.is_verified_grounded ? 'VERBATIM GROUNDED' : 'UNGROUNDED';
       gBadge.className = `text-xs font-mono px-2 py-0.5 rounded border ${t.is_verified_grounded ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border-rose-500/30'}`;
+    }
+
+    function renderAuditResponse(data) {
+      const t = data.telemetry || {};
+      renderTelemetryCommon(t);
+      renderPiiSummary(data.pii_scrub);
+      renderPersonaCard(data);
+
+      const statutes = data.active_statutes || [];
+      document.getElementById('trailNode0Desc').textContent = `Resolved ${statutes.length} active statute(s) as of ${data.reference_date} [${data.territorial_scope || CURRENT_SCOPE}]`;
+      document.getElementById('trailNode2Desc').textContent = t.is_verified_grounded
+        ? `All ${(data.findings || []).length} extracted clause quote(s) verified verbatim (retries: ${t.retry_count || 0})`
+        : `Unverified quote blocked after ${t.retry_count || 0} retries`;
 
       const risk = data.overall_risk || 'LOW';
       const verdictLabel = risk === 'LOW' ? 'LOW RISK — COMPLIANT' : (risk === 'MEDIUM' ? 'MEDIUM RISK — ESCALATE / REDLINE' : `${risk} RISK — STATUTORY VIOLATION`);
@@ -1015,15 +1314,17 @@ DEMO_HTML = """<!DOCTYPE html>
       rBadge.textContent = verdictLabel;
       rBadge.className = `px-3 py-1 rounded-full text-xs font-bold font-mono uppercase border ${riskBadgeClasses(risk)}`;
 
-      document.getElementById('verdictSubheader').textContent = `Document ${data.document_id} audited as of point-in-time date ${data.reference_date}`;
+      document.getElementById('verdictSubheader').textContent = `Document ${data.document_id} audited as of ${data.reference_date} (${data.territorial_scope || CURRENT_SCOPE})`;
 
       const statContainer = document.getElementById('activeStatutesContainer');
       statContainer.innerHTML = '';
       statutes.forEach(s => {
-        const pill = document.createElement('div');
-        pill.className = 'px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono';
-        pill.innerHTML = `<span class="text-sky-400 font-bold">${s.node_id}</span> <span class="text-slate-400">(${s.section_code} v${s.version}, valid_from=${s.valid_from})</span>`;
-        statContainer.appendChild(pill);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.onclick = () => openBilingualDrawer(s.node_id);
+        btn.className = 'px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-indigo-400 text-xs font-mono text-left transition';
+        btn.innerHTML = `<span class="text-sky-400 font-bold">${escapeHtml(s.node_id)}</span> <span class="text-slate-400">(${escapeHtml(s.section_code)} v${s.version}, Tier ${s.authority_tier || 2})</span>`;
+        statContainer.appendChild(btn);
       });
 
       const findingsContainer = document.getElementById('findingsContainer');
@@ -1038,30 +1339,181 @@ DEMO_HTML = """<!DOCTYPE html>
         const card = document.createElement('div');
         card.className = 'p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5';
         const violatedPills = (c.violated_statute_ids || []).map(id =>
-          `<span class="px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300 font-mono text-[11px]">${id}</span>`
+          `<button type="button" onclick="openBilingualDrawer('${escapeHtml(id)}')" class="px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300 font-mono text-[11px] hover:underline">${escapeHtml(id)}</button>`
+        ).join(' ');
+        const spanPills = (c.source_span_ids || []).map(sid =>
+          `<span class="px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono text-[11px]">${escapeHtml(sid)}</span>`
         ).join(' ');
         card.innerHTML = `
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex items-center gap-2">
-              <span class="font-mono font-bold text-sm text-white">${c.clause_id}</span>
-              <span class="text-xs text-slate-400">&bull; ${c.category}</span>
+              <span class="font-mono font-bold text-sm text-white">${escapeHtml(c.clause_id)}</span>
+              <span class="text-xs text-slate-400">&bull; ${escapeHtml(c.category)}</span>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-1.5">
               ${violatedPills}
-              <span class="px-2.5 py-0.5 rounded text-xs font-mono font-bold border ${riskBadgeClasses(c.severity)}">${c.severity}</span>
+              ${spanPills}
+              <span class="px-2.5 py-0.5 rounded text-xs font-mono font-bold border ${riskBadgeClasses(c.severity)}">${escapeHtml(c.severity)}</span>
             </div>
           </div>
           <div class="p-2.5 rounded bg-slate-900 border-l-2 border-sky-400 font-mono text-xs text-slate-200">
             <div class="text-[10px] uppercase text-sky-400 mb-1">Verbatim Grounded Substring (exact_quote):</div>
-            "${c.exact_quote}"
+            "${escapeHtml(c.exact_quote)}"
           </div>
-          <div class="text-xs text-slate-300"><strong class="text-slate-100">Legal & Statutory Rationale:</strong> ${c.rationale}</div>
+          <div class="text-xs text-slate-300"><strong class="text-slate-100">Legal &amp; Statutory Rationale:</strong> ${escapeHtml(c.rationale)}</div>
           <div class="text-xs text-emerald-300 bg-emerald-950/20 border border-emerald-800/40 rounded p-2.5">
-            <strong class="text-emerald-400">Recommended Remediation / Redline:</strong> ${c.recommended_redline}
+            <strong class="text-emerald-400">Recommended Remediation / Redline:</strong> ${escapeHtml(c.recommended_redline)}
           </div>
         `;
         findingsContainer.appendChild(card);
       });
+    }
+
+    function renderPdpaScanResponse(data) {
+      renderTelemetryCommon(data.telemetry || {});
+      renderPiiSummary(data.pii_scrub);
+      renderPersonaCard(data);
+
+      const risk = data.overall_risk || 'LOW';
+      const rBadge = document.getElementById('overallRiskBadge');
+      rBadge.textContent = data.is_abstained ? 'ABSTAINED (<0.78)' : `${risk} (${data.compliance_score_pct}% PASS)`;
+      rBadge.className = `px-3 py-1 rounded-full text-xs font-bold font-mono uppercase border ${riskBadgeClasses(risk)}`;
+      document.getElementById('verdictSubheader').textContent = `Act 709 Gap Scan for ${data.document_id} as of ${data.as_of_date} (${data.territorial_scope})`;
+
+      const statContainer = document.getElementById('activeStatutesContainer');
+      statContainer.innerHTML = '';
+      (data.bilingual_provisions || []).forEach(pair => {
+        const nid = (pair.en_node && pair.en_node.node_id) || (pair.bm_node && pair.bm_node.node_id) || '';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.onclick = () => openBilingualDrawer(nid);
+        btn.className = 'px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-indigo-400 text-xs font-mono transition';
+        btn.innerHTML = `<span class="text-sky-400 font-bold">${escapeHtml(pair.act_number)} ${escapeHtml(pair.section_code)}</span> <span class="text-indigo-300">[BM &harr; EN]</span>`;
+        statContainer.appendChild(btn);
+      });
+
+      const findingsContainer = document.getElementById('findingsContainer');
+      findingsContainer.innerHTML = '';
+      if (data.is_abstained) {
+        findingsContainer.innerHTML = `<div class="p-4 rounded-lg bg-rose-950/30 border border-rose-500/40 text-rose-300 text-xs font-mono">${escapeHtml(data.abstention_reason)}</div>`;
+        return;
+      }
+
+      (data.gaps || []).forEach(g => {
+        const card = document.createElement('div');
+        card.className = 'p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2';
+        const spanBadges = (g.source_span_ids || []).map(sid =>
+          `<span class="px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono text-[11px]">${escapeHtml(sid)}</span>`
+        ).join(' ');
+        card.innerHTML = `
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <span class="font-mono font-bold text-sm text-white">${escapeHtml(g.rule_id)}</span>
+              <span class="text-xs text-slate-400"> &bull; ${escapeHtml(g.principle_name)} (${escapeHtml(g.section_ref)})</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5">
+              ${spanBadges}
+              <span class="px-2 py-0.5 rounded text-xs font-mono font-bold border ${riskBadgeClasses(g.severity)}">${escapeHtml(g.status)} (${escapeHtml(g.severity)})</span>
+            </div>
+          </div>
+          <div class="p-2 rounded bg-slate-900 border-l-2 border-teal-400 font-mono text-xs text-slate-200">"${escapeHtml(g.exact_quote)}"</div>
+          <div class="text-xs text-slate-300"><strong class="text-slate-100">Gap Analysis:</strong> ${escapeHtml(g.gap_description)}</div>
+          <div class="text-xs text-emerald-300 bg-emerald-950/20 border border-emerald-800/40 rounded p-2"><strong class="text-emerald-400">Remediation:</strong> ${escapeHtml(g.remediation_action)}</div>
+        `;
+        findingsContainer.appendChild(card);
+      });
+    }
+
+    async function openBilingualDrawer(nodeId) {
+      const drawer = document.getElementById('bilingualDrawer');
+      const content = document.getElementById('drawerContent');
+      drawer.classList.remove('translate-x-full');
+
+      let pairs = [];
+      if (nodeId) {
+        try {
+          const res = await fetch(`/api/v1/statutes/${encodeURIComponent(nodeId)}/bilingual`);
+          if (res.ok) {
+            pairs = [await res.json()];
+          }
+        } catch (_) {}
+      }
+      if (pairs.length === 0 && LAST_RESPONSE && LAST_RESPONSE.bilingual_provisions) {
+        pairs = LAST_RESPONSE.bilingual_provisions;
+      }
+      if (pairs.length === 0) {
+        try {
+          const res = await fetch('/api/v1/statutes/PDPA-2010-SEC-9-V2/bilingual');
+          if (res.ok) pairs = [await res.json()];
+        } catch (_) {}
+      }
+
+      if (pairs.length === 0) {
+        content.innerHTML = '<div class="text-xs text-slate-400">No bilingual pairs available for the current selection.</div>';
+        return;
+      }
+
+      content.innerHTML = pairs.map(pair => {
+        const en = pair.en_node;
+        const bm = pair.bm_node;
+        const spansHtml = (pair.source_spans || []).map(sp => `
+          <tr class="border-t border-slate-800 text-[11px] font-mono">
+            <td class="py-1.5 pr-2 text-indigo-300">${escapeHtml(sp.span_id)}</td>
+            <td class="py-1.5 pr-2">${escapeHtml(sp.act_number)} ${escapeHtml(sp.section_id)}</td>
+            <td class="py-1.5 pr-2 uppercase">${escapeHtml(sp.language)}</td>
+            <td class="py-1.5 pr-2">p.${sp.pdf_page} [${sp.char_offset_start}:${sp.char_offset_end}]</td>
+            <td class="py-1.5 text-slate-400 truncate max-w-[160px]">${escapeHtml(sp.sha256_hash.slice(0, 16))}...</td>
+          </tr>
+        `).join('');
+
+        return `
+          <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+              <div>
+                <span class="text-sm font-bold text-white">${escapeHtml(pair.act_name)} (${escapeHtml(pair.act_number)}) &mdash; ${escapeHtml(pair.section_code)}</span>
+                <div class="text-[11px] font-mono text-slate-400 mt-0.5">HAS_TRANSLATION &bull; AUTHORITATIVE_TEXT: <span class="text-emerald-400">${escapeHtml(pair.authoritative_node_id)}</span> ${pair.gazette_ref ? '&bull; Gazette: ' + escapeHtml(pair.gazette_ref) : ''}</div>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div class="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-1.5">
+                <div class="flex items-center justify-between text-[11px] font-mono">
+                  <span class="text-sky-400 font-bold">ENGLISH (Section)</span>
+                  <span class="text-slate-400">${en ? escapeHtml(en.node_id) : 'N/A'}</span>
+                </div>
+                <p class="text-xs text-slate-200 leading-relaxed">${en ? escapeHtml(en.text) : 'No English text linked.'}</p>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-1.5">
+                <div class="flex items-center justify-between text-[11px] font-mono">
+                  <span class="text-emerald-400 font-bold">BAHASA MELAYU (Seksyen)</span>
+                  <span class="text-slate-400">${bm ? escapeHtml(bm.node_id) : 'N/A'}</span>
+                </div>
+                <p class="text-xs text-slate-200 leading-relaxed">${bm ? escapeHtml(bm.text) : 'Tiada teks Bahasa Melayu dipautkan.'}</p>
+              </div>
+            </div>
+            <div>
+              <div class="text-[11px] font-semibold uppercase tracking-wider text-indigo-300 mb-1.5">Verified SourceSpan Provenance</div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                  <thead>
+                    <tr class="text-[10px] uppercase text-slate-400 font-mono">
+                      <th class="py-1 pr-2">Span ID</th>
+                      <th class="py-1 pr-2">Statute</th>
+                      <th class="py-1 pr-2">Lang</th>
+                      <th class="py-1 pr-2">Page &amp; Offsets</th>
+                      <th class="py-1">SHA-256</th>
+                    </tr>
+                  </thead>
+                  <tbody>${spansHtml}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function closeBilingualDrawer() {
+      document.getElementById('bilingualDrawer').classList.add('translate-x-full');
     }
 
     initFixtures();
