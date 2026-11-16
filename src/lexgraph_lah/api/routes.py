@@ -808,7 +808,7 @@ DEMO_HTML = """<!DOCTYPE html>
           </div>
           <div>
             <label for="refDateInput" class="block text-xs text-slate-400 mb-1">Point-in-Time Date (as_of_date)</label>
-            <input id="refDateInput" type="date" value="2026-03-15" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
+            <input id="refDateInput" type="date" value="2026-03-15" onchange="runBilingualSearch()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
           </div>
         </div>
 
