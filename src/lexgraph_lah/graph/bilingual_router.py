@@ -1,0 +1,242 @@
+import re
+
+# Bidirectional Malaysian Legal Bilingual Lexicon (Bahasa Melayu <-> English)
+BM_TO_EN_PHRASES: dict[str, list[str]] = {
+    "akta perlindungan data peribadi": ["personal data protection act", "act 709", "pdpa"],
+    "akta 709": ["act 709", "personal data protection act 2010", "pdpa"],
+    "pecah data": ["data breach", "personal data breach", "breach notification"],
+    "kebocoran data": ["data breach", "personal data breach", "breach notification"],
+    "pelanggaran data peribadi": ["personal data breach", "breach notification", "12b"],
+    "notis pelanggaran": ["breach notification", "notice of breach", "72 hours"],
+    "notifikasi": ["notification", "notify"],
+    "pemproses data": ["data processor", "processor"],
+    "pengguna data": ["data user", "data controller"],
+    "subjek data": ["data subject"],
+    "pegawai perlindungan data": ["data protection officer", "dpo", "12a"],
+    "ppd": ["data protection officer", "dpo", "12a"],
+    "prinsip keselamatan": ["security principle", "section 9", "sec-9"],
+    "prinsip am": ["general principle", "section 6", "consent"],
+    "prinsip notis dan pilihan": ["notice and choice principle", "section 7"],
+    "prinsip penzahiran": ["disclosure principle", "section 8"],
+    "prinsip penyimpanan": ["retention principle", "section 10"],
+    "prinsip integriti data": ["data integrity principle", "section 11"],
+    "prinsip akses": ["access principle", "section 12"],
+    "persetujuan": ["consent", "authorized"],
+    "penzahiran tanpa kebenaran": ["unlawful disclosure", "unauthorized disclosure", "section 130"],
+    "keselamatan": ["security", "safeguards"],
+    "pampasan": ["liability", "indemnity", "compensation"],
+    "liabiliti": ["liability", "statutory liability"],
+    "penalti": ["penalty", "penalties", "fine"],
+    "denda": ["fine", "rm"],
+    "penjara": ["imprisonment"],
+    "seksyen": ["section", "sec"],
+    "perlembagaan persekutuan": ["federal constitution", "article"],
+    "perkara": ["article", "art"],
+    "kesamarataan": ["equality", "equal protection", "article 8"],
+    "kebebasan": ["liberty", "personal liberty", "article 5"],
+    "akta kerja": ["employment act 1955", "act 265"],
+    "akta 265": ["act 265", "employment act 1955"],
+    "ordinan buruh sabah": ["sabah labour ordinance", "cap. 67", "sabah"],
+    "ordinan buruh sarawak": ["sarawak labour ordinance", "cap. 76", "sarawak"],
+    "waktu kerja": ["hours of work", "working hours", "overtime"],
+    "kerja lebih masa": ["overtime", "hours of work"],
+    "pekerja": ["employee", "worker"],
+    "majikan": ["employer"],
+    "warta": ["gazette", "p.u. (a)", "p.u. (b)"],
+    "pekeliling": ["circular", "guideline", "jpdp"],
+    "pesuruhjaya": ["commissioner", "jpdp"],
+    "rentas sempadan": ["cross-border", "transfer outside malaysia"],
+    "jam": ["hours", "hour"],
+    "hari": ["days", "day"],
+}
+
+EN_TO_BM_PHRASES: dict[str, list[str]] = {
+    "personal data protection act": ["akta perlindungan data peribadi", "akta 709"],
+    "pdpa": ["akta perlindungan data peribadi", "akta 709"],
+    "act 709": ["akta 709", "akta perlindungan data peribadi"],
+    "data breach": ["pecah data", "kebocoran data", "pelanggaran data peribadi"],
+    "breach notification": ["notis pelanggaran data", "pemberitahuan pelanggaran data", "72 jam"],
+    "data processor": ["pemproses data"],
+    "data user": ["pengguna data"],
+    "data subject": ["subjek data"],
+    "data protection officer": ["pegawai perlindungan data", "ppd"],
+    "dpo": ["pegawai perlindungan data", "ppd"],
+    "security principle": ["prinsip keselamatan", "seksyen 9"],
+    "general principle": ["prinsip am", "seksyen 6", "persetujuan"],
+    "notice and choice": ["notis dan pilihan", "seksyen 7"],
+    "disclosure principle": ["prinsip penzahiran", "seksyen 8"],
+    "retention principle": ["prinsip penyimpanan", "seksyen 10"],
+    "data integrity": ["integriti data", "seksyen 11"],
+    "access principle": ["prinsip akses", "seksyen 12"],
+    "consent": ["persetujuan", "kebenaran"],
+    "unlawful disclosure": ["penzahiran tanpa kebenaran", "seksyen 130"],
+    "statutory liability": ["liabiliti berkanun", "tanggungan berkanun"],
+    "liability": ["liabiliti", "pampasan"],
+    "section": ["seksyen"],
+    "federal constitution": ["perlembagaan persekutuan"],
+    "equality": ["kesamarataan", "sama rata"],
+    "article": ["perkara"],
+    "employment act": ["akta kerja 1955", "akta 265"],
+    "sabah labour ordinance": ["ordinan buruh sabah", "cap. 67"],
+    "sarawak labour ordinance": ["ordinan buruh sarawak", "cap. 76"],
+    "overtime": ["kerja lebih masa", "waktu kerja"],
+    "working hours": ["waktu kerja", "jam kerja"],
+    "commissioner": ["pesuruhjaya"],
+    "cross-border": ["rentas sempadan", "pemindahan data"],
+    "hours": ["jam"],
+    "days": ["hari"],
+}
+
+_BM_MARKERS = {
+    "akta",
+    "seksyen",
+    "perkara",
+    "perlembagaan",
+    "peribadi",
+    "perlindungan",
+    "pecah",
+    "kebocoran",
+    "pelanggaran",
+    "pemproses",
+    "pengguna",
+    "subjek",
+    "pegawai",
+    "prinsip",
+    "keselamatan",
+    "persetujuan",
+    "penzahiran",
+    "penyimpanan",
+    "pekerja",
+    "majikan",
+    "ordinan",
+    "buruh",
+    "warta",
+    "pekeliling",
+    "pesuruhjaya",
+    "boleh",
+    "ke",
+    "kalau",
+    "kena",
+    "apakah",
+    "bagaimana",
+    "undang-undang",
+    "syarat",
+    "peraturan",
+    "dalam",
+    "untuk",
+    "dengan",
+    "jam",
+    "hari",
+    "denda",
+    "penjara",
+    "hukuman",
+    "tiada",
+    "tidak",
+    "wajib",
+    "rentas",
+    "sempadan",
+}
+
+_EN_MARKERS = {
+    "act",
+    "section",
+    "article",
+    "constitution",
+    "personal",
+    "protection",
+    "breach",
+    "notification",
+    "processor",
+    "user",
+    "subject",
+    "officer",
+    "principle",
+    "security",
+    "consent",
+    "disclosure",
+    "retention",
+    "integrity",
+    "access",
+    "employee",
+    "employer",
+    "ordinance",
+    "labour",
+    "gazette",
+    "circular",
+    "commissioner",
+    "liability",
+    "penalty",
+    "fine",
+    "imprisonment",
+    "what",
+    "how",
+    "under",
+    "with",
+    "hours",
+    "days",
+    "cross-border",
+    "equality",
+    "overtime",
+    "waive",
+}
+
+
+def detect_query_language(query: str) -> str:
+    """Detects whether a Malaysian legal query is 'bm', 'en', or 'code_switched'."""
+    tokens = set(re.findall(r"[a-z0-9-]+", query.lower()))
+    bm_hits = len(tokens & _BM_MARKERS)
+    en_hits = len(tokens & _EN_MARKERS)
+    if bm_hits > 0 and en_hits > 0:
+        return "code_switched"
+    if bm_hits > en_hits:
+        return "bm"
+    return "en"
+
+
+def normalize_and_expand_query(query: str) -> tuple[str, str, list[str]]:
+    """
+    Normalizes Malaysian BM, English, or code-switched queries and produces
+    cross-lingual expansion terms so both Bahasa Melayu (Seksyen) and English (Section)
+    provisions are retrieved synchronously.
+    """
+    clean = re.sub(r"\s+", " ", query.strip())
+    lowered = clean.lower()
+    detected_lang = detect_query_language(lowered)
+
+    expanded_terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add_term(term: str) -> None:
+        norm = term.strip().lower()
+        if norm and norm not in seen:
+            seen.add(norm)
+            expanded_terms.append(norm)
+
+    # Normalize Malaysian code-switched shorthand (e.g., "Sek. 9", "Sec 12B", "s.9")
+    normalized = lowered
+    normalized = re.sub(r"\b(?:sek\.?|seksyen)\s*(\d+[a-z]?)\b", r"seksyen \1 section \1 sec-\1", normalized)
+    normalized = re.sub(r"\b(?:sec\.?|section|s\.)\s*(\d+[a-z]?)\b", r"section \1 seksyen \1 sec-\1", normalized)
+    normalized = re.sub(r"\b(?:art\.?|perkara)\s*(\d+[a-z]?)\b", r"article \1 perkara \1 art-\1", normalized)
+
+    for phrase, translations in BM_TO_EN_PHRASES.items():
+        if phrase in lowered:
+            for t in translations:
+                _add_term(t)
+
+    for phrase, translations in EN_TO_BM_PHRASES.items():
+        if phrase in lowered:
+            for t in translations:
+                _add_term(t)
+
+    # Add sub-tokens from expanded phrases
+    for phrase in expanded_terms:
+        for tok in re.findall(r"[a-z0-9.-]+", phrase):
+            if len(tok) >= 2:
+                _add_term(tok)
+
+    if expanded_terms:
+        full_normalized = f"{normalized} {' '.join(expanded_terms)}".strip()
+    else:
+        full_normalized = normalized
+
+    return full_normalized, detected_lang, expanded_terms

@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     input_cost_per_1m_usd: float = 0.15
     output_cost_per_1m_usd: float = 0.60
 
+    abstention_threshold: float = 0.78
+    pii_scrub_enabled: bool = True
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
