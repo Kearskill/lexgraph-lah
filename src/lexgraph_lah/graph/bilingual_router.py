@@ -4,6 +4,20 @@ import re
 BM_TO_EN_PHRASES: dict[str, list[str]] = {
     "akta perlindungan data peribadi": ["personal data protection act", "act 709", "pdpa"],
     "akta 709": ["act 709", "personal data protection act 2010", "pdpa"],
+    "kanun keseksaan": ["penal code", "act 574"],
+    "akta 574": ["act 574", "penal code", "kanun keseksaan"],
+    "akta kontrak 1950": ["contracts act 1950", "act 136"],
+    "akta kontrak": ["contracts act 1950", "act 136"],
+    "akta 136": ["act 136", "contracts act 1950", "akta kontrak 1950"],
+    "mahkamah persekutuan": ["federal court"],
+    "mahkamah rayuan": ["court of appeal"],
+    "mahkamah tinggi": ["high court"],
+    "tanggungan berkanun": ["statutory liability", "liability"],
+    "pecah kontrak": ["breach of contract", "section 75", "liquidated damages"],
+    "ganti rugi": ["compensation", "damages", "reasonable compensation"],
+    "penipuan": ["cheating", "fraud", "section 420"],
+    "pindaan": ["amendment", "amended"],
+    "akta pindaan": ["amendment act", "act a1727"],
     "pecah data": ["data breach", "personal data breach", "breach notification"],
     "kebocoran data": ["data breach", "personal data breach", "breach notification"],
     "pelanggaran data peribadi": ["personal data breach", "breach notification", "12b"],
@@ -24,7 +38,7 @@ BM_TO_EN_PHRASES: dict[str, list[str]] = {
     "persetujuan": ["consent", "authorized"],
     "penzahiran tanpa kebenaran": ["unlawful disclosure", "unauthorized disclosure", "section 130"],
     "keselamatan": ["security", "safeguards"],
-    "pampasan": ["liability", "indemnity", "compensation"],
+    "pampasan": ["liability", "indemnity", "compensation", "damages"],
     "liabiliti": ["liability", "statutory liability"],
     "penalti": ["penalty", "penalties", "fine"],
     "denda": ["fine", "rm"],
@@ -54,6 +68,19 @@ EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "personal data protection act": ["akta perlindungan data peribadi", "akta 709"],
     "pdpa": ["akta perlindungan data peribadi", "akta 709"],
     "act 709": ["akta 709", "akta perlindungan data peribadi"],
+    "penal code": ["kanun keseksaan", "akta 574"],
+    "act 574": ["akta 574", "kanun keseksaan"],
+    "contracts act 1950": ["akta kontrak 1950", "akta 136"],
+    "contracts act": ["akta kontrak 1950", "akta 136"],
+    "act 136": ["akta 136", "akta kontrak 1950"],
+    "federal court": ["mahkamah persekutuan"],
+    "court of appeal": ["mahkamah rayuan"],
+    "high court": ["mahkamah tinggi"],
+    "breach of contract": ["pecah kontrak", "seksyen 75"],
+    "reasonable compensation": ["pampasan munasabah", "ganti rugi", "seksyen 75"],
+    "liquidated damages": ["ganti rugi jumlah tertentu", "ganti rugi", "seksyen 75"],
+    "cheating": ["penipuan", "seksyen 420", "kanun keseksaan"],
+    "amendment": ["pindaan"],
     "data breach": ["pecah data", "kebocoran data", "pelanggaran data peribadi"],
     "breach notification": ["notis pelanggaran data", "pemberitahuan pelanggaran data", "72 jam"],
     "data processor": ["pemproses data"],
@@ -71,7 +98,7 @@ EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "consent": ["persetujuan", "kebenaran"],
     "unlawful disclosure": ["penzahiran tanpa kebenaran", "seksyen 130"],
     "statutory liability": ["liabiliti berkanun", "tanggungan berkanun"],
-    "liability": ["liabiliti", "pampasan"],
+    "liability": ["liabiliti", "pampasan", "tanggungan"],
     "section": ["seksyen"],
     "federal constitution": ["perlembagaan persekutuan"],
     "equality": ["kesamarataan", "sama rata"],
@@ -85,6 +112,38 @@ EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "cross-border": ["rentas sempadan", "pemindahan data"],
     "hours": ["jam"],
     "days": ["hari"],
+}
+
+STATUTE_CROSSWALK_ALIASES: dict[str, tuple[str, ...]] = {
+    "act 709": (
+        "act 709",
+        "akta 709",
+        "personal data protection act 2010",
+        "akta perlindungan data peribadi 2010",
+        "pdpa",
+    ),
+    "act 574": (
+        "act 574",
+        "akta 574",
+        "penal code",
+        "kanun keseksaan",
+    ),
+    "act 136": (
+        "act 136",
+        "akta 136",
+        "contracts act 1950",
+        "akta kontrak 1950",
+    ),
+    "act 265": (
+        "act 265",
+        "akta 265",
+        "employment act 1955",
+        "akta kerja 1955",
+    ),
+    "federal constitution": (
+        "federal constitution",
+        "perlembagaan persekutuan",
+    ),
 }
 
 _BM_MARKERS = {
@@ -135,6 +194,22 @@ _BM_MARKERS = {
     "wajib",
     "rentas",
     "sempadan",
+    "kanun",
+    "keseksaan",
+    "kontrak",
+    "tanggungan",
+    "berkanun",
+    "ganti",
+    "rugi",
+    "penipuan",
+    "pindaan",
+    "mahkamah",
+    "rayuan",
+    "tinggi",
+    "pampasan",
+    "liabiliti",
+    "di",
+    "bawah",
 }
 
 _EN_MARKERS = {
@@ -178,7 +253,28 @@ _EN_MARKERS = {
     "equality",
     "overtime",
     "waive",
+    "penal",
+    "code",
+    "contracts",
+    "damages",
+    "compensation",
+    "cheating",
+    "court",
 }
+
+
+def resolve_cross_lingual_statute_aliases(query: str) -> list[str]:
+    """Resolves Malaysian statute titles across Bahasa Melayu and English aliases."""
+    lowered = query.lower()
+    matched: list[str] = []
+    seen: set[str] = set()
+    for aliases in STATUTE_CROSSWALK_ALIASES.values():
+        if any(alias in lowered for alias in aliases):
+            for alias in aliases:
+                if alias not in seen:
+                    seen.add(alias)
+                    matched.append(alias)
+    return matched
 
 
 def detect_query_language(query: str) -> str:
@@ -217,6 +313,9 @@ def normalize_and_expand_query(query: str) -> tuple[str, str, list[str]]:
     normalized = re.sub(r"\b(?:sek\.?|seksyen)\s*(\d+[a-z]?)\b", r"seksyen \1 section \1 sec-\1", normalized)
     normalized = re.sub(r"\b(?:sec\.?|section|s\.)\s*(\d+[a-z]?)\b", r"section \1 seksyen \1 sec-\1", normalized)
     normalized = re.sub(r"\b(?:art\.?|perkara)\s*(\d+[a-z]?)\b", r"article \1 perkara \1 art-\1", normalized)
+
+    for alias in resolve_cross_lingual_statute_aliases(lowered):
+        _add_term(alias)
 
     for phrase, translations in BM_TO_EN_PHRASES.items():
         if phrase in lowered:

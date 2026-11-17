@@ -12,18 +12,22 @@ from lexgraph_lah.schemas.domain import (
 
 AUTHORITY_WEIGHTS: dict[AuthorityTier, float] = {
     AuthorityTier.TIER_1_FEDERAL_CONSTITUTION: 1.00,
-    AuthorityTier.TIER_2_PRINCIPAL_ACT: 0.90,
-    AuthorityTier.TIER_3_ORDINANCE: 0.80,
-    AuthorityTier.TIER_4_SUBSIDIARY_LEGISLATION: 0.70,
-    AuthorityTier.TIER_5_AGENCY_CIRCULAR: 0.60,
+    AuthorityTier.TIER_2_ACT_OF_PARLIAMENT: 0.90,
+    AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION: 0.80,
+    AuthorityTier.TIER_4_FEDERAL_COURT: 0.70,
+    AuthorityTier.TIER_5_COURT_OF_APPEAL: 0.60,
+    AuthorityTier.TIER_6_HIGH_COURT: 0.50,
+    AuthorityTier.TIER_7_SUBORDINATE_COURT: 0.40,
 }
 
 AUTHORITY_LABELS: dict[AuthorityTier, str] = {
-    AuthorityTier.TIER_1_FEDERAL_CONSTITUTION: "Tier 1: Federal Constitution",
-    AuthorityTier.TIER_2_PRINCIPAL_ACT: "Tier 2: Principal / Revised Act",
-    AuthorityTier.TIER_3_ORDINANCE: "Tier 3: Ordinance",
-    AuthorityTier.TIER_4_SUBSIDIARY_LEGISLATION: "Tier 4: Subsidiary Legislation (P.U. (A)/(B))",
-    AuthorityTier.TIER_5_AGENCY_CIRCULAR: "Tier 5: Agency Circular / Guideline",
+    AuthorityTier.TIER_1_FEDERAL_CONSTITUTION: "Tier 1: Federal Constitution (Perlembagaan Persekutuan)",
+    AuthorityTier.TIER_2_ACT_OF_PARLIAMENT: "Tier 2: Acts of Parliament (Akta) & State Enactments",
+    AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION: "Tier 3: Subsidiary Legislation (P.U. (A), P.U. (B))",
+    AuthorityTier.TIER_4_FEDERAL_COURT: "Tier 4: Federal Court (Mahkamah Persekutuan)",
+    AuthorityTier.TIER_5_COURT_OF_APPEAL: "Tier 5: Court of Appeal (Mahkamah Rayuan)",
+    AuthorityTier.TIER_6_HIGH_COURT: "Tier 6: High Court (Mahkamah Tinggi Malaya & Sabah/Sarawak)",
+    AuthorityTier.TIER_7_SUBORDINATE_COURT: "Tier 7: Subordinate Courts & Statutory Tribunals",
 }
 
 _QUERY_STOPWORDS = {
@@ -175,6 +179,9 @@ def compute_hybrid_relevance_score(
             node.act_number,
             node.section_code,
             node.gazette_ref or "",
+            node.amendment_act_ref or "",
+            node.court_name or "",
+            node.case_citation or "",
             node.text,
         ]
     ).lower()
@@ -235,7 +242,7 @@ def rerank_statutes_and_spans(
 ) -> tuple[bool, float, str, str, list[ScoredSourceSpan]]:
     """
     Executes bilingual query normalization, territorial scope isolation,
-    5-tier Malaysian legal authority reranking, and deterministic Abstention Gate check.
+    7-tier Malaysian legal authority reranking, and deterministic Abstention Gate check.
 
     Returns:
         (is_abstained, max_relevance_score, normalized_query, detected_language, ranked_spans)
@@ -259,7 +266,8 @@ def rerank_statutes_and_spans(
             continue
 
         auth_weight = AUTHORITY_WEIGHTS.get(node.authority_tier, 0.70)
-        composite = round(0.75 * vec_score + 0.25 * auth_weight, 4)
+        penalty = 0.25 if node.is_overruled else 0.0
+        composite = round(max(0.0, min(1.0, 0.75 * vec_score + 0.25 * auth_weight - penalty)), 4)
 
         for span in node.source_spans:
             scored_spans.append(
@@ -269,7 +277,8 @@ def rerank_statutes_and_spans(
                     act_name=node.act_name,
                     authority_tier=node.authority_tier,
                     authority_label=AUTHORITY_LABELS.get(
-                        node.authority_tier, "Tier 2: Principal / Revised Act"
+                        node.authority_tier,
+                        "Tier 2: Acts of Parliament (Akta) & State Enactments",
                     ),
                     territorial_scope=node.territorial_scope,
                     gazette_ref=node.gazette_ref,

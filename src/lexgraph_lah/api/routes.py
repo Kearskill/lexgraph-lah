@@ -28,6 +28,9 @@ from lexgraph_lah.schemas.domain import (
     PDPAComplianceScanRequest,
     PDPAComplianceScanResponse,
     PIIScrubSummary,
+    PointInTimeResearchRequest,
+    PointInTimeResearchResponse,
+    ProvisionLineageResponse,
     RakyatGuidance,
     RetrievalSearchResponse,
     RiskSeverity,
@@ -318,6 +321,38 @@ async def api_v1_bilingual_statute(node_id: str) -> BilingualClausePair:
     if not pair:
         raise HTTPException(status_code=404, detail=f"Statutory node '{node_id}' not found.")
     return pair
+
+
+@router.post("/api/v1/research/point-in-time", response_model=PointInTimeResearchResponse)
+async def api_v1_research_point_in_time(
+    payload: PointInTimeResearchRequest,
+) -> PointInTimeResearchResponse:
+    """
+    Executes Point-in-Time Statutory Lineage & Bilingual (BM <-> EN) Crosswalk research,
+    returning grounded claims with verbatim SourceSpans, 7-tier Malaysian authority breakdown,
+    chronological amendment_timeline, bilingual crosswalk, and subgraph data.
+    """
+    return _DEFAULT_TEMPORAL_STORE.execute_point_in_time_research(payload)
+
+
+@router.get("/api/v1/provisions/{provision_id}/lineage", response_model=ProvisionLineageResponse)
+async def api_v1_provision_lineage(
+    provision_id: str,
+    as_of_date: Annotated[date | None, Query(description="Point-in-time evaluation date (YYYY-MM-DD)")] = None,
+    include_repealed_lineage: Annotated[bool, Query(description="Include superseded/repealed versions")] = True,
+) -> ProvisionLineageResponse:
+    """
+    Returns full chronological amendment history, linked BM/EN counterpart text,
+    and judicial treatments for a Malaysian statutory provision.
+    """
+    try:
+        return _DEFAULT_TEMPORAL_STORE.get_provision_lineage(
+            provision_id=provision_id,
+            as_of_date=as_of_date,
+            include_repealed_lineage=include_repealed_lineage,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/api/v1/mcp/tools")
@@ -808,7 +843,7 @@ DEMO_HTML = """<!DOCTYPE html>
           </div>
           <div>
             <label for="refDateInput" class="block text-xs text-slate-400 mb-1">Point-in-Time Date (as_of_date)</label>
-            <input id="refDateInput" type="date" value="2026-03-15" onchange="runBilingualSearch()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
+            <input id="refDateInput" type="date" value="2026-03-15" onchange="document.getElementById('pitAsOfDateInput').value = this.value; runBilingualSearch(); runPointInTimeResearch();" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
           </div>
         </div>
 
@@ -839,18 +874,55 @@ DEMO_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- Bilingual Statutory Search & 0.78 Abstention Gate Tester -->
+      <!-- Point-in-Time Statutory Lineage, Bilingual Crosswalk & 0.78 Abstention Gate -->
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-3">
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-semibold uppercase tracking-wider text-indigo-400">2. Bilingual Search &amp; 0.78 Abstention Gate</h2>
-          <span class="text-[11px] font-mono text-slate-400">BM / EN / Code-Switched</span>
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-indigo-400">2. Point-in-Time Research &amp; Bilingual Crosswalk</h2>
+          <span class="text-[11px] font-mono text-slate-400">BM &harr; EN &bull; 7-Tier Rank</span>
         </div>
+
+        <!-- As-Of Date Selector & Language Toggle -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 bg-slate-950 border border-slate-800 rounded-lg p-3">
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between">
+              <label for="pitAsOfDateInput" class="text-[11px] font-semibold uppercase tracking-wider text-slate-300">As-Of Date</label>
+              <div class="flex gap-1">
+                <button type="button" id="presetPre2025Btn" onclick="setPitDatePreset('2024-06-15')" class="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-mono hover:bg-amber-500/25">2024-06-15</button>
+                <button type="button" id="presetPost2025Btn" onclick="setPitDatePreset('2026-03-15')" class="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-mono hover:bg-emerald-500/25">2026-03-15</button>
+              </div>
+            </div>
+            <input id="pitAsOfDateInput" type="date" value="2026-03-15" onchange="syncPitDateFromPanel()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono text-slate-100" />
+          </div>
+
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Language View</span>
+              <span id="activeLangModeBadge" class="text-[10px] font-mono text-indigo-300">SIDE-BY-SIDE</span>
+            </div>
+            <div class="grid grid-cols-3 gap-1" id="langModeToggleGroup">
+              <button id="langToggleMsBtn" type="button" onclick="setLanguageMode('ms')" class="py-1 px-2 rounded text-[11px] font-semibold border transition bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200">BM</button>
+              <button id="langToggleEnBtn" type="button" onclick="setLanguageMode('en')" class="py-1 px-2 rounded text-[11px] font-semibold border transition bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200">EN</button>
+              <button id="langToggleBilingualBtn" type="button" onclick="setLanguageMode('bilingual')" class="py-1 px-2 rounded text-[11px] font-semibold border transition bg-indigo-500/20 border-indigo-400 text-indigo-300">Side-by-Side</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between text-[11px] text-slate-400">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input id="includeRepealedLineageCheckbox" type="checkbox" checked class="rounded bg-slate-950 border-slate-700 text-indigo-500" />
+            <span>Include repealed / superseded lineage in timeline</span>
+          </label>
+        </div>
+
         <div class="flex gap-2">
-          <input id="statutorySearchInput" type="text" value="notis kebocoran data 72 jam pemproses data" placeholder="Query in BM, English, or Manglish..." class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100" />
-          <button id="runSearchBtn" onclick="runBilingualSearch()" class="px-3 py-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-semibold text-xs transition">Search</button>
+          <input id="statutorySearchInput" type="text" value="Apakah liabiliti berkanun pemproses data di bawah Seksyen 9 Akta Perlindungan Data Peribadi 2010?" placeholder="Query in BM, English, or Manglish..." class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100" />
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="runPitResearchBtn" onclick="runPointInTimeResearch()" class="px-3 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-semibold text-xs transition">Run Point-in-Time Research</button>
+          <button id="runSearchBtn" onclick="runBilingualSearch()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-semibold text-xs transition">Quick Span Search</button>
         </div>
         <div id="searchResultsBox" class="text-xs text-slate-300 bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
-          Run a bilingual search or click a scope chip to test 5-tier authority reranking and the 0.78 Abstention Gate.
+          Run a point-in-time bilingual query or toggle As-Of Date to traverse Malaysian statutory lineage and 7-tier judicial precedent.
         </div>
       </div>
     </section>
@@ -935,6 +1007,54 @@ DEMO_HTML = """<!DOCTYPE html>
         <div id="piiPlaceholderBadges" class="flex flex-wrap gap-1.5"></div>
       </div>
 
+      <!-- Interactive Citation & Lineage Inspector Panel -->
+      <div id="citationLineageInspector" class="bg-slate-900 border border-indigo-500/30 rounded-xl p-5 shadow-lg space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+          <div>
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-indigo-400">Interactive Citation &amp; Lineage Inspector</h2>
+            <p id="pitInspectorSubtitle" class="text-xs text-slate-400 mt-0.5">Verbatim SourceSpan provenance, Malaysian 7-tier court/statute hierarchy &amp; amendment timeline</p>
+          </div>
+          <span id="pitStatusBadge" class="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">READY</span>
+        </div>
+
+        <!-- Grounded Claims + Verbatim SourceSpan Highlighter -->
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <div class="space-y-2">
+            <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Grounded Claims (Click Span to Highlight)</div>
+            <div id="pitClaimsContainer" class="space-y-2 text-xs text-slate-300">
+              Run Point-in-Time Research to inspect grounded statutory &amp; judicial claims.
+            </div>
+          </div>
+          <div class="space-y-2">
+            <div class="text-[11px] font-semibold uppercase tracking-wider text-sky-400">Verbatim SourceSpan Provenance Highlighter</div>
+            <div id="sourceSpanHighlightBox" class="p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-300 space-y-2">
+              Select any SourceSpan badge to highlight exact character offsets and SHA-256 digest.
+            </div>
+          </div>
+        </div>
+
+        <!-- Malaysian 7-Tier Authority Breakdown -->
+        <div class="space-y-2">
+          <div class="text-[11px] font-semibold uppercase tracking-wider text-amber-400">Malaysian 7-Tier Authority Breakdown</div>
+          <div id="authorityBreakdownList" class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs"></div>
+        </div>
+
+        <!-- Bilingual BM <-> EN Crosswalk View -->
+        <div class="space-y-2">
+          <div class="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">Bilingual Crosswalk (BM &harr; EN)</div>
+          <div id="pitBilingualCrosswalkBox" class="space-y-2 text-xs"></div>
+        </div>
+
+        <!-- Visual Timeline of Statutory Amendments -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-purple-400">Statutory Amendment Lineage Timeline</span>
+            <span id="lineageInspectHint" class="text-[11px] font-mono text-slate-500">SUPERSEDED_BY &harr; AMENDS</span>
+          </div>
+          <div id="amendmentTimelineView" class="space-y-2 text-xs"></div>
+        </div>
+      </div>
+
       <!-- Persona-Aware Synthesis Card (Practitioner IRAC vs Rakyat Literacy Mode) -->
       <div id="personaOutputCard" class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-3">
         <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
@@ -990,7 +1110,10 @@ DEMO_HTML = """<!DOCTYPE html>
     let FIXTURES_MAP = {};
     let CURRENT_SCOPE = 'All Malaysia';
     let CURRENT_PERSONA = 'PRACTITIONER';
+    let CURRENT_LANG_MODE = 'bilingual';
     let LAST_RESPONSE = null;
+    let LAST_PIT_RESPONSE = null;
+    let PIT_SPANS_BY_ID = {};
     let LAST_MODE = 'audit'; // 'audit' or 'scan'
 
     const FALLBACK_FIXTURES = {
@@ -1086,6 +1209,7 @@ DEMO_HTML = """<!DOCTYPE html>
       } catch (_) {}
       onFixtureSelect();
       await runComplianceAudit();
+      await runPointInTimeResearch();
     }
 
     function onFixtureSelect() {
@@ -1099,8 +1223,249 @@ DEMO_HTML = """<!DOCTYPE html>
       document.getElementById('fixtureDesc').textContent = f.description || '';
       document.getElementById('docIdInput').value = f.document_id;
       document.getElementById('refDateInput').value = f.reference_date;
+      const pitInput = document.getElementById('pitAsOfDateInput');
+      if (pitInput) pitInput.value = f.reference_date;
       document.getElementById('actFilterInput').value = f.act_filter || '';
       document.getElementById('rawTextInput').value = f.raw_text;
+    }
+
+    function setPitDatePreset(dateStr) {
+      document.getElementById('pitAsOfDateInput').value = dateStr;
+      document.getElementById('refDateInput').value = dateStr;
+      runPointInTimeResearch();
+    }
+
+    function syncPitDateFromPanel() {
+      const val = document.getElementById('pitAsOfDateInput').value;
+      if (val) {
+        document.getElementById('refDateInput').value = val;
+      }
+      runPointInTimeResearch();
+    }
+
+    function setLanguageMode(mode) {
+      CURRENT_LANG_MODE = mode;
+      const msBtn = document.getElementById('langToggleMsBtn');
+      const enBtn = document.getElementById('langToggleEnBtn');
+      const biBtn = document.getElementById('langToggleBilingualBtn');
+      const badge = document.getElementById('activeLangModeBadge');
+      const inactive = 'py-1 px-2 rounded text-[11px] font-semibold border transition bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200';
+      const active = 'py-1 px-2 rounded text-[11px] font-semibold border transition bg-indigo-500/20 border-indigo-400 text-indigo-300';
+      msBtn.className = mode === 'ms' ? active : inactive;
+      enBtn.className = mode === 'en' ? active : inactive;
+      biBtn.className = mode === 'bilingual' ? active : inactive;
+      badge.textContent = mode === 'ms' ? 'BM ONLY' : (mode === 'en' ? 'EN ONLY' : 'SIDE-BY-SIDE');
+      runPointInTimeResearch();
+    }
+
+    function tierBadgeClasses(tier) {
+      if (tier === 1) return 'bg-purple-500/20 text-purple-300 border-purple-500/40';
+      if (tier === 2) return 'bg-sky-500/20 text-sky-300 border-sky-500/40';
+      if (tier === 3) return 'bg-teal-500/20 text-teal-300 border-teal-500/40';
+      if (tier === 4) return 'bg-amber-500/20 text-amber-300 border-amber-500/40';
+      if (tier === 5) return 'bg-orange-500/20 text-orange-300 border-orange-500/40';
+      return 'bg-slate-800 text-slate-300 border-slate-600';
+    }
+
+    function highlightSourceSpan(spanId) {
+      const box = document.getElementById('sourceSpanHighlightBox');
+      const sp = PIT_SPANS_BY_ID[spanId];
+      if (!sp) {
+        box.innerHTML = `<div class="text-slate-400">SourceSpan <span class="font-mono">${escapeHtml(spanId)}</span> not found in current evidence pack.</div>`;
+        return;
+      }
+      box.innerHTML = `
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+          <span class="font-mono font-bold text-indigo-300">${escapeHtml(sp.span_id)}</span>
+          <span class="px-2 py-0.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300 font-mono text-[10px]">${escapeHtml(sp.canonical_citation)}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-[11px] font-mono text-slate-400">
+          <div>Doc ID: <span class="text-slate-200">${escapeHtml(sp.doc_id || sp.act_number)}</span></div>
+          <div>Offsets: <span class="text-emerald-300">[${sp.start_char ?? sp.char_offset_start}:${sp.end_char ?? sp.char_offset_end}]</span> (p.${sp.pdf_page})</div>
+          <div class="col-span-2 truncate">URI: <span class="text-sky-400">${escapeHtml(sp.source_uri || '')}</span></div>
+          <div class="col-span-2 truncate">SHA-256: <span class="text-slate-300">${escapeHtml((sp.content_sha256 || sp.sha256_hash || '').slice(0, 32))}...</span></div>
+        </div>
+        <div class="p-2.5 rounded bg-amber-950/30 border-l-2 border-amber-400 text-slate-100 leading-relaxed font-mono text-[11px]">
+          <mark class="bg-amber-400/25 text-amber-100 px-1 rounded">${escapeHtml(sp.text)}</mark>
+        </div>
+      `;
+    }
+
+    async function inspectProvisionLineage(provisionId) {
+      const asOf = document.getElementById('pitAsOfDateInput').value;
+      const params = new URLSearchParams({ include_repealed_lineage: 'true' });
+      if (asOf) params.set('as_of_date', asOf);
+      try {
+        const res = await fetch(`/api/v1/provisions/${encodeURIComponent(provisionId)}/lineage?${params.toString()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        renderAmendmentTimeline(data.amendment_timeline || [], data.as_of_date, data.provision_id);
+      } catch (_) {}
+    }
+
+    function renderAmendmentTimeline(entries, asOfDate, focusId) {
+      const el = document.getElementById('amendmentTimelineView');
+      if (!entries || entries.length === 0) {
+        el.innerHTML = '<div class="p-2.5 rounded bg-slate-950 border border-slate-800 text-slate-400">No historical or future amendment lineage nodes for this selection.</div>';
+        return;
+      }
+      el.innerHTML = entries.map((entry, idx) => {
+        const activeCls = entry.is_active_at_query_date
+          ? 'border-emerald-500/50 bg-emerald-950/20'
+          : 'border-slate-800 bg-slate-950 opacity-85';
+        const isFuture = asOfDate && entry.effective_from > asOfDate;
+        const statusBadge = entry.is_active_at_query_date
+          ? '<span class="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-mono text-[10px]">ACTIVE ON DATE</span>'
+          : (isFuture
+            ? `<span class="px-2 py-0.5 rounded bg-slate-800 border border-slate-600 text-slate-300 font-mono text-[10px]">NOT YET IN FORCE (EFFECTIVE ${escapeHtml(entry.effective_from)})</span>`
+            : `<span class="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono text-[10px]">${escapeHtml(entry.status)} (SUPERSEDED)</span>`);
+        const arrow = idx < entries.length - 1
+          ? '<div class="text-center text-[10px] font-mono text-purple-300 py-0.5">&darr; SUPERSEDED_BY / AMENDS &darr;</div>'
+          : '';
+        return `
+          <div class="p-2.5 rounded-lg border ${activeCls} space-y-1">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="font-mono font-bold text-slate-100">
+                ${escapeHtml(entry.node_id)} <span class="text-slate-400">(v${entry.version}, ${escapeHtml(entry.language.toUpperCase())})</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                ${statusBadge}
+                <button type="button" onclick="inspectProvisionLineage('${escapeHtml(entry.node_id)}')" class="px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/40 text-purple-300 font-mono text-[10px]">Lineage</button>
+              </div>
+            </div>
+            <div class="text-[11px] font-mono text-slate-400">
+              Effective: <span class="text-slate-200">${escapeHtml(entry.effective_from)}</span> &rarr; <span class="text-slate-200">${escapeHtml(entry.effective_to || 'PRESENT')}</span>
+              ${entry.amendment_act_ref ? ` &bull; Ref: <span class="text-sky-300">${escapeHtml(entry.amendment_act_ref)}</span>` : ''}
+            </div>
+            <div class="text-[11px] text-slate-300">${escapeHtml(entry.text)}</div>
+          </div>
+          ${arrow}
+        `;
+      }).join('');
+    }
+
+    async function runPointInTimeResearch() {
+      const q = document.getElementById('statutorySearchInput').value.trim();
+      const asOf = document.getElementById('pitAsOfDateInput').value || document.getElementById('refDateInput').value;
+      const includeRepealed = document.getElementById('includeRepealedLineageCheckbox').checked;
+      if (!q) return;
+
+      const btn = document.getElementById('runPitResearchBtn');
+      btn.disabled = true;
+      btn.textContent = 'Traversing Graph...';
+
+      try {
+        const res = await fetch('/api/v1/research/point-in-time', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: q,
+            as_of_date: asOf || null,
+            language_mode: CURRENT_LANG_MODE,
+            include_repealed_lineage: includeRepealed,
+            territorial_scope: CURRENT_SCOPE
+          })
+        });
+        const data = await res.json();
+        LAST_PIT_RESPONSE = data;
+        renderPointInTimeResearch(data);
+      } catch (err) {
+        document.getElementById('pitInspectorSubtitle').textContent = `Research error: ${err}`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Run Point-in-Time Research';
+      }
+    }
+
+    function renderPointInTimeResearch(data) {
+      const badge = document.getElementById('pitStatusBadge');
+      const sub = document.getElementById('pitInspectorSubtitle');
+      const claimsEl = document.getElementById('pitClaimsContainer');
+      const authEl = document.getElementById('authorityBreakdownList');
+      const bilingEl = document.getElementById('pitBilingualCrosswalkBox');
+
+      PIT_SPANS_BY_ID = {};
+      (data.citations || []).forEach(sp => {
+        PIT_SPANS_BY_ID[sp.span_id] = sp;
+      });
+
+      if (data.status === 'insufficient_evidence' || data.is_abstained) {
+        badge.textContent = 'INSUFFICIENT EVIDENCE';
+        badge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40';
+        sub.textContent = `As of ${data.as_of_date} | Mode: ${data.language_mode.toUpperCase()} | Deterministic Refusal`;
+        claimsEl.innerHTML = `<div class="p-3 rounded-lg bg-rose-950/30 border border-rose-500/40 text-rose-300 font-mono">${escapeHtml(data.refusal_reason || data.answer)}</div>`;
+        document.getElementById('sourceSpanHighlightBox').innerHTML = '<div class="text-rose-300 font-mono">0 verified SourceSpans matched. Ungrounded text refused.</div>';
+        authEl.innerHTML = '';
+        bilingEl.innerHTML = '';
+        renderAmendmentTimeline([], data.as_of_date);
+        return;
+      }
+
+      badge.textContent = `GROUNDED (${(data.citations || []).length} SPANS)`;
+      badge.className = 'px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
+      sub.textContent = `As of ${data.as_of_date} | Query Lang: ${data.detected_language} | View: ${data.language_mode.toUpperCase()} | ${data.telemetry.latency_ms} ms`;
+
+      claimsEl.innerHTML = (data.claims || []).map(c => {
+        const spanBtns = (c.source_span_ids || []).map(sid =>
+          `<button type="button" onclick="highlightSourceSpan('${escapeHtml(sid)}')" class="px-2 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 font-mono text-[10px] hover:bg-indigo-500/35">${escapeHtml(sid)}</button>`
+        ).join(' ');
+        return `
+          <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
+            <div class="flex flex-wrap items-center justify-between gap-1">
+              <span class="font-mono font-bold text-sky-300">${escapeHtml(c.claim_id)}</span>
+              <div class="flex flex-wrap gap-1">${spanBtns}</div>
+            </div>
+            <div class="text-[11px] text-slate-200 leading-relaxed">${escapeHtml(c.statement)}</div>
+          </div>
+        `;
+      }).join('');
+
+      if ((data.citations || []).length > 0) {
+        highlightSourceSpan(data.citations[0].span_id);
+      }
+
+      authEl.innerHTML = (data.authority_breakdown || []).map((a, idx) => {
+        const firstSpan = (a.source_span_ids || [])[0] || '';
+        const overruledBadge = a.is_overruled
+          ? `<span class="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 font-mono text-[10px]">OVERRULED</span>`
+          : '';
+        return `
+          <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+            <div class="flex items-center justify-between gap-1.5">
+              <span class="px-2 py-0.5 rounded border font-mono text-[10px] font-bold ${tierBadgeClasses(a.authority_tier)}">#${idx + 1} ${escapeHtml(a.authority_label)}</span>
+              ${overruledBadge}
+            </div>
+            <div class="font-semibold text-slate-100 text-xs">${escapeHtml(a.title)}</div>
+            <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
+              <span>${escapeHtml(a.canonical_citation)} &bull; ${escapeHtml(a.effective_from)}</span>
+              ${firstSpan ? `<button type="button" onclick="highlightSourceSpan('${escapeHtml(firstSpan)}')" class="text-indigo-300 hover:underline">Inspect Span</button>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      const pairs = data.bilingual_crosswalk || [];
+      bilingEl.innerHTML = pairs.map(pair => {
+        const en = pair.en_node;
+        const bm = pair.bm_node;
+        const showEn = CURRENT_LANG_MODE === 'en' || CURRENT_LANG_MODE === 'bilingual';
+        const showBm = CURRENT_LANG_MODE === 'ms' || CURRENT_LANG_MODE === 'bilingual';
+        const cols = (showEn && showBm) ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1';
+        return `
+          <div class="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+            <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
+              <span class="text-white font-bold">${escapeHtml(pair.act_name)} (${escapeHtml(pair.act_number)}) &mdash; ${escapeHtml(pair.section_code)}</span>
+              <span>BM_EN_EQUIVALENT &bull; Auth: ${escapeHtml(pair.authoritative_node_id)}</span>
+            </div>
+            <div class="grid ${cols} gap-2.5">
+              ${showBm ? `<div class="p-2.5 rounded bg-slate-900 border border-slate-800"><div class="text-[10px] font-mono font-bold text-emerald-400 mb-1">BAHASA MELAYU (${bm ? escapeHtml(bm.node_id) : 'N/A'})</div><div class="text-[11px] text-slate-200">${bm ? escapeHtml(bm.text) : 'Tiada teks BM.'}</div></div>` : ''}
+              ${showEn ? `<div class="p-2.5 rounded bg-slate-900 border border-slate-800"><div class="text-[10px] font-mono font-bold text-sky-400 mb-1">ENGLISH (${en ? escapeHtml(en.node_id) : 'N/A'})</div><div class="text-[11px] text-slate-200">${en ? escapeHtml(en.text) : 'No EN text.'}</div></div>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      renderAmendmentTimeline(data.amendment_timeline || [], data.as_of_date);
     }
 
     function riskBadgeClasses(risk) {

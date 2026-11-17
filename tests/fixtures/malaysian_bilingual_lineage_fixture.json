@@ -1,0 +1,313 @@
+{
+  "fixture_id": "malaysian_bilingual_lineage_fixture",
+  "description": "Deterministic Malaysian legal fixture with bilingual BM/EN statutory versions across historical amendment dates and Federal/High Court judicial precedents.",
+  "structured_statutes": [
+    {
+      "doc_id": "act-709-en-sample",
+      "source_uri": "https://lom.agc.gov.my/ilims/act-709-en",
+      "act_name": "Personal Data Protection Act 2010",
+      "act_number": "Act 709",
+      "language": "en",
+      "effective_from": "2025-01-01",
+      "version": 2,
+      "authority_tier": 2,
+      "amendment_act_ref": "Act A1727",
+      "id_prefix": "INGEST-PDPA-EN",
+      "raw_text": "PERSONAL DATA PROTECTION ACT 2010 [ACT 709]\n\nPART II PERSONAL DATA PROTECTION PRINCIPLES\n\nCHAPTER 1 SECURITY AND BREACH GOVERNANCE\n\nSection 9 Security Principle\n(1) A data user shall, when processing personal data, take practical steps to protect the personal data from any loss, misuse, modification, unauthorized or accidental access or disclosure.\n(1A) Where processing of personal data is carried out by a data processor on behalf of a data user, the data processor shall comply directly with the Security Principle.\nProvided that nothing in this section shall absolve a data user from supervisory compliance obligations.\nIllustration: A cloud hosting vendor acting as a data processor that disables encryption at rest violates subsection (1A) directly."
+    },
+    {
+      "doc_id": "act-709-ms-sample",
+      "source_uri": "https://lom.agc.gov.my/ilims/act-709-ms",
+      "act_name": "Akta Perlindungan Data Peribadi 2010",
+      "act_number": "Act 709",
+      "language": "ms",
+      "effective_from": "2025-01-01",
+      "version": 2,
+      "authority_tier": 2,
+      "amendment_act_ref": "Akta A1727",
+      "id_prefix": "INGEST-PDPA-MS",
+      "raw_text": "AKTA PERLINDUNGAN DATA PERIBADI 2010 [AKTA 709]\n\nBAHAGIAN II PRINSIP PERLINDUNGAN DATA PERIBADI\n\nBAB 1 KESELAMATAN DAN NOTIS PELANGGARAN\n\nSeksyen 9 Prinsip Keselamatan\n(1) Seseorang pengguna data hendaklah mengambil langkah praktikal untuk melindungi data peribadi daripada apa-apa kehilangan, salah guna atau penzahiran tanpa kebenaran.\n(1A) Jika pemprosesan data peribadi dijalankan oleh pemproses data bagi pihak pengguna data, pemproses data hendaklah mematuhi Prinsip Keselamatan secara langsung.\nDengan syarat bahawa tiada apa-apa dalam seksyen ini melepaskan pengguna data daripada kewajipan penyeliaan.\nMisalan: Pembekal awan sebagai pemproses data yang gagal menyulitkan rekod pelanggan melanggar subseksyen (1A) secara langsung."
+    }
+  ],
+  "provisions": [
+    {
+      "node_id": "FIX-PDPA-SEC-9-V1-EN",
+      "act_name": "Personal Data Protection Act 2010",
+      "act_number": "Act 709",
+      "section_code": "SEC-9",
+      "part_code": "PART-II",
+      "hierarchy_level": "Section",
+      "version": 1,
+      "language": "en",
+      "text": "Section 9 (Security Principle - 2010 Baseline): A data user shall take practical steps to protect personal data from unauthorized access or disclosure. Direct statutory processor liability is not yet imposed.",
+      "effective_from": "2013-11-15",
+      "authority_tier": 2,
+      "gazette_ref": "Act 709 (P.U. (B) 464/2013)",
+      "source_spans": [
+        {
+          "span_id": "FIX-SPAN-PDPA-S9-V1-EN",
+          "doc_id": "act-709-2010-en",
+          "source_uri": "https://lom.agc.gov.my/ilims/act-709-2010-en",
+          "act_number": "Act 709",
+          "section_id": "SEC-9",
+          "canonical_citation": "Act 709 s. 9 (2010 Baseline)",
+          "language": "en",
+          "pdf_page": 17,
+          "start_char": 100,
+          "end_char": 292,
+          "text": "Section 9 (Security Principle - 2010 Baseline): A data user shall take practical steps to protect personal data from unauthorized access or disclosure. Direct statutory processor liability is not yet imposed."
+        }
+      ]
+    },
+    {
+      "node_id": "FIX-PDPA-SEC-9-V1-MS",
+      "act_name": "Akta Perlindungan Data Peribadi 2010",
+      "act_number": "Act 709",
+      "section_code": "SEC-9",
+      "part_code": "PART-II",
+      "hierarchy_level": "Section",
+      "version": 1,
+      "language": "ms",
+      "text": "Seksyen 9 (Prinsip Keselamatan - 2010): Seseorang pengguna data hendaklah mengambil langkah praktikal untuk melindungi data peribadi daripada penzahiran tanpa kebenaran.",
+      "effective_from": "2013-11-15",
+      "authority_tier": 2,
+      "gazette_ref": "Akta 709 (P.U. (B) 464/2013)",
+      "source_spans": [
+        {
+          "span_id": "FIX-SPAN-PDPA-S9-V1-MS",
+          "doc_id": "act-709-2010-ms",
+          "source_uri": "https://lom.agc.gov.my/ilims/act-709-2010-ms",
+          "act_number": "Act 709",
+          "section_id": "SEKSYEN-9",
+          "canonical_citation": "Akta 709 s. 9 (2010)",
+          "language": "ms",
+          "pdf_page": 17,
+          "start_char": 95,
+          "end_char": 263,
+          "text": "Seksyen 9 (Prinsip Keselamatan - 2010): Seseorang pengguna data hendaklah mengambil langkah praktikal untuk melindungi data peribadi daripada penzahiran tanpa kebenaran."
+        }
+      ]
+    },
+    {
+      "node_id": "FIX-PDPA-SEC-9-V2-EN",
+      "act_name": "Personal Data Protection Act 2010",
+      "act_number": "Act 709",
+      "section_code": "SEC-9",
+      "part_code": "PART-II",
+      "hierarchy_level": "Section",
+      "version": 2,
+      "language": "en",
+      "text": "Section 9 (Security Principle - 2024 Amendment): Both data users and data processors carry direct statutory liability under the Security Principle with penalties up to RM 1,000,000.",
+      "effective_from": "2025-01-01",
+      "amendment_act_ref": "Act A1727",
+      "amends_node_id": "FIX-PDPA-SEC-9-V1-EN",
+      "authority_tier": 2,
+      "source_spans": [
+        {
+          "span_id": "FIX-SPAN-PDPA-S9-V2-EN",
+          "doc_id": "act-a1727-2024-en",
+          "source_uri": "https://lom.agc.gov.my/ilims/act-a1727-2024-en",
+          "act_number": "Act 709",
+          "section_id": "SEC-9",
+          "canonical_citation": "Act 709 s. 9 (as amended by Act A1727)",
+          "language": "en",
+          "pdf_page": 6,
+          "start_char": 45,
+          "end_char": 225,
+          "text": "Section 9 (Security Principle - 2024 Amendment): Both data users and data processors carry direct statutory liability under the Security Principle with penalties up to RM 1,000,000."
+        }
+      ]
+    },
+    {
+      "node_id": "FIX-PDPA-SEC-9-V2-MS",
+      "act_name": "Akta Perlindungan Data Peribadi 2010",
+      "act_number": "Act 709",
+      "section_code": "SEC-9",
+      "part_code": "PART-II",
+      "hierarchy_level": "Section",
+      "version": 2,
+      "language": "ms",
+      "text": "Seksyen 9 (Prinsip Keselamatan - Pindaan 2024): Pengguna data dan pemproses data memikul liabiliti berkanun secara langsung di bawah Prinsip Keselamatan dengan penalti sehingga RM 1,000,000.",
+      "effective_from": "2025-01-01",
+      "amendment_act_ref": "Act A1727",
+      "amends_node_id": "FIX-PDPA-SEC-9-V1-MS",
+      "authority_tier": 2,
+      "source_spans": [
+        {
+          "span_id": "FIX-SPAN-PDPA-S9-V2-MS",
+          "doc_id": "act-a1727-2024-ms",
+          "source_uri": "https://lom.agc.gov.my/ilims/act-a1727-2024-ms",
+          "act_number": "Act 709",
+          "section_id": "SEKSYEN-9",
+          "canonical_citation": "Akta 709 s. 9 (Pindaan Akta A1727)",
+          "language": "ms",
+          "pdf_page": 6,
+          "start_char": 40,
+          "end_char": 230,
+          "text": "Seksyen 9 (Prinsip Keselamatan - Pindaan 2024): Pengguna data dan pemproses data memikul liabiliti berkanun secara langsung di bawah Prinsip Keselamatan dengan penalti sehingga RM 1,000,000."
+        }
+      ]
+    },
+    {
+      "node_id": "FIX-ACT136-SEC-75-V1-EN",
+      "act_name": "Contracts Act 1950",
+      "act_number": "Act 136",
+      "section_code": "SEC-75",
+      "hierarchy_level": "Section",
+      "version": 1,
+      "language": "en",
+      "text": "Section 75 (Compensation for breach of contract): Reasonable compensation not exceeding the named sum in the contract.",
+      "effective_from": "1950-05-23",
+      "authority_tier": 2,
+      "source_spans": [
+        {
+          "span_id": "FIX-SPAN-ACT136-S75-EN",
+          "doc_id": "act-136-en",
+          "source_uri": "https://lom.agc.gov.my/ilims/act-136-en",
+          "act_number": "Act 136",
+          "section_id": "SEC-75",
+          "canonical_citation": "Act 136 s. 75",
+          "language": "en",
+          "pdf_page": 31,
+          "start_char": 0,
+          "end_char": 117,
+          "text": "Section 75 (Compensation for breach of contract): Reasonable compensation not exceeding the named sum in the contract."
+        }
+      ]
+    },
+    {
+      "node_id": "FIX-ACT136-SEC-75-V1-MS",
+      "act_name": "Akta Kontrak 1950",
+      "act_number": "Act 136",
+      "section_code": "SEC-75",
+      "hierarchy_level": "Section",
+      "version": 1,
+      "language": "ms",
+      "text": "Seksyen 75 (Pampasan bagi pecah kontrak): Pihak yang menuntut berhak menerima pampasan munasabah tidak melebihi amaun yang dinamakan.",
+      "effective_from": "1950-05-23",
+      "authority_tier": 2,
+      "source_spans": [
+        {
+          "span_id": "FIX-SPAN-ACT136-S75-MS",
+          "doc_id": "act-136-ms",
+          "source_uri": "https://lom.agc.gov.my/ilims/act-136-ms",
+          "act_number": "Act 136",
+          "section_id": "SEKSYEN-75",
+          "canonical_citation": "Akta 136 s. 75",
+          "language": "ms",
+          "pdf_page": 31,
+          "start_char": 0,
+          "end_char": 135,
+          "text": "Seksyen 75 (Pampasan bagi pecah kontrak): Pihak yang menuntut berhak menerima pampasan munasabah tidak melebihi amaun yang dinamakan."
+        }
+      ]
+    },
+    {
+      "node_id": "FIX-CASE-HC-2021",
+      "act_name": "Re DataHost Malaya Sdn Bhd",
+      "act_number": "[2021] 7 MLJ 412",
+      "section_code": "PARA-24",
+      "hierarchy_level": "Case",
+      "version": 1,
+      "language": "en",
+      "text": "High Court [2021] 7 MLJ 412 (HC): Interpreted PDPA Section 9 as imposing statutory duties solely upon data users prior to the 2024 Amendment.",
+      "effective_from": "2021-08-10",
+      "authority_tier": 6,
+      "court_name": "High Court of Malaya (Mahkamah Tinggi Malaya)",
+      "case_citation": "[2021] 7 MLJ 412 (HC)",
+      "source_spans": [
+        {
+          "span_id": "FIX-SPAN-CASE-HC-2021",
+          "doc_id": "mlj-2021-7-412",
+          "source_uri": "https://lom.agc.gov.my/cases/mlj-2021-7-412",
+          "act_number": "[2021] 7 MLJ 412",
+          "section_id": "PARA-24",
+          "canonical_citation": "[2021] 7 MLJ 412 (HC), para 24",
+          "language": "en",
+          "pdf_page": 12,
+          "start_char": 0,
+          "end_char": 141,
+          "text": "High Court [2021] 7 MLJ 412 (HC): Interpreted PDPA Section 9 as imposing statutory duties solely upon data users prior to the 2024 Amendment."
+        }
+      ]
+    },
+    {
+      "node_id": "FIX-CASE-FC-2025",
+      "act_name": "Ketua Pengarah JPDP v CloudTech Malaysia Sdn Bhd",
+      "act_number": "[2025] 2 MLJ 101",
+      "section_code": "PARA-42",
+      "hierarchy_level": "Case",
+      "version": 1,
+      "language": "en",
+      "text": "Federal Court [2025] 2 MLJ 101 (FC): Interpreted Section 9 (as amended by Act A1727) as establishing direct statutory liability on data processors and overruled earlier High Court dicta.",
+      "effective_from": "2025-02-15",
+      "authority_tier": 4,
+      "court_name": "Federal Court (Mahkamah Persekutuan)",
+      "case_citation": "[2025] 2 MLJ 101 (FC)",
+      "source_spans": [
+        {
+          "span_id": "FIX-SPAN-CASE-FC-2025",
+          "doc_id": "mlj-2025-2-101",
+          "source_uri": "https://lom.agc.gov.my/cases/mlj-2025-2-101",
+          "act_number": "[2025] 2 MLJ 101",
+          "section_id": "PARA-42",
+          "canonical_citation": "[2025] 2 MLJ 101 (FC), para 42",
+          "language": "en",
+          "pdf_page": 27,
+          "start_char": 0,
+          "end_char": 183,
+          "text": "Federal Court [2025] 2 MLJ 101 (FC): Interpreted Section 9 (as amended by Act A1727) as establishing direct statutory liability on data processors and overruled earlier High Court dicta."
+        }
+      ]
+    }
+  ],
+  "bilingual_links": [
+    {
+      "en_node_id": "FIX-PDPA-SEC-9-V1-EN",
+      "bm_node_id": "FIX-PDPA-SEC-9-V1-MS",
+      "authoritative_node_id": "FIX-PDPA-SEC-9-V1-MS",
+      "effective_date": "2013-11-15",
+      "gazette_ref": "Act 709"
+    },
+    {
+      "en_node_id": "FIX-PDPA-SEC-9-V2-EN",
+      "bm_node_id": "FIX-PDPA-SEC-9-V2-MS",
+      "authoritative_node_id": "FIX-PDPA-SEC-9-V2-MS",
+      "effective_date": "2025-01-01",
+      "gazette_ref": "Act A1727"
+    },
+    {
+      "en_node_id": "FIX-ACT136-SEC-75-V1-EN",
+      "bm_node_id": "FIX-ACT136-SEC-75-V1-MS",
+      "authoritative_node_id": "FIX-ACT136-SEC-75-V1-EN",
+      "effective_date": "1950-05-23",
+      "gazette_ref": "Act 136"
+    }
+  ],
+  "judicial_treatments": [
+    {
+      "case_node_id": "FIX-CASE-HC-2021",
+      "target_node_id": "FIX-PDPA-SEC-9-V1-EN",
+      "edge_type": "INTERPRETS",
+      "effective_date": "2021-08-10"
+    },
+    {
+      "case_node_id": "FIX-CASE-HC-2021",
+      "target_node_id": "FIX-PDPA-SEC-9-V2-EN",
+      "edge_type": "INTERPRETS",
+      "effective_date": "2025-01-01"
+    },
+    {
+      "case_node_id": "FIX-CASE-FC-2025",
+      "target_node_id": "FIX-PDPA-SEC-9-V2-EN",
+      "edge_type": "INTERPRETS",
+      "effective_date": "2025-02-15"
+    },
+    {
+      "case_node_id": "FIX-CASE-FC-2025",
+      "target_node_id": "FIX-CASE-HC-2021",
+      "edge_type": "OVERRULES",
+      "effective_date": "2025-02-15"
+    }
+  ]
+}
