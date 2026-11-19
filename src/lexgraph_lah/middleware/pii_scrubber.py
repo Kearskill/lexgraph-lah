@@ -1,6 +1,7 @@
 import re
 import time
 from collections.abc import Awaitable, Callable
+from typing import Literal
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -32,6 +33,86 @@ _PATTERN_SPECS: list[tuple[str, re.Pattern[str]]] = [
     ("MY_PHONE", _PHONE_PATTERN),
     ("EMAIL", _EMAIL_PATTERN),
 ]
+
+
+_VAULT_TOKEN_LABELS: dict[str, str] = {
+    "MY_NRIC": "MYKAD",
+    "MY_SSM": "SSM_REG",
+    "MY_PASSPORT": "PASSPORT",
+    "MY_PHONE": "PHONE_MY",
+    "EMAIL": "EMAIL",
+}
+
+
+class ReversiblePIIVault:
+    """
+    Per-request ephemeral reversible PII token vault.
+    Masks Malaysian NRIC, Passport, SSM, Phone, and Email into deterministic bracketed
+    vault tokens ([MYKAD_01], [PASSPORT_01], [SSM_REG_01], [PHONE_MY_01], [EMAIL_01])
+    so zero raw PII ever reaches LLM prompts or OTel spans, while allowing local
+    re-hydration during final downloadable Track-Changes .docx compilation.
+    """
+
+    def __init__(
+        self,
+        initial_mapping: dict[str, str] | None = None,
+        token_style: Literal["vault", "legacy"] = "vault",
+    ) -> None:
+        self._token_to_raw: dict[str, str] = dict(initial_mapping or {})
+        self._raw_to_token: dict[tuple[str, str], str] = {}
+        self._entity_counts: dict[str, int] = {}
+        self._token_style = token_style
+
+    @property
+    def token_map(self) -> dict[str, str]:
+        return dict(self._token_to_raw)
+
+    def scrub(self, text: str) -> tuple[str, PIIScrubSummary]:
+        start = time.perf_counter()
+        masked = text
+
+        for label, pattern in _PATTERN_SPECS:
+            vault_label = _VAULT_TOKEN_LABELS.get(label, label)
+
+            def _replacer(
+                match: re.Match[str],
+                entity_label: str = label,
+                token_prefix: str = vault_label,
+            ) -> str:
+                raw_val = match.group(0)
+                cache_key = (entity_label, raw_val)
+                if cache_key in self._raw_to_token:
+                    return self._raw_to_token[cache_key]
+                next_idx = self._entity_counts.get(entity_label, 0) + 1
+                self._entity_counts[entity_label] = next_idx
+                if self._token_style == "legacy":
+                    token = f"<{entity_label}_{next_idx}>"
+                else:
+                    token = f"[{token_prefix}_{next_idx:02d}]"
+                self._raw_to_token[cache_key] = token
+                self._token_to_raw[token] = raw_val
+                return token
+
+            masked = pattern.sub(_replacer, masked)
+
+        elapsed_ms = round((time.perf_counter() - start) * 1000.0, 4)
+        total_redactions = sum(self._entity_counts.values())
+        summary = PIIScrubSummary(
+            original_length=len(text),
+            masked_text=masked,
+            redaction_count=total_redactions,
+            placeholders=dict(self._token_to_raw),
+            entity_counts=dict(self._entity_counts),
+            scrub_latency_ms=elapsed_ms,
+        )
+        return masked, summary
+
+    def rehydrate(self, text: str) -> str:
+        """Restores original PII locally from ephemeral vault tokens."""
+        restored = text
+        for token, raw_val in self._token_to_raw.items():
+            restored = restored.replace(token, raw_val)
+        return restored
 
 
 def scrub_malaysian_pii(text: str) -> PIIScrubSummary:

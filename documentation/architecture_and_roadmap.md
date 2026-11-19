@@ -72,3 +72,23 @@ Expose the compliance engine, temporal knowledge graph, and FinOps telemetry via
    - Aggregates total runs, cumulative tokens, total USD/MYR spend, average latency (ms), grounded citation rate, and the ordered list of OpenTelemetry/FinOps span records.
 4. **`GET /dashboard` (Interactive Cytoscape.js & FinOps Console):**
    - Zero-build interactive HTML/JS console that renders the directed statutory citation & amendment graph via Cytoscape.js, displays the active parameterized Cypher query, and streams FinOps KPI cards and trace span tables.
+
+---
+
+## 5. Track D: Bi-Temporal Statutory Redline Diff, Act 388 Bilingual Divergence Critic & v2 Benchmark
+
+### Goal
+Extend `lexgraph-lah` with zero-token (`$0.00 USD / RM 0.00 MYR`) bi-temporal statutory version redlining, Contract Delta-Audit regression checks, Act 388 s. 63 Bahasa Melayu <-> English divergence detection, 8-tool MCP registration, interactive UI lineage/divergence explorers, and an expanded 20-scenario v2 determinism benchmark.
+
+### Architectural Design
+1. **Zero-Token Bi-Temporal Statutory Diff & Contract Delta-Audit (`src/lexgraph_lah/graph/diff_engine.py`):**
+   - `diff_statute_lineage(provision_id, from_date, to_date)` resolves active versions at `from_date` and `to_date` across `AMENDED_BY`, `SUPERSEDED_BY`, and `REPEALED_BY` chains, returning `StatutoryVersionDiff` (`ADDED`/`REMOVED`/`MODIFIED`/`UNCHANGED` clause segments, transition dates, related `P.U.` gazettes, `SourceSpan` provenance, and `0` LLM tokens).
+   - `evaluate_contract_delta_impact(ContractDeltaAuditRequest)` runs pre-flight Malaysian PII scrubbing (`scrub_malaysian_pii`) and evaluates whether an agreement compliant at `from_date` becomes non-compliant at `to_date` across both Act 709 PDPA gap rules and multi-regime `DeonticEnvelopeResolver` bounds (`ACT_854`, `BNM_RMIT`).
+2. **Act 388 s. 63 Bilingual Divergence Critic (`src/lexgraph_lah/graph/bilingual_critic.py`):**
+   - `audit_bilingual_pair` / `audit_bilingual_divergence` inspect paired BM and EN statutory `SourceSpan`s at `0` LLM tokens for `DEONTIC_MODALITY_MISMATCH` (`hendaklah`/`wajib` vs. `may`), `NUMERIC_DEADLINE_DISCREPANCY`, `PENALTY_CEILING_DISCREPANCY`, and `MISSING_SUBCLAUSE`, surfacing Act 388 s. 63 `authoritative_language` precedence and Practitioner/Rakyat explanations.
+3. **REST APIs, 8-Tool MCP Catalog & UI Integration (`src/lexgraph_lah/api/routes.py`, `src/lexgraph_lah/mcp/tools.py`):**
+   - REST endpoints: `GET`/`POST /api/v1/lineage/diff`, `POST /api/v1/lineage/delta-audit`, `GET /api/v1/crosswalk/{node_id}/divergence`, `POST /api/v1/crosswalk/divergence`.
+   - MCP tools #7 & #8: `diff_statutory_versions` and `audit_bilingual_crosswalk`.
+   - `/dashboard`: **Time-Travel Statutory Redline Explorer** with Cytoscape path highlighting and inline clause diff; `/demo`: Act 388 alignment/divergence badges inside the bilingual drawer adapting explanation density to the Practitioner/Rakyat persona toggle.
+4. **v2 Determinism & FinOps Benchmark (`evals/run_benchmark.py`):**
+   - Expands coverage to **20 scenarios x 3 trials (60 runs)** including `0.78` abstention gate rejection (`BENCH-15`), 5-way territorial isolation including Labuan [Act 704] (`BENCH-16`), pre-flight PII scrubbing (`BENCH-17`), bi-temporal `P.U. (A) 220/2024` commencement transitions (`BENCH-18`), zero-token lineage diff & delta-audit (`BENCH-19`), and Act 388 divergence detection (`BENCH-20`).

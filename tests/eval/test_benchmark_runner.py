@@ -11,17 +11,17 @@ from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
 @pytest.mark.asyncio
 async def test_benchmark_runner_mock_mode_and_markdown_table():
     """
-    Verifies the 10-case golden benchmark suite in mock mode produces 100% determinism
+    Verifies the 20-case golden benchmark suite (v2) in mock mode produces 100% determinism
     consistency, 100% verdict accuracy, 100% verbatim grounding, and renders a Markdown
     report with p50/p95 latency and USD/MYR cost metrics.
     """
     dataset = get_benchmark_dataset()
-    assert len(dataset) >= 10
+    assert len(dataset) == 20
 
     summary = await run_benchmark_async(mode="mock", trials=2)
-    assert summary.total_cases == 10
+    assert summary.total_cases == len(dataset)
     assert summary.trials_per_case == 2
-    assert summary.total_runs == 20
+    assert summary.total_runs == 40
     assert summary.determinism_consistency_pct == 100.0
     assert summary.verdict_accuracy_pct == 100.0
     assert summary.verbatim_grounding_pct == 100.0
@@ -36,6 +36,14 @@ async def test_benchmark_runner_mock_mode_and_markdown_table():
     assert "Latency (p50 / p95 ms)" in report
     assert "Mean Cost per Audit (USD & MYR)" in report
     assert "BENCH-09-CRITIC-SELF-CORRECTION-LOOP" in report
+    assert "BENCH-11-COUNTERFACTUAL-ACT854-RETRY" in report
+    assert "BENCH-12-FINTECH-BNM-RMIT-1H-ENVELOPE" in report
+    assert "BENCH-15-ABSTENTION-GATE-OOD" in report
+    assert "BENCH-16-TERRITORIAL-5TIER-RERANK" in report
+    assert "BENCH-17-PREFLIGHT-PII-SCRUB-GATE" in report
+    assert "BENCH-18-BITEMPORAL-PU-GAZETTE-TRANSITION" in report
+    assert "BENCH-19-LINEAGE-DIFF-AND-DELTA-IMPACT" in report
+    assert "BENCH-20-ACT388-BILINGUAL-DIVERGENCE" in report
 
 
 def test_finops_myr_usd_deterministic_rounding():

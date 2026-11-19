@@ -62,12 +62,37 @@ BM_TO_EN_PHRASES: dict[str, list[str]] = {
     "rentas sempadan": ["cross-border", "transfer outside malaysia"],
     "jam": ["hours", "hour"],
     "hari": ["days", "day"],
+    "akta keselamatan siber": ["cyber security act 2024", "act 854", "ncii", "nacsa"],
+    "akta 854": ["act 854", "cyber security act 2024", "p.u. (a) 220/2024"],
+    "keselamatan siber": ["cyber security", "cyber incident", "act 854"],
+    "insiden keselamatan siber": ["cyber security incident", "6 hours", "14 days", "ncii"],
+    "infrastruktur maklumat kritikal negara": ["national critical information infrastructure", "ncii"],
+    "penilaian risiko siber": ["cyber security risk assessment", "audit", "section 22"],
+    "pengurusan risiko teknologi": ["risk management in technology", "rmit", "bnm"],
+    "perkhidmatan awan": ["cloud", "cloud audit", "exit plan"],
+    "pelan keluar": ["exit plan", "cloud", "bnm rmit"],
+    "walau apa pun": ["notwithstanding", "override"],
+    "akta tafsiran": ["interpretation acts", "act 388", "authoritative text", "section 63"],
+    "akta 388": ["act 388", "interpretation acts", "section 63"],
+    "teks sahih": ["authoritative text", "act 388", "section 63"],
+    "labuan": ["labuan", "act 704", "labuan financial services"],
+    "akta 704": ["act 704", "labuan financial services", "labuan"],
 }
 
 EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "personal data protection act": ["akta perlindungan data peribadi", "akta 709"],
     "pdpa": ["akta perlindungan data peribadi", "akta 709"],
     "act 709": ["akta 709", "akta perlindungan data peribadi"],
+    "cyber security act": ["akta keselamatan siber", "akta 854"],
+    "act 854": ["akta 854", "akta keselamatan siber"],
+    "ncii": ["infrastruktur maklumat kritikal negara", "akta 854", "seksyen 23"],
+    "cyber security incident": ["insiden keselamatan siber", "6 jam", "14 hari"],
+    "risk assessment": ["penilaian risiko siber", "audit"],
+    "rmit": ["pengurusan risiko teknologi", "bnm"],
+    "bnm rmit": ["pengurusan risiko teknologi", "bank negara malaysia", "1 jam"],
+    "cloud": ["perkhidmatan awan", "audit awan", "pelan keluar"],
+    "exit plan": ["pelan keluar", "perkhidmatan awan"],
+    "notwithstanding": ["walau apa pun"],
     "penal code": ["kanun keseksaan", "akta 574"],
     "act 574": ["akta 574", "kanun keseksaan"],
     "contracts act 1950": ["akta kontrak 1950", "akta 136"],
@@ -112,6 +137,11 @@ EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "cross-border": ["rentas sempadan", "pemindahan data"],
     "hours": ["jam"],
     "days": ["hari"],
+    "interpretation acts": ["akta tafsiran", "akta 388", "teks sahih", "seksyen 63"],
+    "act 388": ["akta 388", "akta tafsiran", "seksyen 63"],
+    "authoritative text": ["teks sahih", "akta 388"],
+    "labuan": ["labuan", "akta 704", "perkhidmatan kewangan labuan"],
+    "act 704": ["akta 704", "perkhidmatan kewangan labuan", "labuan"],
 }
 
 STATUTE_CROSSWALK_ALIASES: dict[str, tuple[str, ...]] = {
@@ -121,6 +151,22 @@ STATUTE_CROSSWALK_ALIASES: dict[str, tuple[str, ...]] = {
         "personal data protection act 2010",
         "akta perlindungan data peribadi 2010",
         "pdpa",
+    ),
+    "act 854": (
+        "act 854",
+        "akta 854",
+        "cyber security act 2024",
+        "akta keselamatan siber 2024",
+        "p.u. (a) 220/2024",
+        "ncii",
+        "nacsa",
+    ),
+    "bnm rmit": (
+        "bnm rmit",
+        "rmit",
+        "risk management in technology",
+        "pengurusan risiko teknologi",
+        "bnm/rh/pd 028-98",
     ),
     "act 574": (
         "act 574",
@@ -143,6 +189,18 @@ STATUTE_CROSSWALK_ALIASES: dict[str, tuple[str, ...]] = {
     "federal constitution": (
         "federal constitution",
         "perlembagaan persekutuan",
+    ),
+    "act 388": (
+        "act 388",
+        "akta 388",
+        "interpretation acts 1948 and 1967",
+        "akta tafsiran 1948 dan 1967",
+    ),
+    "act 704": (
+        "act 704",
+        "akta 704",
+        "labuan financial services and securities act 2010",
+        "akta perkhidmatan kewangan dan sekuriti labuan 2010",
     ),
 }
 
@@ -210,6 +268,11 @@ _BM_MARKERS = {
     "liabiliti",
     "di",
     "bawah",
+    "tafsiran",
+    "sahih",
+    "kewangan",
+    "luar",
+    "pesisir",
 }
 
 _EN_MARKERS = {
@@ -260,6 +323,10 @@ _EN_MARKERS = {
     "compensation",
     "cheating",
     "court",
+    "interpretation",
+    "authoritative",
+    "offshore",
+    "labuan",
 }
 
 

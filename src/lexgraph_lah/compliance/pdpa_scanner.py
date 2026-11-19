@@ -4,6 +4,7 @@ import uuid
 from datetime import date
 
 from lexgraph_lah.config import settings
+from lexgraph_lah.graph.bilingual_critic import audit_bilingual_pair
 from lexgraph_lah.graph.reranker import rerank_statutes_and_spans
 from lexgraph_lah.graph.temporal_store import (
     TemporalGraphStore,
@@ -14,6 +15,7 @@ from lexgraph_lah.schemas.domain import (
     DEFAULT_LEGAL_DISCLAIMER,
     AuthorityTier,
     BilingualClausePair,
+    BilingualDivergenceReport,
     IRACAnalysis,
     PDPAComplianceScanRequest,
     PDPAComplianceScanResponse,
@@ -108,8 +110,10 @@ def _spans_for_nodes(
 def _build_bilingual_provisions(
     store: TemporalGraphStore,
     node_ids: list[str],
-) -> list[BilingualClausePair]:
+    as_of_date: date | None = None,
+) -> tuple[list[BilingualClausePair], list[BilingualDivergenceReport]]:
     pairs: list[BilingualClausePair] = []
+    warnings: list[BilingualDivergenceReport] = []
     seen_keys: set[str] = set()
     for nid in node_ids:
         pair = store.get_bilingual_pair(nid)
@@ -117,8 +121,21 @@ def _build_bilingual_provisions(
             key = f"{pair.act_number}:{pair.section_code}"
             if key not in seen_keys:
                 seen_keys.add(key)
-                pairs.append(pair)
-    return pairs
+                report = audit_bilingual_pair(
+                    en_node=pair.en_node,
+                    bm_node=pair.bm_node,
+                    authoritative_node_id=pair.authoritative_node_id,
+                    as_of_date=as_of_date,
+                    provision_id=nid,
+                    act_name=pair.act_name,
+                    act_number=pair.act_number,
+                    section_code=pair.section_code,
+                )
+                enriched = pair.model_copy(update={"divergence_report": report})
+                pairs.append(enriched)
+                if report.has_divergence:
+                    warnings.append(report)
+    return pairs, warnings
 
 
 def build_persona_summaries(
@@ -192,6 +209,7 @@ def build_persona_summaries(
 def scan_pdpa_compliance(
     req: PDPAComplianceScanRequest,
     store: TemporalGraphStore | None = None,
+    record_telemetry: bool = True,
 ) -> PDPAComplianceScanResponse:
     """
     Pre-flight PII-scrubbed Act 709 (PDPA) Compliance Gap Scanner returning strict
@@ -648,7 +666,9 @@ def scan_pdpa_compliance(
             round((compliant_count / len(gaps)) * 100.0, 2) if gaps else 100.0
         )
 
-        bilingual_provisions = _build_bilingual_provisions(graph_store, implicated_node_ids)
+        bilingual_provisions, divergence_warnings = _build_bilingual_provisions(
+            graph_store, implicated_node_ids, as_of_date=effective_date
+        )
         irac_summary, rakyat_summary = build_persona_summaries(
             document_id=req.document_id,
             as_of_date=effective_date,
@@ -665,16 +685,17 @@ def scan_pdpa_compliance(
         is_verified_grounded=True,
         trace_id=span_id,
     )
-    telemetry_registry.record_span(
-        ComplianceSpanRecord(
-            span_id=span_id,
-            document_id=req.document_id,
-            reference_date=effective_date.isoformat(),
-            active_statute_count=len(active_nodes),
-            telemetry=telemetry,
-            timestamp_epoch=time.time(),
+    if record_telemetry:
+        telemetry_registry.record_span(
+            ComplianceSpanRecord(
+                span_id=span_id,
+                document_id=req.document_id,
+                reference_date=effective_date.isoformat(),
+                active_statute_count=len(active_nodes),
+                telemetry=telemetry,
+                timestamp_epoch=time.time(),
+            )
         )
-    )
 
     return PDPAComplianceScanResponse(
         document_id=req.document_id,
@@ -689,6 +710,7 @@ def scan_pdpa_compliance(
         pii_scrub=pii_scrub,
         gaps=gaps,
         bilingual_provisions=bilingual_provisions,
+        bilingual_divergence_warnings=divergence_warnings,
         irac_summary=irac_summary,
         rakyat_summary=rakyat_summary,
         disclaimer=DEFAULT_LEGAL_DISCLAIMER,

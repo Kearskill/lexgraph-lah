@@ -96,6 +96,7 @@ class TerritorialScope(str, Enum):
     PENINSULAR_MALAYSIA = "Peninsular Malaysia"
     SABAH = "Sabah"
     SARAWAK = "Sarawak"
+    LABUAN = "Labuan"
     FEDERAL_TERRITORIES = "Federal Territories"
     ALL_MALAYSIA = "All Malaysia"
 
@@ -228,6 +229,61 @@ class SourceSpan(BaseModel):
         return self
 
 
+class TelemetrySummary(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int
+    estimated_cost_usd: float
+    estimated_cost_myr: float
+    latency_ms: float
+    retry_count: int
+    is_verified_grounded: bool
+    trace_id: str | None = None
+
+
+class DeonticModality(str, Enum):
+    OBLIGATION = "OBLIGATION"
+    PROHIBITION = "PROHIBITION"
+    PERMISSION = "PERMISSION"
+
+
+class DeonticOperator(str, Enum):
+    LTE = "<="
+    GTE = ">="
+    EQ = "=="
+    FORBIDDEN_CLAUSE = "FORBIDDEN_CLAUSE"
+
+
+class DeonticConstraint(BaseModel):
+    """Structured statutory deontic constraint attached to a statute or P.U. gazette node."""
+
+    constraint_id: str = Field(default="", description="Unique constraint identifier")
+    regime_id: str = Field(
+        default="ACT_709",
+        description="Canonical regime code, e.g., ACT_709, ACT_854, BNM_RMIT",
+    )
+    modality: Literal["OBLIGATION", "PROHIBITION", "PERMISSION"] = Field(
+        default="OBLIGATION"
+    )
+    metric_key: str = Field(
+        ...,
+        description=(
+            "Normalized metric key, e.g., incident_notice_max_hours, "
+            "full_report_max_days, cross_border_transfer_condition, "
+            "processor_direct_liability, regulator_audit_access"
+        ),
+    )
+    operator: Literal["<=", ">=", "==", "FORBIDDEN_CLAUSE"] = Field(default="<=")
+    threshold_value: float | str | bool = Field(
+        ..., description="Numeric bound, boolean mandate, or forbidden clause pattern"
+    )
+    unit: str = Field(default="", description="Optional unit such as 'hours' or 'days'")
+    territorial_scope: list[TerritorialScope] = Field(
+        default_factory=lambda: [TerritorialScope.ALL_MALAYSIA]
+    )
+    description: str = Field(default="")
+
+
 class StatutoryNode(BaseModel):
     node_id: str = Field(
         ..., description="Unique versioned node ID, e.g., PDPA-2010-SEC-5-V1"
@@ -319,6 +375,14 @@ class StatutoryNode(BaseModel):
     source_spans: list[SourceSpan] = Field(
         default_factory=list,
         description="Strict SourceSpan provenance records backing this node",
+    )
+    regime_code: str = Field(
+        default="ACT_709",
+        description="Canonical regulatory regime code (e.g., ACT_709, ACT_854, BNM_RMIT)",
+    )
+    deontic_constraints: list[DeonticConstraint] = Field(
+        default_factory=list,
+        description="Structured deontic obligations, prohibitions, and permissions encoded by this provision",
     )
 
     @property
@@ -441,6 +505,59 @@ class ScoredSourceSpan(BaseModel):
     bilingual_node_id: str | None = None
 
 
+class BilingualDivergenceIssue(BaseModel):
+    issue_id: str
+    divergence_type: Literal[
+        "DEONTIC_MODALITY_MISMATCH",
+        "NUMERIC_DEADLINE_DISCREPANCY",
+        "PENALTY_CEILING_DISCREPANCY",
+        "MISSING_SUBCLAUSE",
+    ]
+    severity: RiskSeverity
+    en_excerpt: str
+    bm_excerpt: str
+    en_span_id: str | None = None
+    bm_span_id: str | None = None
+    authoritative_resolution: str
+    practitioner_note: str
+    rakyat_note: str
+
+
+class BilingualDivergenceReport(BaseModel):
+    provision_id: str
+    act_name: str
+    act_number: str
+    section_code: str
+    as_of_date: date
+    authoritative_language: Literal["ms", "en"]
+    authoritative_node_id: str
+    act_388_authority_basis: str
+    alignment_status: Literal["ALIGNED", "DIVERGENCE_DETECTED", "SINGLE_LANGUAGE_ONLY"]
+    has_divergence: bool
+    en_node_id: str | None = None
+    bm_node_id: str | None = None
+    en_source_spans: list[SourceSpan] = Field(default_factory=list)
+    bm_source_spans: list[SourceSpan] = Field(default_factory=list)
+    detected_en_modalities: list[str] = Field(default_factory=list)
+    detected_bm_modalities: list[str] = Field(default_factory=list)
+    issues: list[BilingualDivergenceIssue] = Field(default_factory=list)
+    summary_practitioner: str
+    summary_rakyat: str
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+class BilingualDivergenceRequest(BaseModel):
+    node_id: str | None = None
+    as_of_date: date | None = None
+    en_text: str | None = None
+    bm_text: str | None = None
+    authoritative_language: Literal["ms", "bm", "en"] | None = None
+    act_name: str = ""
+    act_number: str = ""
+    section_code: str = ""
+
+
 class BilingualClausePair(BaseModel):
     section_code: str
     act_name: str
@@ -450,6 +567,7 @@ class BilingualClausePair(BaseModel):
     authoritative_node_id: str
     gazette_ref: str | None = None
     source_spans: list[SourceSpan] = Field(default_factory=list)
+    divergence_report: BilingualDivergenceReport | None = None
 
 
 class RetrievalSearchResponse(BaseModel):
@@ -506,6 +624,127 @@ class PDPAGapItem(BaseModel):
     rakyat_guidance: RakyatGuidance
 
 
+class RegimeConstraintCandidate(BaseModel):
+    regime_id: str
+    node_id: str
+    act_name: str
+    act_number: str
+    section_code: str
+    gazette_ref: str | None = None
+    authority_tier: AuthorityTier = AuthorityTier.TIER_2_ACT_OF_PARLIAMENT
+    constraint: DeonticConstraint
+
+
+class InterRegimeConflictDelta(BaseModel):
+    metric_key: str
+    winning_regime: str
+    winning_node_id: str
+    winning_bound: float | str | bool
+    superseded_regime: str
+    superseded_node_id: str
+    superseded_bound: float | str | bool
+    delta_summary: str
+
+
+class ResolvedMetricBound(BaseModel):
+    metric_key: str
+    modality: Literal["OBLIGATION", "PROHIBITION", "PERMISSION"]
+    operator: Literal["<=", ">=", "==", "FORBIDDEN_CLAUSE"]
+    strictest_value: float | str | bool
+    unit: str = ""
+    dominating_regime: str
+    dominating_node_id: str
+    dominating_citation: str
+    provenance_chain: list[RegimeConstraintCandidate] = Field(default_factory=list)
+
+
+class CompositeDeonticEnvelope(BaseModel):
+    as_of_date: date
+    territorial_scope: TerritorialScope = TerritorialScope.ALL_MALAYSIA
+    regimes_evaluated: list[str] = Field(default_factory=list)
+    active_node_ids: list[str] = Field(default_factory=list)
+    resolved_bounds: dict[str, ResolvedMetricBound] = Field(default_factory=dict)
+    inter_regime_conflicts: list[InterRegimeConflictDelta] = Field(default_factory=list)
+    envelope_hash: str = ""
+
+
+class ContractEdgeType(str, Enum):
+    DEFINES_TERM = "DEFINES_TERM"
+    OVERRIDES_NOTWITHSTANDING = "OVERRIDES_NOTWITHSTANDING"
+    CROSS_REFERENCES = "CROSS_REFERENCES"
+
+
+class ContractClauseNode(BaseModel):
+    clause_id: str
+    heading: str = ""
+    section_type: Literal["DEFINITION", "OPERATIVE", "PRIORITY_OVERRIDE", "GENERAL"] = "OPERATIVE"
+    text: str
+    paragraph_idx: int = 0
+    pdf_page: int = 1
+    start_char: int = 0
+    end_char: int = 1
+    source_span: SourceSpan
+    defined_terms: list[str] = Field(default_factory=list)
+    referenced_clauses: list[str] = Field(default_factory=list)
+    extracted_metrics: dict[str, float | str | bool] = Field(default_factory=dict)
+
+
+class ContractDependencyEdge(BaseModel):
+    source_clause_id: str
+    target_clause_id: str
+    edge_type: ContractEdgeType
+    trigger_phrase: str = ""
+    term_name: str | None = None
+    is_hostile_trap: bool = False
+    rationale: str = ""
+
+
+class NarrowDefinitionTrap(BaseModel):
+    term_name: str
+    definition_clause_id: str
+    target_clause_ids: list[str] = Field(default_factory=list)
+    contract_definition: str
+    statutory_conflict: str
+    severity: RiskSeverity = RiskSeverity.HIGH
+
+
+class ShadowOverrideTrap(BaseModel):
+    overriding_clause_id: str
+    target_clause_id: str
+    trigger_phrase: str
+    overriding_quote: str
+    target_quote: str
+    trap_description: str
+    severity: RiskSeverity = RiskSeverity.CRITICAL
+
+
+class ContractASTGraph(BaseModel):
+    document_id: str
+    source_format: Literal["text", "docx", "pdf"] = "text"
+    scrubbed_text: str
+    raw_sha256: str = ""
+    clauses: list[ContractClauseNode] = Field(default_factory=list)
+    edges: list[ContractDependencyEdge] = Field(default_factory=list)
+    narrow_definition_traps: list[NarrowDefinitionTrap] = Field(default_factory=list)
+    shadow_override_traps: list[ShadowOverrideTrap] = Field(default_factory=list)
+
+
+class ComplianceAttestationManifest(BaseModel):
+    document_id: str
+    input_doc_sha256: str
+    graph_state_hash: str
+    as_of_date: date
+    regimes: list[str] = Field(default_factory=list)
+    territorial_scope: str = TerritorialScope.ALL_MALAYSIA.value
+    is_verified_grounded: bool = True
+    retry_count: int = 0
+    estimated_cost_usd: float = 0.0
+    estimated_cost_myr: float = 0.0
+    total_tokens: int = 0
+    trace_id: str | None = None
+    manifest_sha256: str = ""
+
+
 class ClauseAudit(BaseModel):
     clause_id: str = Field(..., description="Section identifier, e.g., SEC-1.1")
     category: str = Field(
@@ -530,22 +769,34 @@ class ClauseAudit(BaseModel):
         default_factory=list,
         description="Verified SourceSpan IDs supporting this finding.",
     )
+    overriding_clause_id: str | None = Field(
+        default=None,
+        description="Clause ID of any overriding 'Notwithstanding' / 'Walau apa pun' shadow trap.",
+    )
+    overriding_clause_quote: str | None = Field(
+        default=None,
+        description="Verbatim quote from the overriding shadow clause if applicable.",
+    )
+    addresses_shadow_override: bool = Field(
+        default=False,
+        description="True when recommended_redline explicitly neutralizes linked OVERRIDES_NOTWITHSTANDING traps.",
+    )
+    proposed_notice_hours: float | None = Field(
+        default=None,
+        description="Post-redline incident notice SLA in hours extracted for counterfactual verification.",
+    )
+    proposed_report_days: float | None = Field(
+        default=None,
+        description="Post-redline full regulatory report SLA in days extracted for counterfactual verification.",
+    )
+    satisfies_deontic_envelope: bool = Field(
+        default=True,
+        description="True when counterfactual redline simulation satisfies the strictest composite deontic envelope.",
+    )
 
 
 class ClauseExtractionList(BaseModel):
     clauses: list[ClauseAudit]
-
-
-class TelemetrySummary(BaseModel):
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int
-    estimated_cost_usd: float
-    estimated_cost_myr: float
-    latency_ms: float
-    retry_count: int
-    is_verified_grounded: bool
-    trace_id: str | None = None
 
 
 class ContractAuditResponse(BaseModel):
@@ -559,10 +810,19 @@ class ContractAuditResponse(BaseModel):
     abstention_reason: str | None = None
     persona: OutputPersona = OutputPersona.PRACTITIONER
     territorial_scope: TerritorialScope = TerritorialScope.ALL_MALAYSIA
+    regimes: list[str] = Field(default_factory=lambda: ["ACT_709"])
+    language: str = "bilingual"
+    executive_summary: str = ""
     pii_scrub: PIIScrubSummary | None = None
     bilingual_provisions: list[BilingualClausePair] = Field(default_factory=list)
+    bilingual_divergence_warnings: list[BilingualDivergenceReport] = Field(
+        default_factory=list
+    )
     irac_summary: IRACAnalysis | None = None
     rakyat_summary: RakyatGuidance | None = None
+    deontic_envelope: CompositeDeonticEnvelope | None = None
+    contract_ast: ContractASTGraph | None = None
+    attestation_manifest: ComplianceAttestationManifest | None = None
     disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
 
 
@@ -575,9 +835,17 @@ class ComplianceCheckRequest(BaseModel):
         default=None,
         description="Point-in-time audit date (YYYY-MM-DD); defaults to today if omitted.",
     )
+    as_of_date: date | None = Field(
+        default=None,
+        description="Optional alias for reference_date (YYYY-MM-DD).",
+    )
     act_filter: str | None = Field(
         default=None,
         description="Optional canonical statute name filter, e.g., Personal Data Protection Act 2010",
+    )
+    regimes: list[str] | None = Field(
+        default=None,
+        description="Optional multi-regime selection e.g. ['ACT_709', 'ACT_854', 'BNM_RMIT']",
     )
     territorial_scope: TerritorialScope | None = Field(
         default=None,
@@ -586,6 +854,10 @@ class ComplianceCheckRequest(BaseModel):
     persona: OutputPersona = Field(
         default=OutputPersona.PRACTITIONER,
         description="Output mode: PRACTITIONER (IRAC) or RAKYAT (plain-language + gov.my steps)",
+    )
+    language: Literal["bm", "ms", "en", "bilingual"] = Field(
+        default="bilingual",
+        description="Preferred output narrative language ('bm', 'ms', 'en', or 'bilingual')",
     )
     abstention_threshold: float | None = Field(
         default=None,
@@ -621,6 +893,9 @@ class PDPAComplianceScanResponse(BaseModel):
     pii_scrub: PIIScrubSummary
     gaps: list[PDPAGapItem] = Field(default_factory=list)
     bilingual_provisions: list[BilingualClausePair] = Field(default_factory=list)
+    bilingual_divergence_warnings: list[BilingualDivergenceReport] = Field(
+        default_factory=list
+    )
     irac_summary: IRACAnalysis | None = None
     rakyat_summary: RakyatGuidance | None = None
     disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
@@ -632,6 +907,9 @@ class GraphTopologyResponse(BaseModel):
     nodes: list[StatutoryNode]
     edges: list[StatutoryEdge]
     cypher_query: str
+    contract_nodes: list[dict[str, Any]] = Field(default_factory=list)
+    contract_edges: list[dict[str, Any]] = Field(default_factory=list)
+    deontic_envelope: CompositeDeonticEnvelope | None = None
 
 
 class TelemetryMetricsResponse(BaseModel):
@@ -752,6 +1030,9 @@ class PointInTimeResearchResponse(BaseModel):
     authority_breakdown: list[AuthorityBreakdownItem] = Field(default_factory=list)
     amendment_timeline: list[AmendmentTimelineEntry] = Field(default_factory=list)
     bilingual_crosswalk: list[BilingualClausePair] = Field(default_factory=list)
+    bilingual_divergence_warnings: list[BilingualDivergenceReport] = Field(
+        default_factory=list
+    )
     judicial_treatments: list[JudicialTreatmentItem] = Field(default_factory=list)
     subgraph: SubgraphVisualizationData = Field(default_factory=SubgraphVisualizationData)
     telemetry: TelemetrySummary
@@ -769,3 +1050,112 @@ class ProvisionLineageResponse(BaseModel):
     bilingual_equivalent: BilingualClausePair | None = None
     judicial_treatments: list[JudicialTreatmentItem] = Field(default_factory=list)
     lineage_edges: list[StatutoryEdge] = Field(default_factory=list)
+
+
+class ClauseDiffSegment(BaseModel):
+    change_type: Literal["ADDED", "REMOVED", "MODIFIED", "UNCHANGED"]
+    from_text: str = ""
+    to_text: str = ""
+    from_span_id: str | None = None
+    to_span_id: str | None = None
+
+
+class StatutoryTransitionStep(BaseModel):
+    source_node_id: str
+    target_node_id: str
+    edge_type: TemporalEdgeType
+    effective_date: date
+    gazette_ref: str | None = None
+
+
+class StatutoryVersionDiff(BaseModel):
+    provision_id: str
+    act_name: str
+    act_number: str
+    section_code: str
+    language: str
+    from_date: date
+    to_date: date
+    change_status: Literal[
+        "UNCHANGED",
+        "AMENDED",
+        "NEWLY_ENACTED",
+        "REPEALED",
+        "NOT_IN_FORCE",
+    ]
+    from_node_id: str | None = None
+    to_node_id: str | None = None
+    from_status: StatutoryStatus | None = None
+    to_status: StatutoryStatus | None = None
+    from_text: str = ""
+    to_text: str = ""
+    from_source_spans: list[SourceSpan] = Field(default_factory=list)
+    to_source_spans: list[SourceSpan] = Field(default_factory=list)
+    transition_dates: list[date] = Field(default_factory=list)
+    transitions: list[StatutoryTransitionStep] = Field(default_factory=list)
+    added_clauses: list[str] = Field(default_factory=list)
+    removed_clauses: list[str] = Field(default_factory=list)
+    modified_clauses: list[ClauseDiffSegment] = Field(default_factory=list)
+    unified_redline: list[ClauseDiffSegment] = Field(default_factory=list)
+    related_gazettes: list[str] = Field(default_factory=list)
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+class StatutoryDiffRequest(BaseModel):
+    provision_id: str = Field(..., min_length=1)
+    from_date: date
+    to_date: date
+
+
+class ContractDeltaAuditRequest(BaseModel):
+    document_id: str = Field(default="DELTA-AUDIT-001", min_length=1)
+    raw_text: str = Field(..., min_length=1)
+    from_date: date
+    to_date: date
+    act_filter: str | None = None
+    regimes: list[str] | None = None
+    territorial_scope: TerritorialScope = Field(default=TerritorialScope.ALL_MALAYSIA)
+    persona: OutputPersona = Field(default=OutputPersona.PRACTITIONER)
+
+
+class ContractDeltaFinding(BaseModel):
+    rule_id: str
+    section_ref: str
+    impact_type: Literal[
+        "NEWLY_NON_COMPLIANT",
+        "SEVERITY_ESCALATED",
+        "NEW_STATUTORY_MANDATE",
+        "REMEDIATED_BY_REPEAL",
+        "UNCHANGED",
+    ]
+    from_status: str
+    to_status: str
+    from_severity: RiskSeverity | None = None
+    to_severity: RiskSeverity | None = None
+    exact_quote: str
+    triggering_statute_ids: list[str] = Field(default_factory=list)
+    triggering_gazettes: list[str] = Field(default_factory=list)
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    explanation_practitioner: str
+    explanation_rakyat: str
+
+
+class ContractDeltaAuditResponse(BaseModel):
+    document_id: str
+    from_date: date
+    to_date: date
+    territorial_scope: TerritorialScope
+    persona: OutputPersona
+    from_overall_risk: RiskSeverity
+    to_overall_risk: RiskSeverity
+    became_non_compliant: bool
+    compliance_regression_detected: bool
+    pii_scrub: PIIScrubSummary
+    intervening_statutory_diffs: list[StatutoryVersionDiff] = Field(default_factory=list)
+    newly_commenced_gazettes: list[str] = Field(default_factory=list)
+    delta_findings: list[ContractDeltaFinding] = Field(default_factory=list)
+    summary_practitioner: str
+    summary_rakyat: str
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER

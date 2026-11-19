@@ -4,6 +4,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from lexgraph_lah.graph.bilingual_critic import (
+    audit_bilingual_divergence,
+    audit_bilingual_pair,
+)
 from lexgraph_lah.graph.bilingual_router import normalize_and_expand_query
 from lexgraph_lah.graph.reranker import (
     AUTHORITY_LABELS,
@@ -18,6 +22,8 @@ from lexgraph_lah.schemas.domain import (
     AuthorityBreakdownItem,
     AuthorityTier,
     BilingualClausePair,
+    BilingualDivergenceReport,
+    DeonticConstraint,
     GroundedClaim,
     HierarchyLevel,
     JudicialTreatmentItem,
@@ -29,6 +35,7 @@ from lexgraph_lah.schemas.domain import (
     StatutoryEdge,
     StatutoryNode,
     StatutoryStatus,
+    StatutoryVersionDiff,
     SubgraphVisualizationData,
     TemporalEdgeType,
     TerritorialScope,
@@ -620,7 +627,12 @@ class TemporalGraphStore:
             key=lambda n: (int(n.authority_tier), n.act_name, n.section_code, n.version),
         )
 
-    def get_bilingual_pair(self, node_id: str) -> BilingualClausePair | None:
+    def get_bilingual_pair(
+        self,
+        node_id: str,
+        include_divergence: bool = False,
+        as_of_date: date | None = None,
+    ) -> BilingualClausePair | None:
         """Returns paired English and Bahasa Melayu StatutoryNodes + SourceSpans for a node."""
         node = self._nodes.get(node_id)
         if not node:
@@ -652,6 +664,19 @@ class TemporalGraphStore:
         if bm_node:
             spans.extend(bm_node.source_spans)
 
+        div_report: BilingualDivergenceReport | None = None
+        if include_divergence:
+            div_report = audit_bilingual_pair(
+                en_node=en_node,
+                bm_node=bm_node,
+                authoritative_node_id=auth_id,
+                as_of_date=as_of_date,
+                provision_id=node.node_id,
+                act_name=node.act_name,
+                act_number=node.act_number,
+                section_code=node.section_code,
+            )
+
         return BilingualClausePair(
             section_code=node.section_code,
             act_name=node.act_name,
@@ -661,6 +686,35 @@ class TemporalGraphStore:
             authoritative_node_id=auth_id,
             gazette_ref=node.gazette_ref,
             source_spans=spans,
+            divergence_report=div_report,
+        )
+
+    def diff_statute_lineage(
+        self,
+        provision_id: str,
+        from_date: date,
+        to_date: date,
+    ) -> StatutoryVersionDiff:
+        """Compares a statutory provision across `from_date` and `to_date` at zero token cost."""
+        from lexgraph_lah.graph.diff_engine import diff_statute_lineage
+
+        return diff_statute_lineage(
+            provision_id=provision_id,
+            from_date=from_date,
+            to_date=to_date,
+            store=self,
+        )
+
+    def audit_bilingual_divergence(
+        self,
+        node_id: str,
+        as_of_date: date | None = None,
+    ) -> BilingualDivergenceReport:
+        """Runs the Act 388 s. 63 Bilingual Divergence Critic on a stored statutory pair."""
+        return audit_bilingual_divergence(
+            node_id=node_id,
+            as_of_date=as_of_date,
+            store=self,
         )
 
     def get_hierarchy_chain(self, node_id: str) -> list[StatutoryNode]:
@@ -1088,7 +1142,9 @@ class TemporalGraphStore:
 
             for node in matched_statutes:
                 traversal_target_ids.add(node.node_id)
-                pair = self.get_bilingual_pair(node.node_id)
+                pair = self.get_bilingual_pair(
+                    node.node_id, include_divergence=True, as_of_date=effective_date
+                )
                 if pair:
                     dedup_key = f"{pair.act_number}:{pair.section_code}"
                     if dedup_key not in bilingual_pairs_map:
@@ -1423,6 +1479,13 @@ class TemporalGraphStore:
                 trace_id=f"pit-{uuid.uuid4().hex[:8]}",
             )
 
+            bilingual_crosswalk_list = list(bilingual_pairs_map.values())
+            divergence_warnings = [
+                pair.divergence_report
+                for pair in bilingual_crosswalk_list
+                if pair.divergence_report is not None and pair.divergence_report.has_divergence
+            ]
+
             return PointInTimeResearchResponse(
                 status="grounded",
                 query=req.query,
@@ -1438,7 +1501,8 @@ class TemporalGraphStore:
                 citations=citations,
                 authority_breakdown=authority_breakdown,
                 amendment_timeline=amendment_timeline,
-                bilingual_crosswalk=list(bilingual_pairs_map.values()),
+                bilingual_crosswalk=bilingual_crosswalk_list,
+                bilingual_divergence_warnings=divergence_warnings,
                 judicial_treatments=judicial_treatments,
                 subgraph=SubgraphVisualizationData(
                     nodes=subgraph_nodes,
@@ -1681,6 +1745,28 @@ def get_default_temporal_store() -> TemporalGraphStore:
         authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
         territorial_scope=[TerritorialScope.ALL_MALAYSIA],
         gazette_ref="Act A1727 / P.U. (B) 512/2024",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT709-SEC9-PROC-LIABILITY",
+                regime_id="ACT_709",
+                modality="PROHIBITION",
+                metric_key="processor_direct_liability",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="zero_statutory_liability_waiver",
+                description="Data processors cannot contractually exclude direct statutory Security Principle liability under Act 709 s. 9(1A).",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT709-SEC12B-NOTICE-72H",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="incident_notice_max_hours",
+                operator="<=",
+                threshold_value=72.0,
+                unit="hours",
+                description="Mandatory breach notification to the Commissioner within 72 hours under s. 12B [Act A1727].",
+            ),
+        ],
         source_spans=[
             SourceSpan(
                 span_id="SPAN-PDPA-SEC-9-V2-EN",
@@ -1923,7 +2009,34 @@ def get_default_temporal_store() -> TemporalGraphStore:
         ),
     ]
 
+    pdpa_deontic_by_id: dict[str, list[DeonticConstraint]] = {
+        "PDPA-2010-SEC-8-V1": [
+            DeonticConstraint(
+                constraint_id="DC-ACT709-SEC8-XFER",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="cross_border_transfer_condition",
+                operator="==",
+                threshold_value="consent_or_adequacy_required",
+                description="Disclosure and offshore transfer require consent or adequacy safeguards under Act 709.",
+            ),
+        ],
+        "PDPA-2010-SEC-12B-V1": [
+            DeonticConstraint(
+                constraint_id="DC-ACT709-SEC12B-NOTICE",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="incident_notice_max_hours",
+                operator="<=",
+                threshold_value=72.0,
+                unit="hours",
+                description="Notify Commissioner within 72 hours under Act 709 s. 12B [Act A1727].",
+            ),
+        ],
+    }
+
     for nid, scode, vfrom, gref, page, en_txt, bm_txt in pdpa_principles_specs:
+        node_constraints = pdpa_deontic_by_id.get(nid, [])
         en_n = StatutoryNode(
             node_id=nid,
             act_name="Personal Data Protection Act 2010",
@@ -1938,6 +2051,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
             authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
             territorial_scope=[TerritorialScope.ALL_MALAYSIA],
             gazette_ref=gref,
+            regime_code="ACT_709",
+            deontic_constraints=node_constraints,
             source_spans=[
                 SourceSpan(
                     span_id=f"SPAN-{nid}-EN",
@@ -1965,6 +2080,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
             authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
             territorial_scope=[TerritorialScope.ALL_MALAYSIA],
             gazette_ref=gref,
+            regime_code="ACT_709",
+            deontic_constraints=node_constraints,
             source_spans=[
                 SourceSpan(
                     span_id=f"SPAN-{nid}-BM",
@@ -2092,6 +2209,84 @@ def get_default_temporal_store() -> TemporalGraphStore:
     )
     _add_bilingual_pair(store, sarawak_ord_en, sarawak_ord_bm, authoritative="en")
 
+    # Labuan Offshore Financial Services [Act 704] (Labuan territorial isolation)
+    labuan_en = StatutoryNode(
+        node_id="LABUAN-FSA-SEC-10-V1",
+        act_name="Labuan Financial Services and Securities Act 2010",
+        act_number="Act 704",
+        section_code="SEC-10",
+        version=1,
+        language="en",
+        text=(
+            "Section 10 (Offshore Financial Licensing - Labuan): A person shall not carry on "
+            "Labuan financial business in or from Labuan unless licensed by the Labuan Financial "
+            "Services Authority under Act 704."
+        ),
+        valid_from=date(2010, 2, 11),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.LABUAN],
+        gazette_ref="Act 704",
+        regime_code="ACT_704",
+    )
+    labuan_bm = StatutoryNode(
+        node_id="LABUAN-FSA-SEC-10-V1-BM",
+        act_name="Akta Perkhidmatan Kewangan dan Sekuriti Labuan 2010",
+        act_number="Act 704",
+        section_code="SEC-10",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 10 (Pelesenan Kewangan Luar Pesisir - Labuan): Seseorang tidak boleh menjalankan "
+            "perniagaan kewangan Labuan di atau dari Labuan melainkan dilesenkan oleh Lembaga "
+            "Perkhidmatan Kewangan Labuan di bawah Akta 704."
+        ),
+        valid_from=date(2010, 2, 11),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.LABUAN],
+        gazette_ref="Akta 704",
+        regime_code="ACT_704",
+    )
+    _add_bilingual_pair(store, labuan_en, labuan_bm, authoritative="en")
+
+    # Interpretation Acts 1948 and 1967 [Act 388] s. 63 (Authoritative Bilingual Text)
+    act388_en = StatutoryNode(
+        node_id="ACT-388-SEC-63-V1",
+        act_name="Interpretation Acts 1948 and 1967",
+        act_number="Act 388",
+        section_code="SEC-63",
+        version=1,
+        language="en",
+        text=(
+            "Section 63 (Authoritative Text of Bilingual Laws - Act 388): Where a written law is enacted "
+            "in both the national language and English, the text in the national language shall be the "
+            "authoritative text unless otherwise prescribed by order of the Yang di-Pertuan Agong."
+        ),
+        valid_from=date(1967, 5, 18),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 388",
+        regime_code="ACT_388",
+    )
+    act388_bm = StatutoryNode(
+        node_id="ACT-388-SEC-63-V1-BM",
+        act_name="Akta Tafsiran 1948 dan 1967",
+        act_number="Act 388",
+        section_code="SEC-63",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 63 (Teks Sahih Undang-Undang Dwibahasa - Akta 388): Jika sesuatu undang-undang bertulis "
+            "diperbuat dalam bahasa kebangsaan dan bahasa Inggeris, teks dalam bahasa kebangsaan hendaklah "
+            "menjadi teks sahih melainkan diperuntukkan selainnya melalui perintah Yang di-Pertuan Agong."
+        ),
+        valid_from=date(1967, 5, 18),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 388",
+        regime_code="ACT_388",
+    )
+    _add_bilingual_pair(store, act388_en, act388_bm, authoritative="bm")
+
     # =========================================================================
     # Tier 3: Subsidiary Legislation (P.U. (A) & P.U. (B))
     # =========================================================================
@@ -2110,6 +2305,19 @@ def get_default_temporal_store() -> TemporalGraphStore:
         authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
         territorial_scope=[TerritorialScope.ALL_MALAYSIA],
         gazette_ref="P.U. (A) 342/2024",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-PUA342-REG3-72H",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="incident_notice_max_hours",
+                operator="<=",
+                threshold_value=72.0,
+                unit="hours",
+                description="Electronic personal data breach notification within 72 hours under P.U. (A) 342/2024 Reg 3.",
+            ),
+        ],
     )
     store.upsert_node(pua_342)
 
@@ -2418,6 +2626,305 @@ def get_default_temporal_store() -> TemporalGraphStore:
     store.upsert_node(jpdp_circ)
 
     # =========================================================================
+    # Tier 2 & 3: Cyber Security Act 2024 [Act 854] & P.U. (A) 220/2024 (eff. 2024-08-26)
+    # =========================================================================
+    csa_act = StatutoryNode(
+        node_id="CSA-2024-ACT",
+        act_name="Cyber Security Act 2024",
+        act_number="Act 854",
+        section_code="ACT-854",
+        hierarchy_level=HierarchyLevel.ACT,
+        text="Cyber Security Act 2024 [Act 854]: An Act to enhance national cyber security and regulate National Critical Information Infrastructure (NCII).",
+        valid_from=date(2024, 8, 26),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 854 / P.U. (B) 338/2024",
+        regime_code="ACT_854",
+    )
+    store.upsert_node(csa_act)
+
+    csa_s22_en = StatutoryNode(
+        node_id="CSA-2024-SEC-22-V1",
+        act_name="Cyber Security Act 2024",
+        act_number="Act 854",
+        section_code="SEC-22",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 22 (Cyber Security Risk Assessment and Audit - Act 854): An NCII entity shall "
+            "conduct mandatory cyber security risk assessments and statutory audits as directed by the "
+            "Chief Executive (NACSA) and cannot contractually exclude regulatory audit access."
+        ),
+        valid_from=date(2024, 8, 26),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 854",
+        regime_code="ACT_854",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT854-SEC22-AUDIT",
+                regime_id="ACT_854",
+                modality="OBLIGATION",
+                metric_key="regulator_audit_access",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory NCII cyber risk assessment and NACSA/regulator audit access under Act 854 s. 22.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT854-SEC22-WAIVER",
+                regime_id="ACT_854",
+                modality="PROHIBITION",
+                metric_key="processor_direct_liability",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="zero_statutory_liability_waiver",
+                description="Vendors/subcontractors supporting NCII cannot exclude statutory cyber security risk & audit accountability.",
+            ),
+        ],
+        source_spans=[
+            SourceSpan(
+                span_id="SPAN-CSA-2024-SEC-22-EN",
+                act_number="Act 854",
+                section_id="SEC-22",
+                language="en",
+                pdf_page=24,
+                char_offset_start=0,
+                char_offset_end=247,
+                text=(
+                    "Section 22 (Cyber Security Risk Assessment and Audit - Act 854): An NCII entity shall "
+                    "conduct mandatory cyber security risk assessments and statutory audits as directed by the "
+                    "Chief Executive (NACSA) and cannot contractually exclude regulatory audit access."
+                ),
+            )
+        ],
+    )
+    csa_s22_bm = StatutoryNode(
+        node_id="CSA-2024-SEC-22-V1-BM",
+        act_name="Akta Keselamatan Siber 2024",
+        act_number="Act 854",
+        section_code="SEC-22",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 22 (Penilaian Risiko dan Audit Keselamatan Siber - Akta 854): Entiti Infrastruktur "
+            "Maklumat Kritikal Negara (NCII) wajib menjalankan penilaian risiko dan audit keselamatan siber "
+            "serta membenarkan akses audit pengawal selia NACSA."
+        ),
+        valid_from=date(2024, 8, 26),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 854",
+        regime_code="ACT_854",
+        deontic_constraints=csa_s22_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, csa_s22_en, csa_s22_bm, authoritative="bm")
+
+    csa_s23_en = StatutoryNode(
+        node_id="CSA-2024-SEC-23-V1",
+        act_name="Cyber Security Act 2024",
+        act_number="Act 854",
+        section_code="SEC-23",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 23 (Notification of Cyber Security Incident - Act 854): An NCII entity shall notify "
+            "NACSA and the sector lead immediately upon becoming aware of a cyber security incident, with "
+            "initial particulars within 6 hours and a full report within 14 days."
+        ),
+        valid_from=date(2024, 8, 26),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 854",
+        regime_code="ACT_854",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT854-SEC23-6H",
+                regime_id="ACT_854",
+                modality="OBLIGATION",
+                metric_key="incident_notice_max_hours",
+                operator="<=",
+                threshold_value=6.0,
+                unit="hours",
+                description="Immediate notice and initial particulars within 6 hours under Act 854 s. 23 & P.U. (A) 220/2024.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT854-SEC23-14D",
+                regime_id="ACT_854",
+                modality="OBLIGATION",
+                metric_key="full_report_max_days",
+                operator="<=",
+                threshold_value=14.0,
+                unit="days",
+                description="Full cyber security incident report within 14 days under Act 854 s. 23 & P.U. (A) 220/2024.",
+            ),
+        ],
+    )
+    csa_s23_bm = StatutoryNode(
+        node_id="CSA-2024-SEC-23-V1-BM",
+        act_name="Akta Keselamatan Siber 2024",
+        act_number="Act 854",
+        section_code="SEC-23",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 23 (Pemberitahuan Insiden Keselamatan Siber - Akta 854): Entiti NCII wajib "
+            "memaklumkan NACSA dengan segera, mengemukakan butiran awal dalam tempoh 6 jam dan "
+            "laporan penuh dalam tempoh 14 hari."
+        ),
+        valid_from=date(2024, 8, 26),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 854",
+        regime_code="ACT_854",
+        deontic_constraints=csa_s23_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, csa_s23_en, csa_s23_bm, authoritative="bm")
+
+    pua_220_en = StatutoryNode(
+        node_id="PUA-220-2024-REG-4",
+        act_name="Cyber Security (Notification of Cyber Security Incident) Regulations 2024",
+        act_number="P.U. (A) 220/2024",
+        section_code="REG-4",
+        version=1,
+        language="en",
+        text=(
+            "Regulation 4 [P.U. (A) 220/2024]: Mandates immediate notification of an NCII cyber security "
+            "incident, submission of prescribed initial particulars within 6 hours, and submission of a "
+            "comprehensive post-incident report within 14 days to NACSA."
+        ),
+        valid_from=date(2024, 8, 26),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 220/2024",
+        regime_code="ACT_854",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-PUA220-REG4-6H",
+                regime_id="ACT_854",
+                modality="OBLIGATION",
+                metric_key="incident_notice_max_hours",
+                operator="<=",
+                threshold_value=6.0,
+                unit="hours",
+                description="P.U. (A) 220/2024 Reg 4 requires 6-hour initial NCII incident particulars.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-PUA220-REG4-14D",
+                regime_id="ACT_854",
+                modality="OBLIGATION",
+                metric_key="full_report_max_days",
+                operator="<=",
+                threshold_value=14.0,
+                unit="days",
+                description="P.U. (A) 220/2024 Reg 4 requires 14-day full cyber incident report.",
+            ),
+        ],
+    )
+    pua_220_bm = StatutoryNode(
+        node_id="PUA-220-2024-REG-4-BM",
+        act_name="Peraturan-Peraturan Keselamatan Siber (Pemberitahuan Insiden Keselamatan Siber) 2024",
+        act_number="P.U. (A) 220/2024",
+        section_code="REG-4",
+        version=1,
+        language="bm",
+        text=(
+            "Peraturan 4 [P.U. (A) 220/2024]: Mewajibkan pemberitahuan segera insiden keselamatan siber "
+            "NCII, penyerahan butiran awal dalam tempoh 6 jam dan laporan penuh dalam tempoh 14 hari kepada NACSA."
+        ),
+        valid_from=date(2024, 8, 26),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 220/2024",
+        regime_code="ACT_854",
+        deontic_constraints=pua_220_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pua_220_en, pua_220_bm, authoritative="bm")
+
+    # =========================================================================
+    # Tier 3: BNM RMiT (Risk Management in Technology) Policy Document
+    # =========================================================================
+    bnm_rmit_incident_en = StatutoryNode(
+        node_id="BNM-RMIT-SEC-10-32-V1",
+        act_name="BNM Risk Management in Technology (RMiT)",
+        act_number="BNM/RH/PD 028-98",
+        section_code="PARA-10.32",
+        version=1,
+        language="en",
+        text=(
+            "BNM RMiT Paragraph 10.32 & 12.1 (Critical Incident & Cloud Oversight): A financial institution "
+            "shall notify Bank Negara Malaysia of any critical technology or cyber incident within 1 hour "
+            "of detection, and third-party cloud agreements must preserve BNM audit access and tested exit plans."
+        ),
+        valid_from=date(2020, 6, 19),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="BNM/RH/PD 028-98 (RMiT)",
+        regime_code="BNM_RMIT",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-BNMRMIT-1H",
+                regime_id="BNM_RMIT",
+                modality="OBLIGATION",
+                metric_key="incident_notice_max_hours",
+                operator="<=",
+                threshold_value=1.0,
+                unit="hours",
+                description="BNM RMiT mandates critical technology incident escalation within 1 hour of detection.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-BNMRMIT-AUDIT",
+                regime_id="BNM_RMIT",
+                modality="OBLIGATION",
+                metric_key="regulator_audit_access",
+                operator="==",
+                threshold_value=True,
+                description="BNM RMiT mandates unrestricted regulator & internal audit access over third-party/cloud providers.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-BNMRMIT-CLOUD-EXIT",
+                regime_id="BNM_RMIT",
+                modality="OBLIGATION",
+                metric_key="cross_border_transfer_condition",
+                operator="==",
+                threshold_value="bnm_oversight_and_exit_plan_required",
+                description="BNM RMiT mandates documented cloud exit plans and data residency/regulatory oversight.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-BNMRMIT-LIABILITY",
+                regime_id="BNM_RMIT",
+                modality="PROHIBITION",
+                metric_key="processor_direct_liability",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="zero_statutory_liability_waiver",
+                description="Outsourcing/cloud agreements cannot waive vendor regulatory accountability under BNM RMiT.",
+            ),
+        ],
+    )
+    bnm_rmit_incident_bm = StatutoryNode(
+        node_id="BNM-RMIT-SEC-10-32-V1-BM",
+        act_name="Dokumen Polisi Pengurusan Risiko Teknologi BNM (RMiT)",
+        act_number="BNM/RH/PD 028-98",
+        section_code="PARA-10.32",
+        version=1,
+        language="bm",
+        text=(
+            "BNM RMiT Perenggan 10.32 & 12.1 (Insiden Kritikal & Pengawasan Awan): Institusi kewangan "
+            "hendaklah memaklumkan Bank Negara Malaysia mengenai sebarang insiden teknologi kritikal dalam "
+            "tempoh 1 jam serta mengekalkan hak audit BNM dan pelan keluar perkhidmatan awan."
+        ),
+        valid_from=date(2020, 6, 19),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="BNM/RH/PD 028-98 (RMiT)",
+        regime_code="BNM_RMIT",
+        deontic_constraints=bnm_rmit_incident_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, bnm_rmit_incident_en, bnm_rmit_incident_bm, authoritative="en")
+
+    # =========================================================================
     # Cross-reference CITES edges
     # =========================================================================
     store.add_citation(
@@ -2431,6 +2938,12 @@ def get_default_temporal_store() -> TemporalGraphStore:
     )
     store.add_citation(
         "PDPA-2010-SEC-12A-V1", "JPDP-CIRC-01-2025", effective_date=date(2025, 2, 1), gazette_ref="JPDP Circular 01/2025"
+    )
+    store.add_citation(
+        "CSA-2024-SEC-23-V1", "PUA-220-2024-REG-4", effective_date=date(2024, 8, 26), gazette_ref="P.U. (A) 220/2024"
+    )
+    store.add_citation(
+        "BNM-RMIT-SEC-10-32-V1", "CSA-2024-SEC-23-V1", effective_date=date(2024, 8, 26), gazette_ref="Act 854"
     )
 
     return store

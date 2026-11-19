@@ -3,6 +3,7 @@ import asyncio
 import math
 from datetime import date
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pydantic import BaseModel, Field
@@ -13,10 +14,25 @@ from lexgraph_lah.eval.harness import (
     evaluate_entity_and_citation_grounding,
     evaluate_temporal_context,
 )
+from lexgraph_lah.graph.bilingual_critic import (
+    audit_bilingual_divergence,
+    audit_bilingual_pair,
+)
+from lexgraph_lah.graph.diff_engine import (
+    diff_statute_lineage,
+    evaluate_contract_delta_impact,
+)
+from lexgraph_lah.graph.reranker import rerank_statutes_and_spans
+from lexgraph_lah.graph.temporal_store import get_default_temporal_store
 from lexgraph_lah.schemas.domain import (
+    AuthorityTier,
     ClauseAudit,
     ClauseExtractionList,
+    ContractDeltaAuditRequest,
     RiskSeverity,
+    SourceSpan,
+    StatutoryNode,
+    TerritorialScope,
 )
 from lexgraph_lah.telemetry.cost_tracker import (
     assert_within_budget,
@@ -58,7 +74,18 @@ class BenchmarkCase(BaseModel):
     case_id: str
     title: str
     reference_date: date
-    act_filter: str = "Personal Data Protection Act 2010"
+    act_filter: str | None = "Personal Data Protection Act 2010"
+    regimes: list[str] | None = None
+    territorial_scope: str | None = None
+    expect_abstained: bool = False
+    expect_pii_redactions_min: int = 0
+    expected_pii_tokens_absent: list[str] = Field(default_factory=list)
+    check_kind: Literal[
+        "langgraph",
+        "territorial_rerank",
+        "lineage_diff",
+        "bilingual_divergence",
+    ] = "langgraph"
     contract_text: str
     expected_overall_risk: RiskSeverity
     expected_active_statute_ids: set[str]
@@ -107,9 +134,10 @@ class BenchmarkSummary(BaseModel):
 
 def get_benchmark_dataset() -> list[BenchmarkCase]:
     """
-    Returns 10 structured Malaysian regulatory compliance benchmark scenarios covering
-    pre-amendment (2024) and post-amendment (2025/2026) PDPA statutory regimes,
-    compliant clauses, critical violations, and bounded critic self-correction.
+    Returns 20 structured Malaysian regulatory compliance benchmark scenarios (v2) covering
+    pre-amendment (2024) and post-amendment (2025/2026) PDPA statutory regimes, Act 854
+    P.U. (A) 220/2024, BNM RMiT, shadow overrides, 0.78 abstention gate, 5-tier territorial
+    reranking, pre-flight PII scrubbing, zero-token lineage diffing, and Act 388 divergence.
     """
     return [
         BenchmarkCase(
@@ -476,6 +504,359 @@ def get_benchmark_dataset() -> list[BenchmarkCase]:
                 )
             ],
         ),
+        BenchmarkCase(
+            case_id="BENCH-11-COUNTERFACTUAL-ACT854-RETRY",
+            title="2026 Multi-Regime Counterfactual Critic Rejects 24h Redline Under Act 854 (<=6h)",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_709", "ACT_854"],
+            contract_text=(
+                "SEC-11.1 NCII Incident Notice: Vendor shall report any NCII cyber security "
+                "incident or personal data breach within 72 hours."
+            ),
+            expected_overall_risk=RiskSeverity.HIGH,
+            expected_active_statute_ids={
+                "PDPA-2010-SEC-9-V2",
+                "CSA-2024-SEC-23-V1",
+                "PUA-220-2024-REG-4",
+            },
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"SEC-11.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-11.1",
+                            category="Multi-Regime Incident Notice",
+                            exact_quote=(
+                                "SEC-11.1 NCII Incident Notice: Vendor shall report any NCII cyber security "
+                                "incident or personal data breach within 72 hours."
+                            ),
+                            severity=RiskSeverity.HIGH,
+                            rationale="Under Act 854 P.U. (A) 220/2024, 72h exceeds the 6-hour limit.",
+                            recommended_redline="Vendor shall report cyber security incidents within 24 hours.",
+                            violated_statute_ids=["PUA-220-2024-REG-4"],
+                            proposed_notice_hours=24.0,
+                        )
+                    ],
+                    550,
+                    150,
+                ),
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-11.1",
+                            category="Multi-Regime Incident Notice",
+                            exact_quote=(
+                                "SEC-11.1 NCII Incident Notice: Vendor shall report any NCII cyber security "
+                                "incident or personal data breach within 72 hours."
+                            ),
+                            severity=RiskSeverity.HIGH,
+                            rationale="Colliding Act 709 (72h) and Act 854 P.U. (A) 220/2024 (6h) resolves to <= 6 hours.",
+                            recommended_redline=(
+                                "Vendor shall notify NACSA and Client within 4 hours with initial particulars "
+                                "and submit a full report within 14 days."
+                            ),
+                            violated_statute_ids=["PUA-220-2024-REG-4", "CSA-2024-SEC-23-V1"],
+                            proposed_notice_hours=4.0,
+                            proposed_report_days=14.0,
+                        )
+                    ],
+                    640,
+                    175,
+                ),
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-12-FINTECH-BNM-RMIT-1H-ENVELOPE",
+            title="2026 FinTech Tri-Regime Collision (Act 709 + Act 854 + BNM RMiT 1h Envelope)",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_709", "ACT_854", "BNM_RMIT"],
+            contract_text=(
+                "SEC-12.1 Critical Tech Escalation: Vendor shall notify financial institution "
+                "of critical technology incidents within 6 hours."
+            ),
+            expected_overall_risk=RiskSeverity.CRITICAL,
+            expected_active_statute_ids={
+                "PDPA-2010-SEC-9-V2",
+                "PUA-220-2024-REG-4",
+                "BNM-RMIT-SEC-10-32-V1",
+            },
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"SEC-12.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-12.1",
+                            category="BNM RMiT Critical Incident Escalation",
+                            exact_quote=(
+                                "SEC-12.1 Critical Tech Escalation: Vendor shall notify financial institution "
+                                "of critical technology incidents within 6 hours."
+                            ),
+                            severity=RiskSeverity.CRITICAL,
+                            rationale="BNM RMiT Paragraph 10.32 requires 1-hour escalation, overriding 6h Act 854 and 72h Act 709.",
+                            recommended_redline="Vendor shall escalate critical technology incidents within 1 hour of detection.",
+                            violated_statute_ids=["BNM-RMIT-SEC-10-32-V1"],
+                            proposed_notice_hours=1.0,
+                        )
+                    ],
+                    590,
+                    170,
+                )
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-13-SHADOW-OVERRIDE-EN",
+            title="Adversarial EN Shadow Override Trap ('Notwithstanding Clause 5.1')",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_709", "ACT_854"],
+            contract_text=(
+                "SEC-5.1 Data Security: Vendor shall safeguard personal data and report incidents within 4 hours. "
+                "SEC-14.1 Limitation: Notwithstanding Clause 5.1, the Vendor shall bear zero statutory liability."
+            ),
+            expected_overall_risk=RiskSeverity.CRITICAL,
+            expected_active_statute_ids={"PDPA-2010-SEC-9-V2", "CSA-2024-SEC-22-V1"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"SEC-5.1", "SEC-14.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-5.1",
+                            category="Shadow-Overridden Security Clause",
+                            exact_quote=(
+                                "SEC-5.1 Data Security: Vendor shall safeguard personal data and report incidents within 4 hours."
+                            ),
+                            severity=RiskSeverity.HIGH,
+                            rationale="Subordinated by SEC-14.1 Notwithstanding Clause 5.1 carve-out.",
+                            recommended_redline=(
+                                "Notwithstanding anything to the contrary in SEC-14.1, Vendor shall comply with "
+                                "Act 709 and Act 854 and notify within 4 hours."
+                            ),
+                            violated_statute_ids=["PDPA-2010-SEC-9-V2"],
+                            overriding_clause_id="SEC-14.1",
+                            overriding_clause_quote="SEC-14.1 Limitation: Notwithstanding Clause 5.1, the Vendor shall bear zero statutory liability.",
+                            addresses_shadow_override=True,
+                            proposed_notice_hours=4.0,
+                        ),
+                        ClauseAudit(
+                            clause_id="SEC-14.1",
+                            category="Shadow Override Trap",
+                            exact_quote="SEC-14.1 Limitation: Notwithstanding Clause 5.1, the Vendor shall bear zero statutory liability.",
+                            severity=RiskSeverity.CRITICAL,
+                            rationale="Hostile priority carve-out voids statutory liability under Act 709 s. 9(1A).",
+                            recommended_redline="SEC-14.1 shall not limit Vendor's statutory duties under Act 709 or Act 854.",
+                            violated_statute_ids=["PDPA-2010-SEC-9-V2"],
+                        ),
+                    ],
+                    640,
+                    210,
+                )
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-14-SHADOW-OVERRIDE-BM",
+            title="Adversarial Bahasa Melayu Shadow Override ('Walau apa pun...')",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_709", "ACT_854"],
+            contract_text=(
+                "Klausa 5.1 Keselamatan Data: Pemproses Data hendaklah melaporkan insiden dalam tempoh 4 jam. "
+                "Klausa 14.1 Pengecualian: Walau apa pun yang terkandung dalam Klausa 5.1, Pemproses Data "
+                "mempunyai tiada liabiliti berkanun."
+            ),
+            expected_overall_risk=RiskSeverity.CRITICAL,
+            expected_active_statute_ids={"PDPA-2010-SEC-9-V2-BM", "CSA-2024-SEC-23-V1-BM"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1-BM"},
+            expected_clause_ids={"SEC-14.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-14.1",
+                            category="Perangkap Walau Apa Pun",
+                            exact_quote=(
+                                "Klausa 14.1 Pengecualian: Walau apa pun yang terkandung dalam Klausa 5.1, Pemproses Data "
+                                "mempunyai tiada liabiliti berkanun."
+                            ),
+                            severity=RiskSeverity.CRITICAL,
+                            rationale="Klausa 14.1 mengatasi Klausa 5.1 dan melanggar Seksyen 9(1A) Akta 709.",
+                            recommended_redline=(
+                                "Walau apa pun peruntukan had liabiliti, Pemproses Data kekal tertakluk kepada "
+                                "tanggungan berkanun di bawah Akta 709 dan Akta 854."
+                            ),
+                            violated_statute_ids=["PDPA-2010-SEC-9-V2-BM"],
+                            addresses_shadow_override=True,
+                        )
+                    ],
+                    610,
+                    185,
+                )
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-15-ABSTENTION-GATE-OOD",
+            title="0.78 Abstention Gate Rejection on Out-of-Domain Recipe Query",
+            reference_date=date(2026, 3, 15),
+            expect_abstained=True,
+            contract_text=(
+                "Best nasi lemak sambal recipe using toasted belacan, coconut milk, pandan leaves, "
+                "and crispy fried anchovies served with cucumber slices."
+            ),
+            expected_overall_risk=RiskSeverity.LOW,
+            expected_active_statute_ids={"PDPA-2010-SEC-9-V2"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids=set(),
+            mock_attempts=[],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-16-TERRITORIAL-5TIER-RERANK",
+            title="5-Tier Authority Reranking & 5-Way Malaysian Territorial Isolation",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            check_kind="territorial_rerank",
+            contract_text="Working hours and offshore licensing across Peninsular, Sabah, Sarawak, Labuan, and Federal.",
+            expected_overall_risk=RiskSeverity.LOW,
+            expected_active_statute_ids={
+                "EA-1955-SEC-60A-V1",
+                "SABAH-CAP67-SEC-104-V1",
+                "SARAWAK-CAP76-SEC-105-V1",
+                "LABUAN-FSA-SEC-10-V1",
+                "FC-ART-8-V1",
+            },
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids=set(),
+            mock_attempts=[],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-17-PREFLIGHT-PII-SCRUB-GATE",
+            title="Pre-Flight Malaysian PII Scrubber (MyKad, Passport, Phone, Email) Before LLM",
+            reference_date=date(2026, 3, 15),
+            regimes=["ACT_709"],
+            expect_pii_redactions_min=4,
+            expected_pii_tokens_absent=[
+                "900101-14-5678",
+                "A12345678",
+                "+6012-3456789",
+                "ali.test@example.my",
+            ],
+            contract_text=(
+                "SEC-17.1 Processor Liability Waiver: For Customer NRIC 900101-14-5678 "
+                "(Passport A12345678, Tel +6012-3456789, Email ali.test@example.my), "
+                "Data Processor shall bear zero statutory liability."
+            ),
+            expected_overall_risk=RiskSeverity.CRITICAL,
+            expected_active_statute_ids={"PDPA-2010-SEC-9-V2", "PDPA-2010-SEC-130-V1"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"SEC-17.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-17.1",
+                            category="Statutory Liability Exclusion",
+                            exact_quote=(
+                                "SEC-17.1 Processor Liability Waiver: For Customer NRIC [MYKAD_01] "
+                                "(Passport [PASSPORT_01], Tel [PHONE_MY_01], Email [EMAIL_01]), "
+                                "Data Processor shall bear zero statutory liability."
+                            ),
+                            severity=RiskSeverity.CRITICAL,
+                            rationale="Violates PDPA-2010-SEC-9-V2 direct processor obligations.",
+                            recommended_redline="Data Processor shall comply with Section 9 of Act 709.",
+                            violated_statute_ids=["PDPA-2010-SEC-9-V2"],
+                        )
+                    ],
+                    615,
+                    180,
+                )
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-18-BITEMPORAL-PU-GAZETTE-TRANSITION",
+            title="Bi-Temporal P.U. (A) 220/2024 Active (2024-10-15) Before 2025 PDPA Commencement",
+            reference_date=date(2024, 10, 15),
+            act_filter=None,
+            regimes=["ACT_709", "ACT_854"],
+            contract_text=(
+                "SEC-18.1 NCII Incident Reporting: Vendor shall notify Client of any NCII "
+                "cyber security incident within 48 hours."
+            ),
+            expected_overall_risk=RiskSeverity.HIGH,
+            expected_active_statute_ids={
+                "PDPA-2010-SEC-9-V1",
+                "CSA-2024-SEC-23-V1",
+                "PUA-220-2024-REG-4",
+            },
+            forbidden_statute_ids={
+                "PDPA-2010-SEC-9-V2",
+                "PDPA-2010-SEC-12B-V1",
+                "PUA-342-2024-REG-3",
+                "PUB-512-2024-APPT",
+            },
+            expected_clause_ids={"SEC-18.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-18.1",
+                            category="Multi-Regime NCII Notice",
+                            exact_quote=(
+                                "SEC-18.1 NCII Incident Reporting: Vendor shall notify Client of any NCII "
+                                "cyber security incident within 48 hours."
+                            ),
+                            severity=RiskSeverity.HIGH,
+                            rationale="P.U. (A) 220/2024 (eff. 2024-08-26) mandates <= 6h NCII reporting.",
+                            recommended_redline=(
+                                "Vendor shall notify NACSA and Client within 4 hours with initial particulars "
+                                "and submit a full report within 14 days."
+                            ),
+                            violated_statute_ids=["PUA-220-2024-REG-4", "CSA-2024-SEC-23-V1"],
+                            proposed_notice_hours=4.0,
+                            proposed_report_days=14.0,
+                        )
+                    ],
+                    605,
+                    175,
+                )
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-19-LINEAGE-DIFF-AND-DELTA-IMPACT",
+            title="Zero-Token Statutory Diff & Contract Delta-Audit (2024-06-15 -> 2026-03-15)",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            check_kind="lineage_diff",
+            contract_text=(
+                "Section 9 Security Principle: Data User shall take practical steps to protect "
+                "personal data. Section 12B Personal Data Breach Notification: Data user shall "
+                "notify the Commissioner of a personal data breach within 10 days."
+            ),
+            expected_overall_risk=RiskSeverity.HIGH,
+            expected_active_statute_ids={"PDPA-2010-SEC-9-V2"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids=set(),
+            mock_attempts=[],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-20-ACT388-BILINGUAL-DIVERGENCE",
+            title="Zero-Token Act 388 s. 63 Bilingual Divergence & Precedence Critic",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            check_kind="bilingual_divergence",
+            contract_text="Act 388 s. 63 bilingual divergence detection across modality and deadline bounds.",
+            expected_overall_risk=RiskSeverity.HIGH,
+            expected_active_statute_ids={
+                "PDPA-2010-SEC-9-V2",
+                "ACT-574-SEC-420-V1",
+                "ACT-388-SEC-63-V1",
+            },
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids=set(),
+            mock_attempts=[],
+        ),
     ]
 
 
@@ -498,12 +879,292 @@ def _build_mock_llm_for_case(case: BenchmarkCase) -> MagicMock:
 async def _run_single_trial(
     case: BenchmarkCase, trial_index: int, mode: str
 ) -> CaseTrialResult:
+    if case.check_kind == "territorial_rerank":
+        store = get_default_temporal_store()
+        with measure_latency_ms() as elapsed_holder:
+            pen = store.search_with_abstention(
+                query="working hours and overtime under Employment Act 1955",
+                as_of_date=case.reference_date,
+                territorial_scope=TerritorialScope.PENINSULAR_MALAYSIA,
+            )
+            sab = store.search_with_abstention(
+                query="working hours and overtime rates for employees",
+                as_of_date=case.reference_date,
+                territorial_scope=TerritorialScope.SABAH,
+            )
+            sar = store.search_with_abstention(
+                query="working hours and overtime rates for employees",
+                as_of_date=case.reference_date,
+                territorial_scope=TerritorialScope.SARAWAK,
+            )
+            lab = store.search_with_abstention(
+                query="offshore financial business licensing Labuan Act 704",
+                as_of_date=case.reference_date,
+                territorial_scope=TerritorialScope.LABUAN,
+            )
+            fed = store.search_with_abstention(
+                query="All persons are equal before the law equality Article 8",
+                as_of_date=case.reference_date,
+                territorial_scope=TerritorialScope.FEDERAL_TERRITORIES,
+            )
+            common = "Statutory personal data breach compliance framework for Malaysia."
+            tier_nodes = [
+                StatutoryNode(
+                    node_id="T5",
+                    act_name="Circular",
+                    act_number="Circular 1/2025",
+                    section_code="C-1",
+                    text=common,
+                    valid_from=date(2025, 1, 1),
+                    authority_tier=AuthorityTier.TIER_5_AGENCY_CIRCULAR,
+                    source_spans=[SourceSpan(span_id="BT5", text=common)],
+                ),
+                StatutoryNode(
+                    node_id="T4",
+                    act_name="Regulations",
+                    act_number="P.U. (A) 1/2025",
+                    section_code="R-1",
+                    text=common,
+                    valid_from=date(2025, 1, 1),
+                    authority_tier=AuthorityTier.TIER_4_SUBSIDIARY_LEGISLATION,
+                    source_spans=[SourceSpan(span_id="BT4", text=common)],
+                ),
+                StatutoryNode(
+                    node_id="T3",
+                    act_name="Ordinance",
+                    act_number="Cap. 67",
+                    section_code="O-1",
+                    text=common,
+                    valid_from=date(2025, 1, 1),
+                    authority_tier=AuthorityTier.TIER_3_ORDINANCE,
+                    source_spans=[SourceSpan(span_id="BT3", text=common)],
+                ),
+                StatutoryNode(
+                    node_id="T2",
+                    act_name="Act",
+                    act_number="Act 709",
+                    section_code="A-1",
+                    text=common,
+                    valid_from=date(2025, 1, 1),
+                    authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+                    source_spans=[SourceSpan(span_id="BT2", text=common)],
+                ),
+                StatutoryNode(
+                    node_id="T1",
+                    act_name="Federal Constitution",
+                    act_number="Federal Constitution",
+                    section_code="ART-1",
+                    text=common,
+                    valid_from=date(1957, 8, 31),
+                    authority_tier=AuthorityTier.TIER_1_FEDERAL_CONSTITUTION,
+                    source_spans=[SourceSpan(span_id="BT1", text=common)],
+                ),
+            ]
+            abstained_t, _, _, _, ranked_t = rerank_statutes_and_spans(
+                query="personal data breach compliance framework",
+                nodes=tier_nodes,
+                abstention_threshold=0.78,
+            )
+
+        pen_ids = {r.node_id for r in pen.results}
+        sab_ids = {r.node_id for r in sab.results}
+        sar_ids = {r.node_id for r in sar.results}
+        lab_ids = {r.node_id for r in lab.results}
+        fed_ids = {r.node_id for r in fed.results}
+        ok = (
+            "EA-1955-SEC-60A-V1" in pen_ids
+            and "SABAH-CAP67-SEC-104-V1" not in pen_ids
+            and "SABAH-CAP67-SEC-104-V1" in sab_ids
+            and "EA-1955-SEC-60A-V1" not in sab_ids
+            and "SARAWAK-CAP76-SEC-105-V1" in sar_ids
+            and "SABAH-CAP67-SEC-104-V1" not in sar_ids
+            and "LABUAN-FSA-SEC-10-V1" in lab_ids
+            and "EA-1955-SEC-60A-V1" not in lab_ids
+            and "FC-ART-8-V1" in fed_ids
+            and not abstained_t
+            and [r.node_id for r in ranked_t] == ["T1", "T2", "T3", "T4", "T5"]
+        )
+        retrieved_statutes = [
+            store.nodes[nid]
+            for nid in (
+                "EA-1955-SEC-60A-V1",
+                "SABAH-CAP67-SEC-104-V1",
+                "SARAWAK-CAP76-SEC-105-V1",
+                "LABUAN-FSA-SEC-10-V1",
+                "FC-ART-8-V1",
+            )
+            if ok and nid in store.nodes
+        ]
+        ctx_recall, ctx_contamination = evaluate_temporal_context(
+            retrieved_statutes=retrieved_statutes,
+            expected_ids=case.expected_active_statute_ids,
+            forbidden_ids=case.forbidden_statute_ids,
+        )
+        telemetry = compute_telemetry_summary(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=elapsed_holder[0],
+            retry_count=0,
+            is_verified_grounded=ok,
+        )
+        assert_within_budget(telemetry)
+        return CaseTrialResult(
+            case_id=case.case_id,
+            trial_index=trial_index,
+            overall_risk=RiskSeverity.LOW,
+            verdict_correct=ok,
+            is_grounded=ok,
+            retry_count=0,
+            temporal_recall=ctx_recall,
+            temporal_contamination=ctx_contamination,
+            clause_recall=1.0,
+            grounding_precision=1.0 if ok else 0.0,
+            total_tokens=0,
+            cost_usd=0.0,
+            cost_myr=0.0,
+            latency_ms=telemetry.latency_ms,
+            signature=f"LOW|TERRITORIAL_5TIER|{ok}",
+        )
+
+    if case.check_kind == "lineage_diff":
+        store = get_default_temporal_store()
+        with measure_latency_ms() as elapsed_holder:
+            diff_res = diff_statute_lineage(
+                provision_id="PDPA-2010-SEC-9-V2",
+                from_date=date(2024, 6, 15),
+                to_date=case.reference_date,
+                store=store,
+            )
+            delta_res = evaluate_contract_delta_impact(
+                ContractDeltaAuditRequest(
+                    document_id=f"{case.case_id}-T{trial_index}",
+                    raw_text=case.contract_text,
+                    from_date=date(2024, 6, 15),
+                    to_date=case.reference_date,
+                ),
+                store=store,
+            )
+        ok = (
+            diff_res.change_status == "AMENDED"
+            and diff_res.from_node_id == "PDPA-2010-SEC-9-V1"
+            and diff_res.to_node_id == "PDPA-2010-SEC-9-V2"
+            and diff_res.telemetry.total_tokens == 0
+            and delta_res.became_non_compliant is True
+            and delta_res.from_overall_risk == RiskSeverity.LOW
+            and delta_res.to_overall_risk == RiskSeverity.HIGH
+            and delta_res.telemetry.total_tokens == 0
+        )
+        active_nodes = store.query_point_in_time(as_of_date=case.reference_date)
+        ctx_recall, ctx_contamination = evaluate_temporal_context(
+            retrieved_statutes=active_nodes,
+            expected_ids=case.expected_active_statute_ids,
+            forbidden_ids=case.forbidden_statute_ids,
+        )
+        telemetry = compute_telemetry_summary(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=elapsed_holder[0],
+            retry_count=0,
+            is_verified_grounded=ok,
+        )
+        assert_within_budget(telemetry)
+        return CaseTrialResult(
+            case_id=case.case_id,
+            trial_index=trial_index,
+            overall_risk=delta_res.to_overall_risk,
+            verdict_correct=ok and (delta_res.to_overall_risk == case.expected_overall_risk),
+            is_grounded=ok,
+            retry_count=0,
+            temporal_recall=ctx_recall,
+            temporal_contamination=ctx_contamination,
+            clause_recall=1.0,
+            grounding_precision=1.0 if ok else 0.0,
+            total_tokens=0,
+            cost_usd=0.0,
+            cost_myr=0.0,
+            latency_ms=telemetry.latency_ms,
+            signature=f"{delta_res.to_overall_risk.value}|{diff_res.change_status}|{delta_res.became_non_compliant}",
+        )
+
+    if case.check_kind == "bilingual_divergence":
+        store = get_default_temporal_store()
+        with measure_latency_ms() as elapsed_holder:
+            aligned_rep = audit_bilingual_divergence(
+                node_id="PDPA-2010-SEC-9-V2",
+                as_of_date=case.reference_date,
+                store=store,
+            )
+            penal_rep = audit_bilingual_divergence(
+                node_id="ACT-574-SEC-420-V1",
+                as_of_date=case.reference_date,
+                store=store,
+            )
+            syn_rep = audit_bilingual_pair(
+                en_node=None,
+                bm_node=None,
+                authoritative_language="ms",
+                as_of_date=case.reference_date,
+                act_name="Act 388 Test",
+                act_number="Act 709",
+                section_code="SEC-TEST",
+                en_text="The data user may notify within 72 hours.",
+                bm_text="Pengguna data hendaklah memaklumkan dalam tempoh 72 jam.",
+            )
+        ok = (
+            aligned_rep.has_divergence is False
+            and aligned_rep.authoritative_language == "ms"
+            and penal_rep.has_divergence is True
+            and any(
+                i.divergence_type == "NUMERIC_DEADLINE_DISCREPANCY"
+                for i in penal_rep.issues
+            )
+            and syn_rep.has_divergence is True
+            and any(
+                i.divergence_type == "DEONTIC_MODALITY_MISMATCH"
+                for i in syn_rep.issues
+            )
+            and syn_rep.telemetry.total_tokens == 0
+        )
+        active_nodes = store.query_point_in_time(as_of_date=case.reference_date)
+        ctx_recall, ctx_contamination = evaluate_temporal_context(
+            retrieved_statutes=active_nodes,
+            expected_ids=case.expected_active_statute_ids,
+            forbidden_ids=case.forbidden_statute_ids,
+        )
+        telemetry = compute_telemetry_summary(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=elapsed_holder[0],
+            retry_count=0,
+            is_verified_grounded=ok,
+        )
+        assert_within_budget(telemetry)
+        return CaseTrialResult(
+            case_id=case.case_id,
+            trial_index=trial_index,
+            overall_risk=RiskSeverity.HIGH if syn_rep.has_divergence else RiskSeverity.LOW,
+            verdict_correct=ok,
+            is_grounded=ok,
+            retry_count=0,
+            temporal_recall=ctx_recall,
+            temporal_contamination=ctx_contamination,
+            clause_recall=1.0,
+            grounding_precision=1.0 if ok else 0.0,
+            total_tokens=0,
+            cost_usd=0.0,
+            cost_myr=0.0,
+            latency_ms=telemetry.latency_ms,
+            signature=f"HIGH|{aligned_rep.alignment_status}|{penal_rep.alignment_status}|{syn_rep.alignment_status}",
+        )
+
     graph = build_compliance_graph()
     initial_state = {
         "document_id": f"{case.case_id}-T{trial_index}",
         "raw_text": case.contract_text,
         "reference_date": case.reference_date.isoformat(),
         "act_filter": case.act_filter,
+        "regimes": case.regimes,
+        "territorial_scope": case.territorial_scope,
         "extracted_clauses": [],
         "auditor_feedback": "",
         "is_grounded": False,
@@ -535,38 +1196,68 @@ async def _run_single_trial(
     retrieved_statutes = final_state.get("retrieved_statutes", [])
     extracted_clauses: list[ClauseAudit] = final_state.get("extracted_clauses", [])
     overall_risk = _compute_overall_risk(extracted_clauses)
+    is_abstained = bool(final_state.get("is_abstained", False))
+    pii_dict = final_state.get("pii_scrub") or {}
+    masked_surface = (
+        pii_dict.get("masked_text", case.contract_text)
+        if isinstance(pii_dict, dict)
+        else case.contract_text
+    )
+
+    pii_ok = True
+    if case.expect_pii_redactions_min > 0:
+        red_cnt = int(pii_dict.get("redaction_count", 0)) if isinstance(pii_dict, dict) else 0
+        if red_cnt < case.expect_pii_redactions_min:
+            pii_ok = False
+        for raw_pii in case.expected_pii_tokens_absent:
+            if raw_pii in masked_surface or any(
+                raw_pii in c.exact_quote for c in extracted_clauses
+            ):
+                pii_ok = False
 
     ctx_recall, ctx_contamination = evaluate_temporal_context(
         retrieved_statutes=retrieved_statutes,
         expected_ids=case.expected_active_statute_ids,
         forbidden_ids=case.forbidden_statute_ids,
     )
+    grounding_surface = masked_surface if case.expect_pii_redactions_min > 0 else case.contract_text
     clause_recall, grounding_precision = evaluate_entity_and_citation_grounding(
         extracted_clauses=extracted_clauses,
-        raw_contract_text=case.contract_text,
+        raw_contract_text=grounding_surface,
         expected_clause_ids=case.expected_clause_ids,
     )
 
+    is_grounded_ok = bool(
+        (final_state.get("is_grounded", False) or is_abstained) and pii_ok
+    )
     telemetry = compute_telemetry_summary(
         prompt_tokens=final_state.get("prompt_tokens", 0),
         completion_tokens=final_state.get("completion_tokens", 0),
         latency_ms=elapsed_holder[0],
         retry_count=final_state.get("retry_count", 0),
-        is_verified_grounded=final_state.get("is_grounded", False),
+        is_verified_grounded=is_grounded_ok,
     )
     assert_within_budget(telemetry)
 
+    verdict_ok = (
+        overall_risk == case.expected_overall_risk
+        and is_abstained == case.expect_abstained
+        and pii_ok
+    )
     statute_sig = ",".join(sorted(s.node_id for s in retrieved_statutes))
     clause_sig = ",".join(
         f"{c.clause_id}:{c.severity.value}" for c in extracted_clauses
     )
-    signature = f"{overall_risk.value}|{clause_sig}|{statute_sig}|{telemetry.is_verified_grounded}"
+    signature = (
+        f"{overall_risk.value}|{is_abstained}|{clause_sig}|"
+        f"{statute_sig}|{telemetry.is_verified_grounded}"
+    )
 
     return CaseTrialResult(
         case_id=case.case_id,
         trial_index=trial_index,
         overall_risk=overall_risk,
-        verdict_correct=(overall_risk == case.expected_overall_risk),
+        verdict_correct=verdict_ok,
         is_grounded=telemetry.is_verified_grounded,
         retry_count=telemetry.retry_count,
         temporal_recall=ctx_recall,

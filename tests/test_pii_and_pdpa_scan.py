@@ -202,7 +202,18 @@ async def test_api_v1_compliance_scan_pdpa_and_pii_and_mcp_endpoints():
 
         mcp_list = await client.get("/api/v1/mcp/tools")
         assert mcp_list.status_code == 200
-        assert len(mcp_list.json()["tools"]) == 3
+        tool_names = {t["name"] for t in mcp_list.json()["tools"]}
+        assert len(tool_names) == 8
+        assert {
+            "lexgraph_pdpa_compliance_scan",
+            "lexgraph_point_in_time_search",
+            "lexgraph_pii_scrub",
+            "resolve_deontic_envelope",
+            "detect_contract_shadow_overrides",
+            "audit_and_redline_contract",
+            "diff_statutory_versions",
+            "audit_bilingual_crosswalk",
+        } <= tool_names
 
         mcp_call = await client.post(
             "/api/v1/mcp/call",

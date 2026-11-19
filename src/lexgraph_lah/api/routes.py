@@ -1,30 +1,55 @@
+import asyncio
 import hashlib
 import json
 import time
 import uuid
 from datetime import date
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from lexgraph_lah.agents.graph import _DEFAULT_TEMPORAL_STORE, build_compliance_graph
 from lexgraph_lah.compliance.pdpa_scanner import scan_pdpa_compliance
 from lexgraph_lah.config import settings
+from lexgraph_lah.graph.bilingual_critic import (
+    audit_bilingual_divergence,
+    audit_bilingual_pair,
+)
+from lexgraph_lah.graph.deontic_solver import DeonticEnvelopeResolver, normalize_regimes
+from lexgraph_lah.graph.diff_engine import (
+    diff_statute_lineage,
+    evaluate_contract_delta_impact,
+)
 from lexgraph_lah.graph.reranker import filter_by_territorial_scope
 from lexgraph_lah.graph.temporal_store import build_point_in_time_cypher
-from lexgraph_lah.mcp.tools import MCP_TOOL_DEFINITIONS, dispatch_mcp_tool
-from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
+from lexgraph_lah.ingestion.contract_ast import (
+    build_contract_ast,
+    extract_contract_paragraphs,
+)
+from lexgraph_lah.ingestion.ooxml_redliner import compile_track_changes_docx
+from lexgraph_lah.mcp.tools import MCP_TOOL_DEFINITIONS, dispatch_mcp_tool_async
+from lexgraph_lah.middleware.pii_scrubber import ReversiblePIIVault, scrub_malaysian_pii
 from lexgraph_lah.schemas.domain import (
     DEFAULT_LEGAL_DISCLAIMER,
     BilingualClausePair,
+    BilingualDivergenceReport,
+    BilingualDivergenceRequest,
     ClauseAudit,
+    ComplianceAttestationManifest,
     ComplianceCheckRequest,
+    CompositeDeonticEnvelope,
+    ContractASTGraph,
     ContractAuditResponse,
+    ContractDeltaAuditRequest,
+    ContractDeltaAuditResponse,
     GraphTopologyResponse,
     IRACAnalysis,
+    OutputPersona,
     PDPAComplianceScanRequest,
     PDPAComplianceScanResponse,
     PIIScrubSummary,
@@ -34,6 +59,8 @@ from lexgraph_lah.schemas.domain import (
     RakyatGuidance,
     RetrievalSearchResponse,
     RiskSeverity,
+    StatutoryDiffRequest,
+    StatutoryVersionDiff,
     TelemetryMetricsResponse,
     TerritorialScope,
 )
@@ -55,6 +82,29 @@ class PIIScrubRequest(BaseModel):
 class MCPToolCallRequest(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExportDocxRequest(BaseModel):
+    document_id: str = Field(default="MY-REDLINE-DOC", min_length=1)
+    raw_text: str = Field(..., min_length=1)
+    reference_date: date | None = None
+    as_of_date: date | None = None
+    act_filter: str | None = None
+    regimes: list[str] | None = None
+    territorial_scope: TerritorialScope | None = None
+    persona: OutputPersona = OutputPersona.PRACTITIONER
+    language: str = "bilingual"
+    rehydrate_pii: bool = True
+    findings: list[ClauseAudit] | None = None
+
+
+_DEFAULT_DUAL_LAYER_CONTRACT = (
+    'Clause 1 Definitions: "Security Incident" means confirmed unlawful disclosure causing downtime exceeding 48 hours. '
+    "SEC-5.1 Breach Notification: Vendor shall notify Client of any personal data or NCII cyber security incident "
+    "within 10 days. "
+    "Clause 14 Liability Carve-Out: Notwithstanding Clause 5.1, the Vendor shall bear zero statutory liability "
+    "and waives regulatory audit access."
+)
 
 
 def _resolve_fixtures_dir() -> Path:
@@ -96,9 +146,11 @@ def _compute_overall_risk(clauses: list[ClauseAudit]) -> RiskSeverity:
 
 def _cache_key(req: ComplianceCheckRequest) -> str:
     scope_val = req.territorial_scope.value if req.territorial_scope else TerritorialScope.ALL_MALAYSIA.value
+    ref_d = req.as_of_date or req.reference_date or "TODAY"
+    regimes_str = ",".join(normalize_regimes(req.regimes)) if req.regimes else "DEFAULT"
     payload = (
-        f"{req.raw_text.strip()}|{req.reference_date or 'TODAY'}|"
-        f"{req.act_filter or 'ALL'}|{scope_val}|{req.persona.value}"
+        f"{req.raw_text.strip()}|{ref_d}|"
+        f"{req.act_filter or 'ALL'}|{regimes_str}|{scope_val}|{req.persona.value}|{req.language}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -158,6 +210,140 @@ def _build_audit_persona_blocks(
     return irac, rakyat
 
 
+def _build_initial_agent_state(
+    payload: ComplianceCheckRequest,
+    effective_date: date,
+    scope: TerritorialScope,
+) -> AgentState:
+    return {
+        "document_id": payload.document_id,
+        "raw_text": payload.raw_text,
+        "reference_date": effective_date.isoformat(),
+        "act_filter": payload.act_filter,
+        "regimes": normalize_regimes(payload.regimes) if payload.regimes else None,
+        "territorial_scope": scope.value,
+        "persona": payload.persona.value,
+        "language": payload.language,
+        "abstention_threshold": payload.abstention_threshold or settings.abstention_threshold,
+        "extracted_clauses": [],
+        "auditor_feedback": "",
+        "is_grounded": False,
+        "retry_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+    }
+
+
+def _finalize_audit_response(
+    payload: ComplianceCheckRequest,
+    final_state: dict[str, Any],
+    effective_date: date,
+    scope: TerritorialScope,
+    elapsed_ms: float,
+    record_span: bool = True,
+) -> ContractAuditResponse:
+    clauses: list[ClauseAudit] = final_state.get("extracted_clauses", [])
+    active_statutes = final_state.get("retrieved_statutes", [])
+    pii_dict = final_state.get("pii_scrub")
+    pii_scrub = PIIScrubSummary(**pii_dict) if isinstance(pii_dict, dict) else None
+    overall_risk = _compute_overall_risk(clauses)
+
+    bilingual_pairs: list[BilingualClausePair] = []
+    divergence_warnings: list[BilingualDivergenceReport] = []
+    seen_pairs: set[str] = set()
+    for stat in active_statutes:
+        pair = _DEFAULT_TEMPORAL_STORE.get_bilingual_pair(
+            stat.node_id, include_divergence=True, as_of_date=effective_date
+        )
+        if pair:
+            pair_key = f"{pair.act_number}:{pair.section_code}"
+            if pair_key not in seen_pairs:
+                seen_pairs.add(pair_key)
+                bilingual_pairs.append(pair)
+                if pair.divergence_report and pair.divergence_report.has_divergence:
+                    divergence_warnings.append(pair.divergence_report)
+
+    irac_summary, rakyat_summary = _build_audit_persona_blocks(
+        document_id=payload.document_id,
+        effective_date=effective_date,
+        clauses=clauses,
+        overall_risk=overall_risk,
+    )
+
+    span_id = final_state.get("trace_id") or f"span-{uuid.uuid4().hex[:8]}"
+    is_abstained = bool(final_state.get("is_abstained", False))
+    telemetry = compute_telemetry_summary(
+        prompt_tokens=int(final_state.get("prompt_tokens", 0)),
+        completion_tokens=int(final_state.get("completion_tokens", 0)),
+        latency_ms=elapsed_ms,
+        retry_count=int(final_state.get("retry_count", 0)),
+        is_verified_grounded=bool(final_state.get("is_grounded", False) or is_abstained),
+        trace_id=span_id,
+    )
+
+    if record_span:
+        telemetry_registry.record_span(
+            ComplianceSpanRecord(
+                span_id=span_id,
+                document_id=payload.document_id,
+                reference_date=effective_date.isoformat(),
+                active_statute_count=len(active_statutes),
+                telemetry=telemetry,
+                timestamp_epoch=time.time(),
+            )
+        )
+
+    env_dict = final_state.get("deontic_envelope")
+    deontic_envelope = (
+        CompositeDeonticEnvelope(**env_dict) if isinstance(env_dict, dict) else None
+    )
+    ast_dict = final_state.get("contract_ast")
+    contract_ast = ContractASTGraph(**ast_dict) if isinstance(ast_dict, dict) else None
+    manifest_dict = final_state.get("attestation_manifest")
+    manifest = (
+        ComplianceAttestationManifest(**manifest_dict).model_copy(
+            update={
+                "estimated_cost_usd": telemetry.estimated_cost_usd,
+                "estimated_cost_myr": telemetry.estimated_cost_myr,
+                "total_tokens": telemetry.total_tokens,
+                "trace_id": span_id,
+            }
+        )
+        if isinstance(manifest_dict, dict)
+        else None
+    )
+    regimes_out = (
+        normalize_regimes(payload.regimes)
+        if payload.regimes
+        else (deontic_envelope.regimes_evaluated if deontic_envelope else ["ACT_709"])
+    )
+
+    return ContractAuditResponse(
+        document_id=payload.document_id,
+        reference_date=effective_date,
+        overall_risk=overall_risk,
+        findings=clauses,
+        active_statutes=active_statutes,
+        telemetry=telemetry,
+        is_abstained=is_abstained,
+        abstention_reason=final_state.get("abstention_reason"),
+        persona=payload.persona,
+        territorial_scope=scope,
+        regimes=regimes_out,
+        language=payload.language,
+        executive_summary=str(final_state.get("executive_summary", "")),
+        pii_scrub=pii_scrub,
+        bilingual_provisions=bilingual_pairs,
+        bilingual_divergence_warnings=divergence_warnings,
+        irac_summary=irac_summary,
+        rakyat_summary=rakyat_summary,
+        deontic_envelope=deontic_envelope,
+        contract_ast=contract_ast,
+        attestation_manifest=manifest,
+        disclaimer=DEFAULT_LEGAL_DISCLAIMER,
+    )
+
+
 @router.post("/compliance/check", response_model=ContractAuditResponse)
 async def check_compliance(
     payload: ComplianceCheckRequest,
@@ -166,10 +352,10 @@ async def check_compliance(
     ] = True,
 ) -> ContractAuditResponse:
     """
-    Executes the multi-stage temporal Graph-RAG & compliance pipeline:
-    1. Resolves point-in-time statutes active on `reference_date` & `territorial_scope`.
-    2. Masks Malaysian PII pre-flight (<50ms) and runs `risk_assessor_node` + `citation_auditor_node`.
-    3. Records OpenTelemetry / FinOps cost metrics (USD & MYR) and bilingual/persona metadata.
+    Executes the 5-node multi-regime temporal Graph-RAG & counterfactual compliance pipeline:
+    1. Builds Intra-Contract Dependency AST + Reversible PII Vault (`contract_ast_ingestor`).
+    2. Resolves active statutes, 0.78 Abstention Gate & Strictest Composite Deontic Envelope.
+    3. Evaluates cross-clause traps & counterfactual redlines with FinOps USD/MYR telemetry.
     """
     key = _cache_key(payload)
     if use_cache and key in _COMPLIANCE_CACHE:
@@ -189,91 +375,356 @@ async def check_compliance(
             }
         )
 
-    effective_date = payload.reference_date or date.today()
+    effective_date = payload.as_of_date or payload.reference_date or date.today()
     scope = payload.territorial_scope or TerritorialScope.ALL_MALAYSIA
     graph = build_compliance_graph()
-
-    initial_state: AgentState = {
-        "document_id": payload.document_id,
-        "raw_text": payload.raw_text,
-        "reference_date": effective_date.isoformat(),
-        "act_filter": payload.act_filter,
-        "territorial_scope": scope.value,
-        "persona": payload.persona.value,
-        "abstention_threshold": payload.abstention_threshold or settings.abstention_threshold,
-        "extracted_clauses": [],
-        "auditor_feedback": "",
-        "is_grounded": False,
-        "retry_count": 0,
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-    }
+    initial_state = _build_initial_agent_state(payload, effective_date, scope)
 
     with measure_latency_ms() as elapsed_holder:
         final_state = await graph.ainvoke(initial_state)
 
-    clauses: list[ClauseAudit] = final_state.get("extracted_clauses", [])
-    active_statutes = final_state.get("retrieved_statutes", [])
-    pii_dict = final_state.get("pii_scrub")
-    pii_scrub = PIIScrubSummary(**pii_dict) if isinstance(pii_dict, dict) else None
-    overall_risk = _compute_overall_risk(clauses)
-
-    bilingual_pairs: list[BilingualClausePair] = []
-    seen_pairs: set[str] = set()
-    for stat in active_statutes:
-        pair = _DEFAULT_TEMPORAL_STORE.get_bilingual_pair(stat.node_id)
-        if pair:
-            pair_key = f"{pair.act_number}:{pair.section_code}"
-            if pair_key not in seen_pairs:
-                seen_pairs.add(pair_key)
-                bilingual_pairs.append(pair)
-
-    irac_summary, rakyat_summary = _build_audit_persona_blocks(
-        document_id=payload.document_id,
+    response = _finalize_audit_response(
+        payload=payload,
+        final_state=final_state,
         effective_date=effective_date,
-        clauses=clauses,
-        overall_risk=overall_risk,
-    )
-
-    span_id = f"span-{uuid.uuid4().hex[:8]}"
-    telemetry = compute_telemetry_summary(
-        prompt_tokens=final_state.get("prompt_tokens", 0),
-        completion_tokens=final_state.get("completion_tokens", 0),
-        latency_ms=elapsed_holder[0],
-        retry_count=final_state.get("retry_count", 0),
-        is_verified_grounded=final_state.get("is_grounded", False),
-        trace_id=span_id,
-    )
-
-    telemetry_registry.record_span(
-        ComplianceSpanRecord(
-            span_id=span_id,
-            document_id=payload.document_id,
-            reference_date=effective_date.isoformat(),
-            active_statute_count=len(active_statutes),
-            telemetry=telemetry,
-            timestamp_epoch=time.time(),
-        )
-    )
-
-    response = ContractAuditResponse(
-        document_id=payload.document_id,
-        reference_date=effective_date,
-        overall_risk=overall_risk,
-        findings=clauses,
-        active_statutes=active_statutes,
-        telemetry=telemetry,
-        persona=payload.persona,
-        territorial_scope=scope,
-        pii_scrub=pii_scrub,
-        bilingual_provisions=bilingual_pairs,
-        irac_summary=irac_summary,
-        rakyat_summary=rakyat_summary,
-        disclaimer=DEFAULT_LEGAL_DISCLAIMER,
+        scope=scope,
+        elapsed_ms=elapsed_holder[0],
+        record_span=True,
     )
     if use_cache:
         _COMPLIANCE_CACHE[key] = response
     return response
+
+
+def _sse_frame(event_name: str, data: dict[str, Any]) -> str:
+    return f"event: {event_name}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@router.post("/compliance/stream")
+async def stream_compliance(payload: ComplianceCheckRequest) -> StreamingResponse:
+    """
+    Real-time Server-Sent Events (`text/event-stream`) endpoint streaming live 5-node
+    LangGraph state transitions, PII scrub counts, 0.78 Abstention Gate telemetry,
+    counterfactual retry diffs, and real-time USD + MYR FinOps burn ticker.
+    """
+    effective_date = payload.as_of_date or payload.reference_date or date.today()
+    scope = payload.territorial_scope or TerritorialScope.ALL_MALAYSIA
+    graph = build_compliance_graph()
+    initial_state = _build_initial_agent_state(payload, effective_date, scope)
+
+    async def _event_generator():
+        accumulated_state: dict[str, Any] = dict(initial_state)
+        cumulative_prompt = 0
+        cumulative_completion = 0
+        start_time = time.perf_counter()
+        step_idx = 0
+
+        async for update in graph.astream(initial_state, stream_mode="updates"):
+            for node_name, node_payload in update.items():
+                step_idx += 1
+                if not isinstance(node_payload, dict):
+                    continue
+                for k, v in node_payload.items():
+                    if k == "prompt_tokens":
+                        cumulative_prompt += int(v or 0)
+                        accumulated_state[k] = cumulative_prompt
+                    elif k == "completion_tokens":
+                        cumulative_completion += int(v or 0)
+                        accumulated_state[k] = cumulative_completion
+                    else:
+                        accumulated_state[k] = v
+
+                elapsed_so_far = (time.perf_counter() - start_time) * 1000.0
+                burn = compute_telemetry_summary(
+                    prompt_tokens=cumulative_prompt,
+                    completion_tokens=cumulative_completion,
+                    latency_ms=elapsed_so_far,
+                    retry_count=int(accumulated_state.get("retry_count", 0)),
+                    is_verified_grounded=bool(accumulated_state.get("is_grounded", False)),
+                )
+
+                node_event: dict[str, Any] = {
+                    "step_index": step_idx,
+                    "node": node_name,
+                    "status": "completed",
+                    "retry_count": int(accumulated_state.get("retry_count", 0)),
+                    "is_abstained": bool(accumulated_state.get("is_abstained", False)),
+                }
+                if isinstance(accumulated_state.get("pii_scrub"), dict):
+                    node_event["pii_redaction_count"] = accumulated_state["pii_scrub"].get(
+                        "redaction_count", 0
+                    )
+                if "max_relevance_score" in node_payload:
+                    node_event["max_relevance_score"] = node_payload["max_relevance_score"]
+                    node_event["abstention_threshold"] = initial_state["abstention_threshold"]
+
+                yield _sse_frame("node_update", node_event)
+
+                if node_name == "deontic_temporal_retriever":
+                    yield _sse_frame(
+                        "abstention_gate",
+                        {
+                            "threshold": initial_state["abstention_threshold"],
+                            "max_relevance_score": accumulated_state.get("max_relevance_score", 1.0),
+                            "is_abstained": bool(accumulated_state.get("is_abstained", False)),
+                            "abstention_reason": accumulated_state.get("abstention_reason"),
+                            "active_statute_count": len(
+                                accumulated_state.get("retrieved_statutes") or []
+                            ),
+                        },
+                    )
+
+                if node_name == "counterfactual_auditor":
+                    cf_log = accumulated_state.get("counterfactual_log") or []
+                    latest_cf = cf_log[-1] if cf_log else {}
+                    yield _sse_frame(
+                        "counterfactual_diff",
+                        {
+                            "attempt": latest_cf.get("attempt", 1),
+                            "passed": bool(accumulated_state.get("is_grounded", False)),
+                            "failures": latest_cf.get("failures", []),
+                            "auditor_feedback": accumulated_state.get("auditor_feedback", ""),
+                        },
+                    )
+
+                yield _sse_frame(
+                    "finops_tick",
+                    {
+                        "node": node_name,
+                        "prompt_tokens": cumulative_prompt,
+                        "completion_tokens": cumulative_completion,
+                        "total_tokens": burn.total_tokens,
+                        "estimated_cost_usd": burn.estimated_cost_usd,
+                        "estimated_cost_myr": burn.estimated_cost_myr,
+                        "latency_ms": burn.latency_ms,
+                    },
+                )
+                await asyncio.sleep(0)
+
+        total_elapsed = (time.perf_counter() - start_time) * 1000.0
+        final_response = _finalize_audit_response(
+            payload=payload,
+            final_state=accumulated_state,
+            effective_date=effective_date,
+            scope=scope,
+            elapsed_ms=total_elapsed,
+            record_span=True,
+        )
+        yield _sse_frame("complete", final_response.model_dump(mode="json"))
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _parse_multipart_upload(
+    request: Request,
+) -> tuple[dict[str, str], bytes | None, str | None]:
+    content_type = request.headers.get("content-type", "")
+    body = await request.body()
+    if "application/json" in content_type.lower():
+        data = json.loads(body.decode("utf-8"))
+        fields = {
+            k: (",".join(v) if isinstance(v, list) else str(v))
+            for k, v in data.items()
+            if v is not None
+        }
+        return fields, None, None
+
+    msg = BytesParser(policy=policy.default).parsebytes(
+        b"Content-Type: " + content_type.encode("latin-1") + b"\r\n\r\n" + body
+    )
+    fields = {}
+    file_bytes: bytes | None = None
+    filename: str | None = None
+    if msg.is_multipart():
+        for part in msg.iter_parts():
+            name = part.get_param("name", header="content-disposition")
+            fname = part.get_filename()
+            payload = part.get_payload(decode=True)
+            if not isinstance(payload, bytes):
+                continue
+            if fname is not None or name == "file":
+                file_bytes = payload
+                filename = fname or "uploaded_contract.txt"
+            elif name:
+                val = payload.decode("utf-8", errors="replace")
+                if name in fields and name == "regimes":
+                    fields[name] = f"{fields[name]},{val}"
+                else:
+                    fields[name] = val
+    return fields, file_bytes, filename
+
+
+def _parse_regimes_field(raw_regimes: str | None) -> list[str]:
+    if not raw_regimes or not raw_regimes.strip():
+        return ["ACT_709"]
+    trimmed = raw_regimes.strip()
+    if trimmed.startswith("["):
+        try:
+            loaded = json.loads(trimmed)
+            if isinstance(loaded, list):
+                return normalize_regimes([str(x) for x in loaded])
+        except json.JSONDecodeError:
+            pass
+    parts = [p.strip() for p in trimmed.split(",") if p.strip()]
+    return normalize_regimes(parts)
+
+
+def _normalize_lang_literal(raw: str) -> Literal["bm", "ms", "en", "bilingual"]:
+    low = raw.strip().lower()
+    if low == "bm":
+        return "bm"
+    if low == "ms":
+        return "ms"
+    if low == "en":
+        return "en"
+    return "bilingual"
+
+
+@router.post("/compliance/upload", response_model=ContractAuditResponse)
+async def upload_compliance_contract(request: Request) -> ContractAuditResponse:
+    """
+    Multipart `.docx` / `.pdf` / `.txt` multi-regime contract audit endpoint supporting
+    `regimes`, `as_of_date`, `territorial_scope`, `persona`, and `language`.
+    """
+    fields, file_bytes, filename = await _parse_multipart_upload(request)
+    raw_text_field = fields.get("raw_text", "")
+    if not raw_text_field and file_bytes is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide either a multipart 'file' (.docx/.pdf/.txt) or 'raw_text'.",
+        )
+
+    _, _, extracted_text = extract_contract_paragraphs(
+        raw_text=raw_text_field or None,
+        file_bytes=file_bytes,
+        filename=filename,
+    )
+    if not extracted_text.strip():
+        raise HTTPException(status_code=422, detail="Uploaded document contained no readable text.")
+
+    doc_id = fields.get("document_id") or filename or f"UPLOAD-{uuid.uuid4().hex[:6]}"
+    date_str = fields.get("as_of_date") or fields.get("reference_date")
+    effective_date = date.fromisoformat(date_str) if date_str else date.today()
+    regimes = _parse_regimes_field(fields.get("regimes"))
+    scope = TerritorialScope(
+        fields.get("territorial_scope") or TerritorialScope.ALL_MALAYSIA.value
+    )
+    persona = OutputPersona(fields.get("persona") or OutputPersona.PRACTITIONER.value)
+    lang = fields.get("language") or "bilingual"
+
+    payload = ComplianceCheckRequest(
+        document_id=doc_id,
+        raw_text=extracted_text,
+        reference_date=effective_date,
+        as_of_date=effective_date,
+        regimes=regimes,
+        territorial_scope=scope,
+        persona=persona,
+        language=_normalize_lang_literal(lang),
+    )
+    return await check_compliance(payload, use_cache=False)
+
+
+@router.post("/compliance/export-docx")
+async def export_redline_docx(payload: ExportDocxRequest) -> Response:
+    """
+    Compiles and streams a genuine Microsoft Word Track-Changes `.docx` containing native
+    `<w:del>` deletions, `<w:ins>` insertions (author `lexgraph-lah`), `<w:comment>` statutory
+    lineage callouts, optional local PII re-hydration, and cryptographic attestation headers.
+    """
+    effective_date = payload.as_of_date or payload.reference_date or date.today()
+    scope = payload.territorial_scope or TerritorialScope.ALL_MALAYSIA
+    regimes = normalize_regimes(payload.regimes) if payload.regimes else ["ACT_709"]
+
+    check_req = ComplianceCheckRequest(
+        document_id=payload.document_id,
+        raw_text=payload.raw_text,
+        reference_date=effective_date,
+        as_of_date=effective_date,
+        act_filter=payload.act_filter,
+        regimes=regimes,
+        territorial_scope=scope,
+        persona=payload.persona,
+        language=_normalize_lang_literal(payload.language),
+    )
+
+    graph = build_compliance_graph()
+    initial_state = _build_initial_agent_state(check_req, effective_date, scope)
+    with measure_latency_ms() as elapsed_holder:
+        final_state = await graph.ainvoke(initial_state)
+
+    audit_resp = _finalize_audit_response(
+        payload=check_req,
+        final_state=final_state,
+        effective_date=effective_date,
+        scope=scope,
+        elapsed_ms=elapsed_holder[0],
+        record_span=True,
+    )
+    findings = payload.findings if payload.findings is not None else audit_resp.findings
+    vault_map = final_state.get("pii_vault_map") or {}
+    vault = ReversiblePIIVault(initial_mapping=vault_map)
+    placeholders = (
+        audit_resp.pii_scrub.placeholders if audit_resp.pii_scrub else {}
+    )
+
+    docx_bytes = compile_track_changes_docx(
+        document_id=payload.document_id,
+        raw_text=payload.raw_text,
+        findings=findings,
+        active_statutes=audit_resp.active_statutes,
+        deontic_envelope=audit_resp.deontic_envelope,
+        contract_ast=audit_resp.contract_ast,
+        manifest=audit_resp.attestation_manifest,
+        rehydrate_pii=payload.rehydrate_pii,
+        pii_vault=vault,
+        pii_placeholders=placeholders,
+    )
+
+    manifest = audit_resp.attestation_manifest
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in payload.document_id)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_name}_redlined.docx"',
+        "X-LexGraph-Attestation-SHA256": manifest.manifest_sha256 if manifest else "",
+        "X-LexGraph-Graph-Hash": manifest.graph_state_hash if manifest else "",
+        "X-LexGraph-As-Of-Date": effective_date.isoformat(),
+        "X-LexGraph-FinOps-USD": f"{audit_resp.telemetry.estimated_cost_usd:.6f}",
+        "X-LexGraph-FinOps-MYR": f"{audit_resp.telemetry.estimated_cost_myr:.6f}",
+        "X-LexGraph-Trace-Id": audit_resp.telemetry.trace_id or "",
+    }
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=headers,
+    )
+
+
+@router.get("/api/v1/deontic/envelope", response_model=CompositeDeonticEnvelope)
+async def api_v1_deontic_envelope(
+    regimes: Annotated[
+        str, Query(description="Comma-separated regimes, e.g. ACT_709,ACT_854,BNM_RMIT")
+    ] = "ACT_709,ACT_854,BNM_RMIT",
+    as_of_date: Annotated[
+        date | None, Query(description="Point-in-time evaluation date (YYYY-MM-DD)")
+    ] = None,
+    territorial_scope: Annotated[
+        str | None, Query(description="Malaysian territorial scope filter")
+    ] = None,
+) -> CompositeDeonticEnvelope:
+    """Zero-token Multi-Regime Deontic Conflict Envelope resolver endpoint."""
+    resolver = DeonticEnvelopeResolver(_DEFAULT_TEMPORAL_STORE)
+    return resolver.resolve(
+        regimes=_parse_regimes_field(regimes),
+        as_of_date=as_of_date or date.today(),
+        territorial_scope=territorial_scope,
+    )
 
 
 @router.post("/api/v1/compliance/scan", response_model=PDPAComplianceScanResponse)
@@ -315,12 +766,135 @@ async def api_v1_retrieval_search(
 
 
 @router.get("/api/v1/statutes/{node_id}/bilingual", response_model=BilingualClausePair)
-async def api_v1_bilingual_statute(node_id: str) -> BilingualClausePair:
+async def api_v1_bilingual_statute(
+    node_id: str,
+    include_divergence: Annotated[bool, Query()] = True,
+    as_of_date: Annotated[date | None, Query()] = None,
+) -> BilingualClausePair:
     """Returns synchronized English (Section) & Bahasa Melayu (Seksyen) statutory pair + SourceSpans."""
-    pair = _DEFAULT_TEMPORAL_STORE.get_bilingual_pair(node_id)
+    pair = _DEFAULT_TEMPORAL_STORE.get_bilingual_pair(
+        node_id,
+        include_divergence=include_divergence,
+        as_of_date=as_of_date,
+    )
     if not pair:
         raise HTTPException(status_code=404, detail=f"Statutory node '{node_id}' not found.")
     return pair
+
+
+@router.get("/api/v1/lineage/diff", response_model=StatutoryVersionDiff)
+async def api_v1_lineage_diff_get(
+    provision_id: Annotated[str, Query(..., min_length=1, description="Target statutory provision node ID")],
+    from_date: Annotated[date, Query(..., description="Baseline comparison date (YYYY-MM-DD)")],
+    to_date: Annotated[date, Query(..., description="Target comparison date (YYYY-MM-DD)")],
+) -> StatutoryVersionDiff:
+    """Zero-token bi-temporal statutory redline diff across AMENDED_BY / REPEALED_BY chains."""
+    try:
+        return diff_statute_lineage(
+            provision_id=provision_id,
+            from_date=from_date,
+            to_date=to_date,
+            store=_DEFAULT_TEMPORAL_STORE,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/lineage/diff", response_model=StatutoryVersionDiff)
+async def api_v1_lineage_diff_post(
+    payload: StatutoryDiffRequest,
+) -> StatutoryVersionDiff:
+    """Zero-token bi-temporal statutory redline diff endpoint."""
+    try:
+        return diff_statute_lineage(
+            provision_id=payload.provision_id,
+            from_date=payload.from_date,
+            to_date=payload.to_date,
+            store=_DEFAULT_TEMPORAL_STORE,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/lineage/delta-audit", response_model=ContractDeltaAuditResponse)
+async def api_v1_lineage_delta_audit(
+    payload: ContractDeltaAuditRequest,
+    request: Request,
+) -> ContractDeltaAuditResponse:
+    """
+    Zero-token Contract Delta-Audit evaluating whether a contract compliant at `from_date`
+    becomes non-compliant at `to_date` due to intervening statutory/P.U. amendments,
+    with pre-flight Malaysian PII scrubbing.
+    """
+    try:
+        result = evaluate_contract_delta_impact(payload, store=_DEFAULT_TEMPORAL_STORE)
+        request.state.pii_scrub_latency_ms = result.pii_scrub.scrub_latency_ms
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/v1/crosswalk/{node_id}/divergence",
+    response_model=BilingualDivergenceReport,
+)
+async def api_v1_crosswalk_divergence_get(
+    node_id: str,
+    as_of_date: Annotated[date | None, Query(description="Point-in-time date (YYYY-MM-DD)")] = None,
+) -> BilingualDivergenceReport:
+    """Act 388 s. 63 Bilingual Divergence Critic inspecting paired BM/EN statutory nodes."""
+    try:
+        return audit_bilingual_divergence(
+            node_id=node_id,
+            as_of_date=as_of_date,
+            store=_DEFAULT_TEMPORAL_STORE,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/crosswalk/divergence", response_model=BilingualDivergenceReport)
+async def api_v1_crosswalk_divergence_post(
+    payload: BilingualDivergenceRequest,
+    request: Request,
+) -> BilingualDivergenceReport:
+    """
+    Act 388 s. 63 Bilingual Divergence Critic supporting stored `node_id` lookup or
+    PII-scrubbed inline `en_text` vs `bm_text` comparison.
+    """
+    try:
+        if payload.en_text or payload.bm_text:
+            en_scrub = scrub_malaysian_pii(payload.en_text or "")
+            bm_scrub = scrub_malaysian_pii(payload.bm_text or "")
+            request.state.pii_scrub_latency_ms = round(
+                en_scrub.scrub_latency_ms + bm_scrub.scrub_latency_ms, 4
+            )
+            return audit_bilingual_pair(
+                en_node=None,
+                bm_node=None,
+                authoritative_language=payload.authoritative_language,
+                as_of_date=payload.as_of_date or date.today(),
+                provision_id=payload.node_id,
+                act_name=payload.act_name,
+                act_number=payload.act_number,
+                section_code=payload.section_code,
+                en_text=en_scrub.masked_text if payload.en_text is not None else None,
+                bm_text=bm_scrub.masked_text if payload.bm_text is not None else None,
+            )
+        return audit_bilingual_divergence(
+            node_id=payload.node_id,
+            as_of_date=payload.as_of_date,
+            store=_DEFAULT_TEMPORAL_STORE,
+            authoritative_language=payload.authoritative_language,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/api/v1/research/point-in-time", response_model=PointInTimeResearchResponse)
@@ -365,8 +939,10 @@ async def api_v1_mcp_tools() -> dict[str, Any]:
 async def api_v1_mcp_call(payload: MCPToolCallRequest) -> dict[str, Any]:
     """Invokes an MCP tool wrapper cleanly via HTTP."""
     try:
-        result = dispatch_mcp_tool(payload.name, payload.arguments)
+        result = await dispatch_mcp_tool_async(payload.name, payload.arguments)
         return {"tool": payload.name, "result": result}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -388,10 +964,21 @@ async def get_graph_nodes(
     language: Annotated[
         str | None, Query(description="Optional language filter ('en' or 'bm')")
     ] = None,
+    include_contract_ast: Annotated[
+        bool, Query(description="Include Dual-Layer Contract AST & Deontic Envelope links")
+    ] = False,
+    regimes: Annotated[
+        str | None, Query(description="Comma-separated regimes for Dual-Layer Deontic Envelope")
+    ] = None,
+    raw_text: Annotated[
+        str | None, Query(description="Optional contract text for Dual-Layer AST overlay")
+    ] = None,
+    document_id: Annotated[str, Query()] = "DEMO-AST",
 ) -> GraphTopologyResponse:
     """
     Returns statutory graph nodes, temporal/citation edges (`AMENDED_BY`, `REPEALED_BY`, `CITES`,
-    `HAS_TRANSLATION`), and the corresponding parameterized Cypher query for visualization.
+    `HAS_TRANSLATION`), parameterized Cypher query, and optional Dual-Layer Contract AST
+    (`DEFINES_TERM`, `OVERRIDES_NOTWITHSTANDING`) linked to colliding statutory regimes.
     """
     if as_of_date is not None:
         nodes = _DEFAULT_TEMPORAL_STORE.query_point_in_time(
@@ -428,11 +1015,77 @@ async def get_graph_nodes(
         if e.source_id in node_id_set or e.target_id in node_id_set
     ]
 
+    contract_nodes: list[dict[str, Any]] = []
+    contract_edges: list[dict[str, Any]] = []
+    envelope: CompositeDeonticEnvelope | None = None
+
+    if include_contract_ast:
+        eff_date = as_of_date or date.today()
+        target_regimes = (
+            _parse_regimes_field(regimes)
+            if regimes
+            else ["ACT_709", "ACT_854", "BNM_RMIT"]
+        )
+        resolver = DeonticEnvelopeResolver(_DEFAULT_TEMPORAL_STORE)
+        envelope = resolver.resolve(
+            regimes=target_regimes,
+            as_of_date=eff_date,
+            territorial_scope=territorial_scope,
+        )
+        ast_graph, _ = build_contract_ast(
+            document_id=document_id,
+            raw_text=raw_text or _DEFAULT_DUAL_LAYER_CONTRACT,
+            token_style="vault",
+        )
+        trap_clause_ids = {
+            t.overriding_clause_id for t in ast_graph.shadow_override_traps
+        } | {t.definition_clause_id for t in ast_graph.narrow_definition_traps}
+        winning_node_ids = [
+            b.dominating_node_id for b in envelope.resolved_bounds.values()
+        ]
+        for cn in ast_graph.clauses:
+            contract_nodes.append(
+                {
+                    "id": f"AST::{cn.clause_id}",
+                    "clause_id": cn.clause_id,
+                    "label": f"{cn.clause_id}\n[{cn.section_type}]",
+                    "section_type": cn.section_type,
+                    "is_trap": cn.clause_id in trap_clause_ids,
+                }
+            )
+            if cn.extracted_metrics or cn.clause_id in trap_clause_ids:
+                for w_nid in winning_node_ids[:2]:
+                    if w_nid in node_id_set:
+                        contract_edges.append(
+                            {
+                                "id": f"AST::{cn.clause_id}->STAT::{w_nid}",
+                                "source": f"AST::{cn.clause_id}",
+                                "target": w_nid,
+                                "edge_type": "CONFLICTS_WITH_ENVELOPE",
+                                "label": "STRICT_ENVELOPE_TARGET",
+                                "is_hostile_trap": cn.clause_id in trap_clause_ids,
+                            }
+                        )
+        for ce in ast_graph.edges:
+            contract_edges.append(
+                {
+                    "id": f"AST::{ce.source_clause_id}-{ce.edge_type.value}-{ce.target_clause_id}",
+                    "source": f"AST::{ce.source_clause_id}",
+                    "target": f"AST::{ce.target_clause_id}",
+                    "edge_type": ce.edge_type.value,
+                    "label": ce.edge_type.value,
+                    "is_hostile_trap": ce.is_hostile_trap,
+                }
+            )
+
     return GraphTopologyResponse(
         as_of_date=as_of_date,
         nodes=nodes,
         edges=edges,
         cypher_query=cypher_bundle.query,
+        contract_nodes=contract_nodes,
+        contract_edges=contract_edges,
+        deontic_envelope=envelope,
     )
 
 
@@ -508,7 +1161,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
     header h1 { font-size: 1.25rem; color: var(--accent); }
     .controls { display: flex; gap: 10px; align-items: center; }
-    input, button {
+    input, select, button {
       background: var(--panel);
       color: var(--text);
       border: 1px solid var(--border);
@@ -518,6 +1171,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
     button { cursor: pointer; border-color: var(--accent); color: var(--accent); }
     button:hover { background: #1e293b; }
+    .diff-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+    .diff-summary {
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: #090d16;
+      border: 1px solid var(--border);
+      font-size: 0.8rem;
+      margin-bottom: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .diff-badge {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      border: 1px solid var(--border);
+    }
+    .diff-add { background: rgba(34, 197, 94, 0.14); border-left: 3px solid var(--green); color: #bbf7d0; padding: 8px 10px; border-radius: 4px; margin-bottom: 6px; font-size: 0.8rem; }
+    .diff-del { background: rgba(239, 68, 68, 0.14); border-left: 3px solid var(--red); color: #fecaca; padding: 8px 10px; border-radius: 4px; margin-bottom: 6px; font-size: 0.8rem; }
+    .diff-mod { background: rgba(245, 158, 11, 0.14); border-left: 3px solid var(--amber); color: #fde68a; padding: 8px 10px; border-radius: 4px; margin-bottom: 6px; font-size: 0.8rem; }
+    .diff-eq { background: rgba(148, 163, 184, 0.08); border-left: 3px solid #475569; color: #cbd5e1; padding: 8px 10px; border-radius: 4px; margin-bottom: 6px; font-size: 0.8rem; }
     .kpi-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -568,12 +1245,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <header>
-    <h1>lexgraph-lah // Point-in-Time Legal Graph-RAG & FinOps Telemetry</h1>
+    <h1>lexgraph-lah // Point-in-Time Dual-Layer Legal Graph-RAG & FinOps Telemetry</h1>
     <div class="controls">
+      <a href="/demo" style="text-decoration:none;color:var(--accent);border:1px solid var(--border);padding:7px 12px;border-radius:6px;font-size:0.85rem;">&larr; Demo Studio</a>
       <label for="asOfDate" style="font-size:0.8rem;color:var(--muted)">Point-in-Time Date:</label>
-      <input type="date" id="asOfDate" value="2024-06-15" />
+      <input type="date" id="asOfDate" value="2026-03-15" />
       <button onclick="refreshAll(true)">Filter Point-in-Time</button>
       <button onclick="refreshAll(false)">Show All Versions</button>
+      <button id="dualLayerModeBtn" onclick="toggleDualLayerMode()" style="border-color:#a855f7;color:#d8b4fe;">Dual-Layer Graph Mode: OFF</button>
     </div>
   </header>
 
@@ -588,7 +1267,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <section class="main-grid">
     <div class="panel">
-      <h2>Interactive Cytoscape Statutory Graph (AMENDED_BY / REPEALED_BY / CITES)</h2>
+      <h2 id="graphPanelHeading">Interactive Cytoscape Statutory Graph (AMENDED_BY / REPEALED_BY / CITES)</h2>
+      <div id="dualLayerEnvelopeSummary" style="display:none;margin-bottom:8px;padding:8px 10px;border-radius:6px;background:#1e1b4b;border:1px solid #6366f1;font-size:0.75rem;color:#c7d2fe;"></div>
       <div id="cy"></div>
       <pre id="cypherBox">// Cypher Query</pre>
     </div>
@@ -611,10 +1291,64 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </section>
 
+  <section class="panel" id="timeTravelRedlinePanel" style="margin-top:16px;">
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;">
+      <h2 style="margin-bottom:0;">Time-Travel Statutory Redline Explorer (from_date &harr; to_date &bull; $0.00 Zero-Token Diff)</h2>
+      <span class="diff-badge" style="color:#22c55e;border-color:#22c55e;">$0.00 USD / RM 0.00 MYR</span>
+    </div>
+    <div class="diff-controls">
+      <label for="diffProvisionSelect" style="font-size:0.8rem;color:var(--muted)">Provision:</label>
+      <select id="diffProvisionSelect">
+        <option value="PDPA-2010-SEC-9-V2">Act 709 s. 9 Security Principle (EN)</option>
+        <option value="PDPA-2010-SEC-9-V2-BM">Akta 709 Seksyen 9 Prinsip Keselamatan (BM)</option>
+        <option value="PDPA-2010-SEC-12B-V1">Act 709 s. 12B 72h Breach Notification</option>
+        <option value="PUA-342-2024-REG-3">P.U. (A) 342/2024 Breach Reg 3</option>
+        <option value="PUB-512-2024-APPT">P.U. (B) 512/2024 Commencement Gazette</option>
+        <option value="CSA-2024-SEC-23-V1">Act 854 s. 23 Cyber Incident (6h / 14d)</option>
+        <option value="PUA-220-2024-REG-4">P.U. (A) 220/2024 Cyber Reg 4</option>
+      </select>
+      <label for="diffFromDate" style="font-size:0.8rem;color:var(--muted)">From:</label>
+      <input type="date" id="diffFromDate" value="2024-06-15" />
+      <label for="diffToDate" style="font-size:0.8rem;color:var(--muted)">To:</label>
+      <input type="date" id="diffToDate" value="2026-03-15" />
+      <button id="runTimeTravelDiffBtn" onclick="runTimeTravelDiff()">Compare Statutory Redline</button>
+    </div>
+    <div id="timeTravelRedlineSummary" class="diff-summary">Select a provision and date window to inspect AMENDED_BY / REPEALED_BY clause diffs.</div>
+    <div id="timeTravelRedlineDiffBox"></div>
+  </section>
+
   <script>
+    let DUAL_LAYER_MODE = false;
+    let LAST_USE_DATE = true;
+    let LAST_CY_INSTANCE = null;
+
+    function escapeHtmlDash(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function toggleDualLayerMode() {
+      DUAL_LAYER_MODE = !DUAL_LAYER_MODE;
+      const btn = document.getElementById('dualLayerModeBtn');
+      btn.textContent = `Dual-Layer Graph Mode: ${DUAL_LAYER_MODE ? 'ON (AST + Regimes)' : 'OFF'}`;
+      btn.style.background = DUAL_LAYER_MODE ? '#3b0764' : 'var(--panel)';
+      refreshAll(LAST_USE_DATE);
+    }
+
     async function refreshAll(useDateFilter) {
+      LAST_USE_DATE = useDateFilter;
       const dateVal = document.getElementById('asOfDate').value;
-      const graphUrl = useDateFilter && dateVal ? `/graph/nodes?as_of_date=${dateVal}` : '/graph/nodes';
+      const params = new URLSearchParams();
+      if (useDateFilter && dateVal) params.set('as_of_date', dateVal);
+      if (DUAL_LAYER_MODE) {
+        params.set('include_contract_ast', 'true');
+        params.set('regimes', 'ACT_709,ACT_854,BNM_RMIT');
+      }
+      const queryStr = params.toString();
+      const graphUrl = queryStr ? `/graph/nodes?${queryStr}` : '/graph/nodes';
 
       const [graphRes, metricsRes] = await Promise.all([
         fetch(graphUrl).then(r => r.json()),
@@ -623,13 +1357,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       document.getElementById('cypherBox').textContent = graphRes.cypher_query;
 
+      const envSummary = document.getElementById('dualLayerEnvelopeSummary');
+      const winningIds = new Set();
+      if (DUAL_LAYER_MODE && graphRes.deontic_envelope) {
+        const bounds = graphRes.deontic_envelope.resolved_bounds || {};
+        const items = Object.entries(bounds).map(([k, v]) => {
+          winningIds.add(v.dominating_node_id);
+          return `${k} ${v.operator} ${v.strictest_value} (${v.dominating_regime}: ${v.dominating_node_id})`;
+        });
+        envSummary.style.display = 'block';
+        envSummary.textContent = `Strictest Composite Envelope Winners: ${items.join(' | ')}`;
+        document.getElementById('graphPanelHeading').textContent = 'Dual-Layer Graph: Contract AST (OVERRIDES_NOTWITHSTANDING / DEFINES_TERM) <-> Colliding Regimes';
+      } else {
+        envSummary.style.display = 'none';
+        document.getElementById('graphPanelHeading').textContent = 'Interactive Cytoscape Statutory Graph (AMENDED_BY / REPEALED_BY / CITES)';
+      }
+
       const elements = [];
       graphRes.nodes.forEach(n => {
+        const isWinner = winningIds.has(n.node_id);
         elements.push({
           data: {
             id: n.node_id,
-            label: `${n.node_id}\\n(${n.status})`,
-            status: n.status
+            label: `${n.node_id}${isWinner ? ' [WIN]' : ''}\\n(${n.status})`,
+            status: n.status,
+            kind: isWinner ? 'ENVELOPE_WINNER' : 'STATUTE'
           }
         });
       });
@@ -639,12 +1391,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             id: `${e.source_id}-${e.edge_type}-${e.target_id}`,
             source: e.source_id,
             target: e.target_id,
-            label: `${e.edge_type} (${e.effective_date})`
+            label: `${e.edge_type} (${e.effective_date})`,
+            kind: 'STATUTE_EDGE'
           }
         });
       });
 
-      cytoscape({
+      if (DUAL_LAYER_MODE) {
+        (graphRes.contract_nodes || []).forEach(cn => {
+          elements.push({
+            data: {
+              id: cn.id,
+              label: cn.label,
+              status: cn.is_trap ? 'TRAP' : 'CONTRACT',
+              kind: cn.is_trap ? 'AST_TRAP' : 'AST_NODE'
+            }
+          });
+        });
+        (graphRes.contract_edges || []).forEach(ce => {
+          elements.push({
+            data: {
+              id: ce.id,
+              source: ce.source,
+              target: ce.target,
+              label: ce.label,
+              kind: ce.is_hostile_trap ? 'HOSTILE_EDGE' : 'AST_EDGE'
+            }
+          });
+        });
+      }
+
+      LAST_CY_INSTANCE = cytoscape({
         container: document.getElementById('cy'),
         elements: elements,
         style: [
@@ -655,9 +1432,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               'text-wrap': 'wrap',
               'font-size': '10px',
               'color': '#e5e7eb',
-              'background-color': ele => ele.data('status') === 'ACTIVE' ? '#22c55e' : (ele.data('status') === 'AMENDED' ? '#f59e0b' : '#ef4444'),
-              'width': 32,
-              'height': 32
+              'shape': ele => (ele.data('kind') === 'AST_NODE' || ele.data('kind') === 'AST_TRAP') ? 'round-rectangle' : 'ellipse',
+              'border-width': ele => ele.data('kind') === 'ENVELOPE_WINNER' ? 3 : 1,
+              'border-color': ele => ele.data('kind') === 'ENVELOPE_WINNER' ? '#facc15' : '#1f2937',
+              'background-color': ele => {
+                if (ele.data('kind') === 'AST_TRAP') return '#e11d48';
+                if (ele.data('kind') === 'AST_NODE') return '#8b5cf6';
+                if (ele.data('kind') === 'ENVELOPE_WINNER') return '#06b6d4';
+                return ele.data('status') === 'ACTIVE' ? '#22c55e' : (ele.data('status') === 'AMENDED' ? '#f59e0b' : '#ef4444');
+              },
+              'width': 34,
+              'height': 34
             }
           },
           {
@@ -668,9 +1453,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               'color': '#9ca3af',
               'curve-style': 'bezier',
               'target-arrow-shape': 'triangle',
-              'line-color': '#38bdf8',
-              'target-arrow-color': '#38bdf8',
-              'width': 2
+              'line-color': ele => ele.data('kind') === 'HOSTILE_EDGE' ? '#fb7185' : (ele.data('kind') === 'AST_EDGE' ? '#a78bfa' : '#38bdf8'),
+              'target-arrow-color': ele => ele.data('kind') === 'HOSTILE_EDGE' ? '#fb7185' : (ele.data('kind') === 'AST_EDGE' ? '#a78bfa' : '#38bdf8'),
+              'width': ele => ele.data('kind') === 'HOSTILE_EDGE' ? 3 : 2
             }
           }
         ],
@@ -700,7 +1485,93 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         tbody.appendChild(tr);
       });
     }
-    refreshAll(false);
+
+    function highlightCytoscapeDiffPath(diff) {
+      if (!LAST_CY_INSTANCE) return;
+      LAST_CY_INSTANCE.nodes().style({ 'border-width': 1, 'border-color': '#1f2937' });
+      LAST_CY_INSTANCE.edges().style({ 'width': 2, 'line-color': '#38bdf8', 'target-arrow-color': '#38bdf8' });
+
+      const highlightNodeIds = new Set();
+      if (diff.from_node_id) highlightNodeIds.add(diff.from_node_id);
+      if (diff.to_node_id) highlightNodeIds.add(diff.to_node_id);
+      highlightNodeIds.forEach(nid => {
+        const ele = LAST_CY_INSTANCE.getElementById(nid);
+        if (ele && ele.length > 0) {
+          ele.style({ 'border-width': 4, 'border-color': '#facc15' });
+        }
+      });
+
+      (diff.transitions || []).forEach(tr => {
+        const edgeId = `${tr.source_node_id}-${tr.edge_type}-${tr.target_node_id}`;
+        const edgeEle = LAST_CY_INSTANCE.getElementById(edgeId);
+        if (edgeEle && edgeEle.length > 0) {
+          const color = tr.edge_type === 'REPEALED_BY' ? '#ef4444' : '#f59e0b';
+          edgeEle.style({ 'width': 4, 'line-color': color, 'target-arrow-color': color });
+        }
+      });
+    }
+
+    async function runTimeTravelDiff() {
+      const provId = document.getElementById('diffProvisionSelect').value;
+      const fromD = document.getElementById('diffFromDate').value;
+      const toD = document.getElementById('diffToDate').value;
+      const sumBox = document.getElementById('timeTravelRedlineSummary');
+      const diffBox = document.getElementById('timeTravelRedlineDiffBox');
+
+      if (!provId || !fromD || !toD) return;
+      try {
+        const params = new URLSearchParams({
+          provision_id: provId,
+          from_date: fromD,
+          to_date: toD
+        });
+        const res = await fetch(`/api/v1/lineage/diff?${params.toString()}`);
+        const diff = await res.json();
+        if (!res.ok) {
+          sumBox.textContent = diff.detail || 'Error computing statutory redline diff.';
+          diffBox.innerHTML = '';
+          return;
+        }
+
+        const datesStr = (diff.transition_dates || []).join(', ') || 'None in window';
+        const gazStr = (diff.related_gazettes || []).join(', ') || '-';
+        sumBox.innerHTML = `
+          <div>
+            <strong style="color:var(--accent);">${escapeHtmlDash(diff.act_number)} ${escapeHtmlDash(diff.section_code)}</strong>
+            <span class="diff-badge" style="margin-left:8px;color:#fde68a;border-color:#f59e0b;">${escapeHtmlDash(diff.change_status)}</span>
+            <span style="margin-left:8px;color:var(--muted);">Node: ${escapeHtmlDash(diff.from_node_id || 'NONE')} &rarr; ${escapeHtmlDash(diff.to_node_id || 'NONE')}</span>
+          </div>
+          <div style="color:var(--muted);">
+            Transitions: <span style="color:var(--text);">${escapeHtmlDash(datesStr)}</span> &bull;
+            Gazettes: <span style="color:#a5f3fc;">${escapeHtmlDash(gazStr)}</span> &bull;
+            Tokens: <span style="color:#22c55e;">${diff.telemetry ? diff.telemetry.total_tokens : 0} ($${(diff.telemetry ? diff.telemetry.estimated_cost_usd : 0).toFixed(2)})</span>
+          </div>
+        `;
+
+        const segments = diff.unified_redline || [];
+        if (segments.length === 0) {
+          diffBox.innerHTML = '<div class="diff-eq">No active clause text in either date window.</div>';
+        } else {
+          diffBox.innerHTML = segments.map(seg => {
+            if (seg.change_type === 'ADDED') {
+              return `<div class="diff-add"><strong>+ [ADDED]</strong> ${escapeHtmlDash(seg.to_text)} <span style="color:var(--muted);font-size:0.72rem;">(${escapeHtmlDash(seg.to_span_id || '')})</span></div>`;
+            }
+            if (seg.change_type === 'REMOVED') {
+              return `<div class="diff-del"><strong>- [REMOVED]</strong> ${escapeHtmlDash(seg.from_text)} <span style="color:var(--muted);font-size:0.72rem;">(${escapeHtmlDash(seg.from_span_id || '')})</span></div>`;
+            }
+            if (seg.change_type === 'MODIFIED') {
+              return `<div class="diff-mod"><div><strong>- [FROM ${escapeHtmlDash(seg.from_span_id || '')}]</strong> ${escapeHtmlDash(seg.from_text)}</div><div style="margin-top:4px;color:#bbf7d0;"><strong>+ [TO ${escapeHtmlDash(seg.to_span_id || '')}]</strong> ${escapeHtmlDash(seg.to_text)}</div></div>`;
+            }
+            return `<div class="diff-eq"><strong>= [UNCHANGED]</strong> ${escapeHtmlDash(seg.to_text || seg.from_text)}</div>`;
+          }).join('');
+        }
+        highlightCytoscapeDiffPath(diff);
+      } catch (err) {
+        sumBox.textContent = `Diff fetch error: ${err}`;
+      }
+    }
+
+    refreshAll(false).then(() => runTimeTravelDiff());
   </script>
 </body>
 </html>
@@ -809,6 +1680,20 @@ DEMO_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
+        <!-- Multi-Regime Selector Chips (Deontic Conflict Solver) -->
+        <div class="space-y-1.5 bg-slate-950 border border-slate-800 rounded-lg p-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wider text-amber-300">Active Regulatory Regimes</span>
+            <span id="activeRegimesLabel" class="text-[11px] font-mono text-amber-300">ACT_709</span>
+          </div>
+          <div id="regimeChipsContainer" class="flex flex-wrap gap-1.5">
+            <button type="button" data-regime="ACT_709" onclick="toggleRegime('ACT_709')" class="regime-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-sky-500/20 border-sky-400 text-sky-300">PDPA Act 709</button>
+            <button type="button" data-regime="ACT_854" onclick="toggleRegime('ACT_854')" class="regime-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-slate-900 border-slate-700 text-slate-300 hover:border-amber-400">Cyber Security Act 854 + P.U.(A) 220/2024</button>
+            <button type="button" data-regime="BNM_RMIT" onclick="toggleRegime('BNM_RMIT')" class="regime-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-slate-900 border-slate-700 text-slate-300 hover:border-purple-400">BNM RMiT</button>
+          </div>
+          <div id="envelopeQuickPreview" class="text-[11px] font-mono text-slate-400 pt-1">Strictest Envelope: incident_notice_max_hours &lt;= 72h (ACT_709)</div>
+        </div>
+
         <!-- Territorial Scope Filter Chips -->
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
@@ -831,9 +1716,17 @@ DEMO_HTML = """<!DOCTYPE html>
             <option value="02_non_compliant_violation" selected>02 — Non-Compliant Processor Exclusion &amp; 14-Day Breach Delay (Violation)</option>
             <option value="03_ambiguous_edge_case">03 — 2024 Pre-Amendment Legacy Contract &amp; Escalation (Edge Case)</option>
             <option value="04_pdpa_pii_scan">04 — Synthetic Malaysian NRIC/Phone/SSM PII + Act 709 Gap Scan</option>
+            <option value="05_multi_regime_shadow_override">05 — Multi-Regime FinTech/NCII + Shadow Override Trap (Act 709 + Act 854 + BNM RMiT)</option>
             <option value="custom">Custom Clause / JSON Payload</option>
           </select>
           <p id="fixtureDesc" class="text-xs text-slate-400 mt-2 italic"></p>
+        </div>
+
+        <!-- .docx / .pdf Drag-and-Drop Upload Zone -->
+        <div id="contractDropZone" ondragover="event.preventDefault(); this.classList.add('border-sky-400');" ondragleave="this.classList.remove('border-sky-400');" ondrop="handleContractDrop(event)" class="border-2 border-dashed border-slate-700 hover:border-sky-500/70 rounded-lg p-3 bg-slate-950/70 text-center space-y-1.5 transition cursor-pointer" onclick="document.getElementById('contractFileInput').click()">
+          <input id="contractFileInput" type="file" accept=".docx,.pdf,.txt" class="hidden" onchange="handleContractFileSelect(event)" />
+          <div class="text-xs font-semibold text-sky-300">Drop .docx or .pdf Contract Here (or Click to Upload)</div>
+          <div id="uploadStatusLabel" class="text-[11px] font-mono text-slate-400">Parses Word OOXML / PDF streams locally &bull; Pre-flight PII Vault active</div>
         </div>
 
         <div class="grid grid-cols-2 gap-3">
@@ -843,7 +1736,7 @@ DEMO_HTML = """<!DOCTYPE html>
           </div>
           <div>
             <label for="refDateInput" class="block text-xs text-slate-400 mb-1">Point-in-Time Date (as_of_date)</label>
-            <input id="refDateInput" type="date" value="2026-03-15" onchange="document.getElementById('pitAsOfDateInput').value = this.value; runBilingualSearch(); runPointInTimeResearch();" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
+            <input id="refDateInput" type="date" value="2026-03-15" onchange="document.getElementById('pitAsOfDateInput').value = this.value; updateEnvelopePreview(); runBilingualSearch(); runPointInTimeResearch();" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm font-mono text-slate-100" />
           </div>
         </div>
 
@@ -868,8 +1761,14 @@ DEMO_HTML = """<!DOCTYPE html>
           <button id="runAuditBtn" onclick="runComplianceAudit()" class="py-2.5 px-4 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs shadow transition flex items-center justify-center">
             <span>Run Compliance Audit</span>
           </button>
+          <button id="runSseStreamBtn" onclick="runSseComplianceStream()" class="py-2.5 px-4 rounded-lg bg-purple-500 hover:bg-purple-400 text-slate-950 font-semibold text-xs shadow transition flex items-center justify-center">
+            <span>Stream 5-Node SSE Audit</span>
+          </button>
           <button id="runPdpaScanBtn" onclick="runPdpaScan()" class="py-2.5 px-4 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs shadow transition flex items-center justify-center">
             <span>Act 709 Scan + PII Scrub</span>
+          </button>
+          <button id="downloadRedlineDocxBtn" onclick="downloadRedlineDocx()" class="py-2.5 px-4 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs shadow transition flex items-center justify-center">
+            <span>Download Native Track-Changes .docx</span>
           </button>
         </div>
       </div>
@@ -960,39 +1859,57 @@ DEMO_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- (b) Agent Node Execution Trail -->
+        <!-- (b) 5-Node Live SSE LangGraph Execution Stepper + Burn Ticker -->
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg flex flex-col justify-between">
           <div>
             <div class="flex items-center justify-between mb-3">
               <h2 class="text-sm font-semibold uppercase tracking-wider text-sky-400">LangGraph Execution Trail</h2>
               <span id="groundingBadge" class="text-xs font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">GROUNDED</span>
             </div>
-            <ol id="agentTrailList" class="space-y-2.5 text-xs">
-              <li class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
+            <div class="mb-2.5 px-2.5 py-1.5 rounded bg-slate-950 border border-slate-800 flex items-center justify-between text-[11px] font-mono">
+              <span class="text-slate-400">Live Burn Ticker:</span>
+              <span><span id="liveBurnTickerUsd" class="text-emerald-400 font-bold">$0.000000</span> &bull; <span id="liveBurnTickerMyr" class="text-sky-400 font-bold">RM 0.000000</span></span>
+            </div>
+            <ol id="sseAgentStepper" class="space-y-1.5 text-xs">
+              <li id="step_contract_ast_ingestor" class="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
                 <div>
-                  <div class="font-mono font-semibold text-sky-300">01. temporal_retriever_node</div>
-                  <div id="trailNode0Desc" class="text-slate-400 mt-0.5">Point-in-time Graph-RAG statutory filter (0 LLM tokens)</div>
+                  <div class="font-mono font-semibold text-teal-300">01. contract_ast_ingestor_node</div>
+                  <div id="trailAstDesc" class="text-slate-400 text-[11px]">Contract AST + Reversible PII Vault (0 tok)</div>
                 </div>
-                <span class="font-mono text-emerald-400">0 tok</span>
+                <span id="badge_contract_ast_ingestor" class="font-mono text-[10px] text-slate-400">READY</span>
               </li>
-              <li class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
+              <li id="step_deontic_temporal_retriever" class="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
                 <div>
-                  <div class="font-mono font-semibold text-purple-300">02. risk_assessor_node</div>
-                  <div id="trailNode1Desc" class="text-slate-400 mt-0.5">Pre-flight PII scrub + Pydantic v2 structured extraction</div>
+                  <div class="font-mono font-semibold text-sky-300">02. deontic_temporal_retriever_node</div>
+                  <div id="trailNode0Desc" class="text-slate-400 text-[11px]">Point-in-time Graph-RAG + 0.78 Gate + Deontic Envelope (0 tok)</div>
                 </div>
-                <span id="trailNode1Tokens" class="font-mono text-purple-300">0 tok</span>
+                <span id="badge_deontic_temporal_retriever" class="font-mono text-[10px] text-emerald-400">0 tok</span>
               </li>
-              <li class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
+              <li id="step_cross_clause_risk_assessor" class="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
                 <div>
-                  <div class="font-mono font-semibold text-emerald-300">03. citation_auditor_node</div>
-                  <div id="trailNode2Desc" class="text-slate-400 mt-0.5">Deterministic verbatim substring critic (route_after_audit)</div>
+                  <div class="font-mono font-semibold text-purple-300">03. cross_clause_risk_assessor_node</div>
+                  <div id="trailNode1Desc" class="text-slate-400 text-[11px]">Cross-clause AST + Persona/Lang Synthesis</div>
                 </div>
-                <span class="font-mono text-emerald-400">0 tok</span>
+                <span id="trailNode1Tokens" class="font-mono text-[10px] text-purple-300">0 tok</span>
+              </li>
+              <li id="step_counterfactual_auditor" class="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
+                <div>
+                  <div class="font-mono font-semibold text-emerald-300">04. counterfactual_auditor_node</div>
+                  <div id="trailNode2Desc" class="text-slate-400 text-[11px]">4-Invariant Deterministic Counterfactual Critic</div>
+                </div>
+                <span id="badge_counterfactual_auditor" class="font-mono text-[10px] text-emerald-400">0 tok</span>
+              </li>
+              <li id="step_redline_manifest" class="p-2 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between">
+                <div>
+                  <div class="font-mono font-semibold text-amber-300">05. redline_manifest_node</div>
+                  <div id="trailNode4Desc" class="text-slate-400 text-[11px]">Cryptographic Attestation Manifest (SHA-256)</div>
+                </div>
+                <span id="badge_redline_manifest" class="font-mono text-[10px] text-slate-400">READY</span>
               </li>
             </ol>
           </div>
-          <div class="mt-3 pt-2 border-t border-slate-800 text-[11px] text-slate-400 font-mono flex justify-between">
-            <span>StateGraph(AgentState)</span>
+          <div class="mt-2.5 pt-2 border-t border-slate-800 text-[11px] text-slate-400 font-mono flex justify-between">
+            <span>StateGraph(AgentState) v2</span>
             <span>MAX_RETRIES = 2</span>
           </div>
         </div>
@@ -1005,6 +1922,27 @@ DEMO_HTML = """<!DOCTYPE html>
           <div id="piiScrubStatus" class="text-xs text-slate-300 font-mono">0 redactions &bull; Ready to mask NRIC, Passport, Phone, Email &amp; SSM before LLM/Embedding calls.</div>
         </div>
         <div id="piiPlaceholderBadges" class="flex flex-wrap gap-1.5"></div>
+      </div>
+
+      <!-- Shadow Override Trap & Narrow Definition Trap Warning Banner -->
+      <div id="shadowOverrideTrapBanner" class="hidden bg-rose-950/40 border border-rose-500/50 rounded-xl p-4 shadow-lg space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold uppercase tracking-wider text-rose-300 font-mono">[SHADOW OVERRIDE &amp; AST TRAP WARNING]</span>
+          <span id="shadowTrapCountBadge" class="px-2 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-200 font-mono text-[11px]">0 TRAPS</span>
+        </div>
+        <div id="shadowOverrideTrapList" class="space-y-1.5 text-xs text-rose-100"></div>
+      </div>
+
+      <!-- Multi-Regime Strictest Deontic Envelope Card -->
+      <div id="deonticEnvelopeCard" class="bg-slate-900 border border-amber-500/30 rounded-xl p-4 shadow-lg space-y-2.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-xs font-semibold uppercase tracking-wider text-amber-300">Multi-Regime Strictest Deontic Envelope (0 LLM Tokens)</h2>
+          <span id="envelopeHashBadge" class="text-[11px] font-mono text-slate-400">O(V + E) Solver</span>
+        </div>
+        <div id="deonticBoundsGrid" class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-slate-300">
+          Select regimes and run an audit to compute the strictest composite statutory envelope.
+        </div>
+        <div id="interRegimeConflictBox" class="text-[11px] font-mono text-amber-200 space-y-1"></div>
       </div>
 
       <!-- Interactive Citation & Lineage Inspector Panel -->
@@ -1088,18 +2026,28 @@ DEMO_HTML = """<!DOCTYPE html>
 
         <!-- Extracted Clause Audit / Gap Cards -->
         <div class="space-y-3" id="findingsContainer"></div>
+
+        <!-- Cryptographic Compliance Attestation Manifest -->
+        <div id="attestationManifestCard" class="p-3 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-400 space-y-1">
+          <div class="text-emerald-400 font-bold uppercase">Compliance Attestation Manifest</div>
+          <div id="attestationManifestBody">Run an audit or stream to generate SHA-256 attestation hashes.</div>
+        </div>
       </div>
     </section>
   </main>
 
   <!-- Side-by-Side Bahasa Melayu <-> English Clause Diff & SourceSpan Citation Inspector Drawer -->
   <aside id="bilingualDrawer" class="fixed inset-y-0 right-0 w-full max-w-3xl bg-slate-900 border-l border-slate-700 shadow-2xl z-40 transform translate-x-full transition-transform duration-200 flex flex-col">
-    <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+    <div class="px-6 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-950">
       <div>
         <h3 class="text-base font-bold text-white">Bilingual BM &harr; EN Statutory Diff &amp; SourceSpan Inspector</h3>
-        <p id="drawerSubtitle" class="text-xs text-slate-400 mt-0.5">Synchronized HAS_TRANSLATION / AUTHORITATIVE_TEXT &amp; PDF Provenance</p>
+        <p id="drawerSubtitle" class="text-xs text-slate-400 mt-0.5">Synchronized HAS_TRANSLATION / AUTHORITATIVE_TEXT &bull; Act 388 s. 63 Divergence Critic</p>
       </div>
-      <button id="closeBilingualDrawerBtn" onclick="closeBilingualDrawer()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs text-slate-200">Close &times;</button>
+      <div class="flex flex-wrap items-center gap-1.5">
+        <button type="button" onclick="openBilingualDrawer('PDPA-2010-SEC-9-V2')" class="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-[11px] font-mono text-emerald-300">PDPA s.9 (Aligned)</button>
+        <button type="button" onclick="openBilingualDrawer('ACT-574-SEC-420-V1')" class="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30 text-[11px] font-mono text-amber-300">Penal Code s.420 (Act 388)</button>
+        <button id="closeBilingualDrawerBtn" onclick="closeBilingualDrawer()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs text-slate-200">Close &times;</button>
+      </div>
     </div>
     <div id="drawerContent" class="p-6 overflow-y-auto space-y-5 flex-1">
       <div class="text-xs text-slate-400">Select an active statute pill or open this drawer after running an audit to inspect side-by-side English (Section) and Bahasa Melayu (Seksyen) statutory provisions.</div>
@@ -1111,10 +2059,12 @@ DEMO_HTML = """<!DOCTYPE html>
     let CURRENT_SCOPE = 'All Malaysia';
     let CURRENT_PERSONA = 'PRACTITIONER';
     let CURRENT_LANG_MODE = 'bilingual';
+    let CURRENT_REGIMES = ['ACT_709'];
     let LAST_RESPONSE = null;
     let LAST_PIT_RESPONSE = null;
     let PIT_SPANS_BY_ID = {};
     let LAST_MODE = 'audit'; // 'audit' or 'scan'
+    let LAST_DRAWER_NODE_ID = null;
 
     const FALLBACK_FIXTURES = {
       "01_compliant_clause": {
@@ -1124,6 +2074,7 @@ DEMO_HTML = """<!DOCTYPE html>
         document_id: "MY-PDPA-2026-COMPLIANT-01",
         reference_date: "2026-03-15",
         act_filter: "Personal Data Protection Act 2010",
+        regimes: ["ACT_709"],
         raw_text: "SEC-1.1 Security Principle Compliance: Both the Data User and the Data Processor shall implement ISO/IEC 27001 technical and organizational security controls in strict compliance with Section 9 of the Personal Data Protection Act 2010 (as amended by the Personal Data Protection (Amendment) Act 2024). SEC-1.2 Mandatory Data Breach Notification: In the event of any personal data breach, the Data Processor shall notify the Data User within 24 hours of discovery, and the Data User shall notify the Personal Data Protection Commissioner within 72 hours in accordance with Section 12B."
       },
       "02_non_compliant_violation": {
@@ -1133,6 +2084,7 @@ DEMO_HTML = """<!DOCTYPE html>
         document_id: "MY-PDPA-2026-VIOLATION-02",
         reference_date: "2026-03-15",
         act_filter: "Personal Data Protection Act 2010",
+        regimes: ["ACT_709"],
         raw_text: "SEC-8.1 Processor Liability Exclusion: The Data Processor shall bear zero statutory liability for unauthorized data disclosure or security failures. SEC-8.2 Breach Notice: Notification of a personal data breach shall be provided within 14 days of confirmation."
       },
       "03_ambiguous_edge_case": {
@@ -1142,6 +2094,7 @@ DEMO_HTML = """<!DOCTYPE html>
         document_id: "MY-PDPA-2024-LEGACY-EDGE-03",
         reference_date: "2024-06-15",
         act_filter: "Personal Data Protection Act 2010",
+        regimes: ["ACT_709"],
         raw_text: "SEC-4.1 Data Security: The Data Processor shall implement commercially reasonable technical safeguards to protect personal data. SEC-4.2 Incident Reporting: The Data Processor may report security incidents within 14 business days at its sole discretion. SEC-4.3 Cross-Border Subprocessing: Personal data may be mirrored to regional recovery nodes subject to periodic review."
       },
       "04_pdpa_pii_scan": {
@@ -1151,9 +2104,103 @@ DEMO_HTML = """<!DOCTYPE html>
         document_id: "MY-PDPA-PII-SCAN-04",
         reference_date: "2026-03-15",
         act_filter: "Personal Data Protection Act 2010",
+        regimes: ["ACT_709"],
         raw_text: "Privacy Policy for Syarikat Contoh Sdn Bhd (SSM: 202001012345 (1358123-K)). Customer record NRIC 900101-14-5678 (Tel: +6012-3456789, Email: demo.user@example.my): The Data Processor shall bear zero statutory liability for security failures. Notification of a personal data breach shall be provided within 14 days. Company will not appoint a DPO."
+      },
+      "05_multi_regime_shadow_override": {
+        fixture_id: "05_multi_regime_shadow_override",
+        title: "05 — Multi-Regime FinTech/NCII + Shadow Override Trap (Act 709 + Act 854 + BNM RMiT)",
+        description: "Adversarial multi-regime FinTech/NCII cloud DPA with NRIC/SSM PII, Narrow Security Incident Definition, 10-day Breach SLA, and a hostile Notwithstanding Clause 14 Shadow Override Trap.",
+        document_id: "MY-MULTI-REGIME-TRAP-05",
+        reference_date: "2026-03-15",
+        act_filter: "",
+        regimes: ["ACT_709", "ACT_854", "BNM_RMIT"],
+        raw_text: "Clause 1 Definitions: \\"Security Incident\\" means only confirmed unlawful disclosure causing downtime exceeding 48 hours and excluding ransomware. SEC-5.1 Breach Notification: For Customer NRIC 900101-14-5678 (SSM: 202001012345 (1358123-K)), Vendor shall notify Client of any Security Incident within 10 days. SEC-14.1 Liability & Audit Carve-Out: Notwithstanding Clause 5.1, the Vendor shall bear zero statutory liability and waives all rights to inspect or regulatory audit."
       }
     };
+
+    function syncRegimeChipStyles() {
+      document.getElementById('activeRegimesLabel').textContent = CURRENT_REGIMES.join(', ');
+      document.querySelectorAll('.regime-chip').forEach(btn => {
+        const reg = btn.getAttribute('data-regime');
+        if (CURRENT_REGIMES.includes(reg)) {
+          btn.className = 'regime-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-sky-500/20 border-sky-400 text-sky-300';
+        } else {
+          btn.className = 'regime-chip px-2.5 py-1 rounded-full text-xs font-medium border bg-slate-900 border-slate-700 text-slate-300 hover:border-amber-400';
+        }
+      });
+    }
+
+    async function toggleRegime(regime) {
+      if (CURRENT_REGIMES.includes(regime)) {
+        if (CURRENT_REGIMES.length > 1) {
+          CURRENT_REGIMES = CURRENT_REGIMES.filter(r => r !== regime);
+        }
+      } else {
+        CURRENT_REGIMES = [...CURRENT_REGIMES, regime];
+      }
+      syncRegimeChipStyles();
+      await updateEnvelopePreview();
+    }
+
+    async function updateEnvelopePreview() {
+      const asOf = document.getElementById('refDateInput').value || '2026-03-15';
+      const params = new URLSearchParams({
+        regimes: CURRENT_REGIMES.join(','),
+        as_of_date: asOf,
+        territorial_scope: CURRENT_SCOPE
+      });
+      try {
+        const res = await fetch(`/api/v1/deontic/envelope?${params.toString()}`);
+        if (!res.ok) return;
+        const env = await res.json();
+        renderDeonticEnvelope(env);
+        const b = (env.resolved_bounds || {}).incident_notice_max_hours;
+        document.getElementById('envelopeQuickPreview').textContent = b
+          ? `Strictest Envelope: incident_notice_max_hours ${b.operator} ${b.strictest_value}h (${b.dominating_regime})`
+          : `Active Regimes: ${CURRENT_REGIMES.join(', ')} (as of ${asOf})`;
+      } catch (_) {}
+    }
+
+    async function handleContractFileSelect(evt) {
+      const file = evt.target.files && evt.target.files[0];
+      if (file) await uploadContractFile(file);
+    }
+
+    async function handleContractDrop(evt) {
+      evt.preventDefault();
+      document.getElementById('contractDropZone').classList.remove('border-sky-400');
+      const file = evt.dataTransfer && evt.dataTransfer.files && evt.dataTransfer.files[0];
+      if (file) await uploadContractFile(file);
+    }
+
+    async function uploadContractFile(file) {
+      const statusEl = document.getElementById('uploadStatusLabel');
+      statusEl.textContent = `Uploading & parsing ${file.name}...`;
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('document_id', file.name.replace(/\\.[^.]+$/, ''));
+      formData.append('regimes', CURRENT_REGIMES.join(','));
+      formData.append('as_of_date', document.getElementById('refDateInput').value || '2026-03-15');
+      formData.append('territorial_scope', CURRENT_SCOPE);
+      formData.append('persona', CURRENT_PERSONA);
+      formData.append('language', CURRENT_LANG_MODE);
+
+      try {
+        const res = await fetch('/compliance/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        LAST_MODE = 'audit';
+        LAST_RESPONSE = data;
+        document.getElementById('docIdInput').value = data.document_id;
+        if (data.contract_ast && data.contract_ast.scrubbed_text) {
+          document.getElementById('rawTextInput').value = data.contract_ast.scrubbed_text;
+        }
+        statusEl.textContent = `Parsed ${file.name} (${data.contract_ast ? data.contract_ast.clauses.length : 0} AST clauses, PII scrubbed)`;
+        renderAuditResponse(data);
+      } catch (err) {
+        statusEl.textContent = `Upload failed: ${err}`;
+      }
+    }
 
     function escapeHtml(str) {
       return String(str ?? '')
@@ -1180,6 +2227,10 @@ DEMO_HTML = """<!DOCTYPE html>
       }
       if (LAST_RESPONSE) {
         renderPersonaCard(LAST_RESPONSE);
+      }
+      const drawer = document.getElementById('bilingualDrawer');
+      if (drawer && !drawer.classList.contains('translate-x-full')) {
+        openBilingualDrawer(LAST_DRAWER_NODE_ID);
       }
     }
 
@@ -1227,6 +2278,13 @@ DEMO_HTML = """<!DOCTYPE html>
       if (pitInput) pitInput.value = f.reference_date;
       document.getElementById('actFilterInput').value = f.act_filter || '';
       document.getElementById('rawTextInput').value = f.raw_text;
+      if (Array.isArray(f.regimes) && f.regimes.length > 0) {
+        CURRENT_REGIMES = [...f.regimes];
+      } else {
+        CURRENT_REGIMES = ['ACT_709'];
+      }
+      syncRegimeChipStyles();
+      updateEnvelopePreview();
     }
 
     function setPitDatePreset(dateStr) {
@@ -1448,14 +2506,20 @@ DEMO_HTML = """<!DOCTYPE html>
       bilingEl.innerHTML = pairs.map(pair => {
         const en = pair.en_node;
         const bm = pair.bm_node;
+        const divRep = pair.divergence_report;
+        const divPill = divRep
+          ? (divRep.has_divergence
+              ? `<span class="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 font-mono text-[10px]">ACT 388 DIVERGENCE (${divRep.issues.length})</span>`
+              : `<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-mono text-[10px]">ACT 388 ALIGNED</span>`)
+          : '';
         const showEn = CURRENT_LANG_MODE === 'en' || CURRENT_LANG_MODE === 'bilingual';
         const showBm = CURRENT_LANG_MODE === 'ms' || CURRENT_LANG_MODE === 'bilingual';
         const cols = (showEn && showBm) ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1';
         return `
           <div class="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
-            <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
+            <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-slate-400">
               <span class="text-white font-bold">${escapeHtml(pair.act_name)} (${escapeHtml(pair.act_number)}) &mdash; ${escapeHtml(pair.section_code)}</span>
-              <span>BM_EN_EQUIVALENT &bull; Auth: ${escapeHtml(pair.authoritative_node_id)}</span>
+              <div class="flex items-center gap-1.5">${divPill}<span>BM_EN_EQUIVALENT &bull; Auth: ${escapeHtml(pair.authoritative_node_id)}</span></div>
             </div>
             <div class="grid ${cols} gap-2.5">
               ${showBm ? `<div class="p-2.5 rounded bg-slate-900 border border-slate-800"><div class="text-[10px] font-mono font-bold text-emerald-400 mb-1">BAHASA MELAYU (${bm ? escapeHtml(bm.node_id) : 'N/A'})</div><div class="text-[11px] text-slate-200">${bm ? escapeHtml(bm.text) : 'Tiada teks BM.'}</div></div>` : ''}
@@ -1474,20 +2538,38 @@ DEMO_HTML = """<!DOCTYPE html>
       return 'bg-rose-500/20 text-rose-300 border-rose-500/40';
     }
 
+    function buildAuditPayload() {
+      const refD = document.getElementById('refDateInput').value || null;
+      return {
+        document_id: document.getElementById('docIdInput').value.trim() || 'CUSTOM-DOC-01',
+        raw_text: document.getElementById('rawTextInput').value.trim(),
+        reference_date: refD,
+        as_of_date: refD,
+        act_filter: document.getElementById('actFilterInput').value.trim() || null,
+        regimes: CURRENT_REGIMES,
+        territorial_scope: CURRENT_SCOPE,
+        persona: CURRENT_PERSONA,
+        language: CURRENT_LANG_MODE
+      };
+    }
+
+    function resetSseStepper() {
+      ['contract_ast_ingestor', 'deontic_temporal_retriever', 'cross_clause_risk_assessor', 'counterfactual_auditor', 'redline_manifest'].forEach(n => {
+        const badge = document.getElementById(`badge_${n}`);
+        if (badge) {
+          badge.textContent = 'PENDING';
+          badge.className = 'font-mono text-[10px] text-slate-400';
+        }
+      });
+    }
+
     async function runComplianceAudit() {
       const btn = document.getElementById('runAuditBtn');
       btn.disabled = true;
       btn.innerHTML = '<span>Auditing via LangGraph...</span>';
 
       const useCache = document.getElementById('useCacheCheckbox').checked;
-      const payload = {
-        document_id: document.getElementById('docIdInput').value.trim() || 'CUSTOM-DOC-01',
-        raw_text: document.getElementById('rawTextInput').value.trim(),
-        reference_date: document.getElementById('refDateInput').value || null,
-        act_filter: document.getElementById('actFilterInput').value.trim() || null,
-        territorial_scope: CURRENT_SCOPE,
-        persona: CURRENT_PERSONA
-      };
+      const payload = buildAuditPayload();
 
       try {
         const res = await fetch(`/compliance/check?use_cache=${useCache}`, {
@@ -1504,6 +2586,97 @@ DEMO_HTML = """<!DOCTYPE html>
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<span>Run Compliance Audit</span>';
+      }
+    }
+
+    async function runSseComplianceStream() {
+      const btn = document.getElementById('runSseStreamBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span>Streaming SSE...</span>';
+      resetSseStepper();
+      const payload = buildAuditPayload();
+
+      try {
+        const res = await fetch('/compliance/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\\n\\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            if (!frame.trim()) continue;
+            let evType = 'message';
+            let dataLine = '';
+            for (const line of frame.split('\\n')) {
+              if (line.startsWith('event:')) evType = line.slice(6).trim();
+              if (line.startsWith('data:')) dataLine = line.slice(5).trim();
+            }
+            if (!dataLine) continue;
+            const parsed = JSON.parse(dataLine);
+            if (evType === 'node_update') {
+              const badge = document.getElementById(`badge_${parsed.node}`);
+              if (badge) {
+                badge.textContent = 'DONE';
+                badge.className = 'font-mono text-[10px] text-emerald-400 font-bold';
+              }
+            } else if (evType === 'finops_tick') {
+              document.getElementById('liveBurnTickerUsd').textContent = `$${(parsed.estimated_cost_usd || 0).toFixed(6)}`;
+              document.getElementById('liveBurnTickerMyr').textContent = `RM ${(parsed.estimated_cost_myr || 0).toFixed(6)}`;
+              document.getElementById('trailNode1Tokens').textContent = `${parsed.total_tokens || 0} tok`;
+            } else if (evType === 'complete') {
+              LAST_MODE = 'audit';
+              LAST_RESPONSE = parsed;
+              renderAuditResponse(parsed);
+            }
+          }
+        }
+      } catch (err) {
+        document.getElementById('verdictSubheader').textContent = `SSE Stream error: ${err}`;
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Stream 5-Node SSE Audit</span>';
+      }
+    }
+
+    async function downloadRedlineDocx() {
+      const btn = document.getElementById('downloadRedlineDocxBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span>Compiling OOXML...</span>';
+      const payload = buildAuditPayload();
+      payload.rehydrate_pii = true;
+      if (LAST_RESPONSE && LAST_RESPONSE.findings) {
+        payload.findings = LAST_RESPONSE.findings;
+      }
+
+      try {
+        const res = await fetch('/compliance/export-docx', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${payload.document_id}_redlined.docx`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+      } catch (err) {
+        document.getElementById('verdictSubheader').textContent = `DOCX export error: ${err}`;
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Download Native Track-Changes .docx</span>';
       }
     }
 
@@ -1649,6 +2822,8 @@ DEMO_HTML = """<!DOCTYPE html>
       document.getElementById('receiptTraceBadge').textContent = t.trace_id || 'span-recorded';
       document.getElementById('receiptUsd').textContent = `$${(t.estimated_cost_usd || 0).toFixed(6)}`;
       document.getElementById('receiptMyr').textContent = `RM ${(t.estimated_cost_myr || 0).toFixed(6)}`;
+      document.getElementById('liveBurnTickerUsd').textContent = `$${(t.estimated_cost_usd || 0).toFixed(6)}`;
+      document.getElementById('liveBurnTickerMyr').textContent = `RM ${(t.estimated_cost_myr || 0).toFixed(6)}`;
       document.getElementById('receiptPromptTokens').textContent = promptTok;
       document.getElementById('receiptCompletionTokens').textContent = compTok;
       document.getElementById('receiptTotalTokens').textContent = t.total_tokens || 0;
@@ -1661,20 +2836,97 @@ DEMO_HTML = """<!DOCTYPE html>
       gBadge.className = `text-xs font-mono px-2 py-0.5 rounded border ${t.is_verified_grounded ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border-rose-500/30'}`;
     }
 
+    function renderDeonticEnvelope(env) {
+      const grid = document.getElementById('deonticBoundsGrid');
+      const conflictBox = document.getElementById('interRegimeConflictBox');
+      const hashBadge = document.getElementById('envelopeHashBadge');
+      if (!env || !env.resolved_bounds) {
+        grid.innerHTML = '<div class="text-slate-400">No composite deontic bounds active.</div>';
+        conflictBox.innerHTML = '';
+        return;
+      }
+      hashBadge.textContent = `Hash ${(env.envelope_hash || '').slice(0, 12)}... | ${(env.regimes_evaluated || []).join(' + ')}`;
+      const entries = Object.values(env.resolved_bounds);
+      grid.innerHTML = entries.map(b => `
+        <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 space-y-1">
+          <div class="flex items-center justify-between font-mono text-[11px]">
+            <span class="text-amber-300 font-bold">${escapeHtml(b.metric_key)}</span>
+            <span class="px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300">${escapeHtml(b.dominating_regime)}</span>
+          </div>
+          <div class="font-mono text-xs text-white">${escapeHtml(b.operator)} ${escapeHtml(String(b.strictest_value))} ${escapeHtml(b.unit || '')}</div>
+          <div class="text-[11px] text-slate-400">${escapeHtml(b.dominating_citation)} (${escapeHtml(b.dominating_node_id)})</div>
+        </div>
+      `).join('');
+
+      const conflicts = env.inter_regime_conflicts || [];
+      conflictBox.innerHTML = conflicts.map(c =>
+        `<div class="p-2 rounded bg-amber-950/30 border border-amber-500/30">&Delta; Conflict: ${escapeHtml(c.delta_summary)}</div>`
+      ).join('');
+    }
+
+    function renderShadowTraps(astGraph) {
+      const banner = document.getElementById('shadowOverrideTrapBanner');
+      const listEl = document.getElementById('shadowOverrideTrapList');
+      const countBadge = document.getElementById('shadowTrapCountBadge');
+      if (!astGraph) {
+        banner.classList.add('hidden');
+        return;
+      }
+      const shadowTraps = astGraph.shadow_override_traps || [];
+      const narrowTraps = astGraph.narrow_definition_traps || [];
+      const total = shadowTraps.length + narrowTraps.length;
+      if (total === 0) {
+        banner.classList.add('hidden');
+        return;
+      }
+      banner.classList.remove('hidden');
+      countBadge.textContent = `${total} TRAP(S)`;
+      const itemsHtml = shadowTraps.map(t =>
+        `<div class="p-2 rounded bg-rose-950/60 border border-rose-500/40"><strong class="font-mono text-rose-300">[OVERRIDES_NOTWITHSTANDING] ${escapeHtml(t.overriding_clause_id)} &rarr; ${escapeHtml(t.target_clause_id)}</strong>: ${escapeHtml(t.trap_description)}</div>`
+      ).concat(narrowTraps.map(n =>
+        `<div class="p-2 rounded bg-amber-950/50 border border-amber-500/40 text-amber-100"><strong class="font-mono text-amber-300">[DEFINES_TERM NARROW TRAP] "${escapeHtml(n.term_name)}" (${escapeHtml(n.definition_clause_id)})</strong>: ${escapeHtml(n.statutory_conflict)}</div>`
+      )).join('');
+      listEl.innerHTML = itemsHtml;
+    }
+
+    function renderAttestationManifest(manifest) {
+      const bodyEl = document.getElementById('attestationManifestBody');
+      if (!manifest) {
+        bodyEl.textContent = 'Attestation manifest pending.';
+        return;
+      }
+      bodyEl.innerHTML = `
+        <div>Doc SHA-256: <span class="text-slate-200">${escapeHtml(manifest.input_doc_sha256)}</span></div>
+        <div>Graph State Hash: <span class="text-sky-300">${escapeHtml(manifest.graph_state_hash)}</span></div>
+        <div>Manifest SHA-256: <span class="text-emerald-300">${escapeHtml(manifest.manifest_sha256)}</span> &bull; As-Of: ${escapeHtml(manifest.as_of_date)}</div>
+      `;
+    }
+
     function renderAuditResponse(data) {
       const t = data.telemetry || {};
       renderTelemetryCommon(t);
       renderPiiSummary(data.pii_scrub);
       renderPersonaCard(data);
+      renderDeonticEnvelope(data.deontic_envelope);
+      renderShadowTraps(data.contract_ast);
+      renderAttestationManifest(data.attestation_manifest);
 
       const statutes = data.active_statutes || [];
       document.getElementById('trailNode0Desc').textContent = `Resolved ${statutes.length} active statute(s) as of ${data.reference_date} [${data.territorial_scope || CURRENT_SCOPE}]`;
       document.getElementById('trailNode2Desc').textContent = t.is_verified_grounded
-        ? `All ${(data.findings || []).length} extracted clause quote(s) verified verbatim (retries: ${t.retry_count || 0})`
+        ? `All ${(data.findings || []).length} extracted clause quote(s) verified across 4 invariants (retries: ${t.retry_count || 0})`
         : `Unverified quote blocked after ${t.retry_count || 0} retries`;
 
+      ['contract_ast_ingestor', 'deontic_temporal_retriever', 'cross_clause_risk_assessor', 'counterfactual_auditor', 'redline_manifest'].forEach(n => {
+        const badge = document.getElementById(`badge_${n}`);
+        if (badge) {
+          badge.textContent = 'DONE';
+          badge.className = 'font-mono text-[10px] text-emerald-400 font-bold';
+        }
+      });
+
       const risk = data.overall_risk || 'LOW';
-      const verdictLabel = risk === 'LOW' ? 'LOW RISK — COMPLIANT' : (risk === 'MEDIUM' ? 'MEDIUM RISK — ESCALATE / REDLINE' : `${risk} RISK — STATUTORY VIOLATION`);
+      const verdictLabel = data.is_abstained ? 'ABSTAINED (<0.78)' : (risk === 'LOW' ? 'LOW RISK — COMPLIANT' : (risk === 'MEDIUM' ? 'MEDIUM RISK — ESCALATE / REDLINE' : `${risk} RISK — STATUTORY VIOLATION`));
       const rBadge = document.getElementById('overallRiskBadge');
       rBadge.textContent = verdictLabel;
       rBadge.className = `px-3 py-1 rounded-full text-xs font-bold font-mono uppercase border ${riskBadgeClasses(risk)}`;
@@ -1694,6 +2946,11 @@ DEMO_HTML = """<!DOCTYPE html>
 
       const findingsContainer = document.getElementById('findingsContainer');
       findingsContainer.innerHTML = '';
+      if (data.is_abstained) {
+        findingsContainer.innerHTML = `<div class="p-4 rounded-lg bg-rose-950/30 border border-rose-500/40 text-rose-300 text-xs font-mono">${escapeHtml(data.abstention_reason)}</div>`;
+        return;
+      }
+
       const findings = data.findings || [];
       if (findings.length === 0) {
         findingsContainer.innerHTML = '<div class="p-4 rounded-lg bg-emerald-950/30 border border-emerald-800/40 text-emerald-300 text-xs">No high-risk clauses detected. Contract complies with active point-in-time statutes.</div>';
@@ -1709,6 +2966,9 @@ DEMO_HTML = """<!DOCTYPE html>
         const spanPills = (c.source_span_ids || []).map(sid =>
           `<span class="px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono text-[11px]">${escapeHtml(sid)}</span>`
         ).join(' ');
+        const shadowBadge = c.overriding_clause_id
+          ? `<span class="px-2 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-200 font-mono text-[11px]">Shadow Override: ${escapeHtml(c.overriding_clause_id)}</span>`
+          : '';
         card.innerHTML = `
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex items-center gap-2">
@@ -1716,6 +2976,7 @@ DEMO_HTML = """<!DOCTYPE html>
               <span class="text-xs text-slate-400">&bull; ${escapeHtml(c.category)}</span>
             </div>
             <div class="flex flex-wrap items-center gap-1.5">
+              ${shadowBadge}
               ${violatedPills}
               ${spanPills}
               <span class="px-2.5 py-0.5 rounded text-xs font-mono font-bold border ${riskBadgeClasses(c.severity)}">${escapeHtml(c.severity)}</span>
@@ -1789,15 +3050,63 @@ DEMO_HTML = """<!DOCTYPE html>
       });
     }
 
+    function renderBilingualDivergenceBlock(report) {
+      if (!report) return '';
+      const hasDiv = Boolean(report.has_divergence);
+      const badgeCls = hasDiv
+        ? 'bg-rose-500/20 border-rose-500/40 text-rose-300'
+        : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300';
+      const badgeLabel = hasDiv ? `ACT 388 DIVERGENCE DETECTED (${(report.issues || []).length})` : 'ACT 388 ALIGNED';
+      const authText = report.authoritative_language === 'ms' ? 'BAHASA MELAYU (Act 388 s. 63)' : 'ENGLISH (Act 388 s. 63)';
+
+      let bodyHtml = '';
+      if (CURRENT_PERSONA === 'PRACTITIONER') {
+        const modsEn = (report.detected_en_modalities || []).join(', ') || 'STATEMENT';
+        const modsBm = (report.detected_bm_modalities || []).join(', ') || 'STATEMENT';
+        const issuesHtml = (report.issues || []).map(it => `
+          <div class="p-2 rounded bg-rose-950/30 border border-rose-500/30 space-y-1 text-[11px]">
+            <div class="font-mono font-bold text-rose-300">${escapeHtml(it.divergence_type)} [${escapeHtml(it.severity)}]</div>
+            <div class="text-slate-200">${escapeHtml(it.practitioner_note)}</div>
+            <div class="font-mono text-amber-300 text-[10px]">Resolution: ${escapeHtml(it.authoritative_resolution)} (Spans: ${escapeHtml(it.en_span_id || '-')} / ${escapeHtml(it.bm_span_id || '-')})</div>
+          </div>
+        `).join('');
+        bodyHtml = `
+          <div class="text-[11px] text-slate-300">${escapeHtml(report.summary_practitioner)}</div>
+          <div class="text-[10px] font-mono text-slate-400">Modalities: EN=[${escapeHtml(modsEn)}] &bull; BM=[${escapeHtml(modsBm)}] &bull; Basis: ${escapeHtml(report.act_388_authority_basis)}</div>
+          ${issuesHtml}
+        `;
+      } else {
+        const rakIssues = (report.issues || []).map(it =>
+          `<li class="text-[11px] text-amber-200">&bull; ${escapeHtml(it.rakyat_note)}</li>`
+        ).join('');
+        bodyHtml = `
+          <div class="text-xs text-slate-200">${escapeHtml(report.summary_rakyat)}</div>
+          ${rakIssues ? `<ul class="space-y-1 pt-1">${rakIssues}</ul>` : ''}
+        `;
+      }
+
+      return `
+        <div class="p-3 rounded-lg bg-slate-900 border ${hasDiv ? 'border-rose-500/40' : 'border-emerald-500/30'} space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="bilingual-divergence-badge px-2 py-0.5 rounded border font-mono text-[10px] font-bold ${badgeCls}">${badgeLabel}</span>
+            <span class="px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono text-[10px]">Authoritative: ${authText} &bull; Persona: ${escapeHtml(CURRENT_PERSONA)}</span>
+          </div>
+          ${bodyHtml}
+        </div>
+      `;
+    }
+
     async function openBilingualDrawer(nodeId) {
+      if (nodeId) LAST_DRAWER_NODE_ID = nodeId;
       const drawer = document.getElementById('bilingualDrawer');
       const content = document.getElementById('drawerContent');
       drawer.classList.remove('translate-x-full');
 
+      const asOf = document.getElementById('refDateInput').value || '2026-03-15';
       let pairs = [];
       if (nodeId) {
         try {
-          const res = await fetch(`/api/v1/statutes/${encodeURIComponent(nodeId)}/bilingual`);
+          const res = await fetch(`/api/v1/statutes/${encodeURIComponent(nodeId)}/bilingual?include_divergence=true&as_of_date=${encodeURIComponent(asOf)}`);
           if (res.ok) {
             pairs = [await res.json()];
           }
@@ -1808,7 +3117,7 @@ DEMO_HTML = """<!DOCTYPE html>
       }
       if (pairs.length === 0) {
         try {
-          const res = await fetch('/api/v1/statutes/PDPA-2010-SEC-9-V2/bilingual');
+          const res = await fetch(`/api/v1/statutes/PDPA-2010-SEC-9-V2/bilingual?include_divergence=true&as_of_date=${encodeURIComponent(asOf)}`);
           if (res.ok) pairs = [await res.json()];
         } catch (_) {}
       }
@@ -1821,6 +3130,7 @@ DEMO_HTML = """<!DOCTYPE html>
       content.innerHTML = pairs.map(pair => {
         const en = pair.en_node;
         const bm = pair.bm_node;
+        const divHtml = renderBilingualDivergenceBlock(pair.divergence_report);
         const spansHtml = (pair.source_spans || []).map(sp => `
           <tr class="border-t border-slate-800 text-[11px] font-mono">
             <td class="py-1.5 pr-2 text-indigo-300">${escapeHtml(sp.span_id)}</td>
@@ -1839,6 +3149,7 @@ DEMO_HTML = """<!DOCTYPE html>
                 <div class="text-[11px] font-mono text-slate-400 mt-0.5">HAS_TRANSLATION &bull; AUTHORITATIVE_TEXT: <span class="text-emerald-400">${escapeHtml(pair.authoritative_node_id)}</span> ${pair.gazette_ref ? '&bull; Gazette: ' + escapeHtml(pair.gazette_ref) : ''}</div>
               </div>
             </div>
+            ${divHtml}
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div class="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-1.5">
                 <div class="flex items-center justify-between text-[11px] font-mono">
