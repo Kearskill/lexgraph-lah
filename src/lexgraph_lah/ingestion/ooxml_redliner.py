@@ -152,7 +152,9 @@ def compile_track_changes_docx(
     as_of_label = (
         manifest.as_of_date.isoformat()
         if manifest
-        else (deontic_envelope.as_of_date.isoformat() if deontic_envelope else "CURRENT")
+        else (
+            deontic_envelope.as_of_date.isoformat() if deontic_envelope else "CURRENT"
+        )
     )
     header_text = (
         f"LEXGRAPH-LAH TRACK CHANGES COMPLIANCE REDLINE | Document: {document_id} | "
@@ -172,7 +174,7 @@ def compile_track_changes_docx(
             f"{len(contract_ast.narrow_definition_traps)} Narrow Definition Trap(s) detected."
         )
         paragraph_xml_blocks.append(
-            "<w:p><w:r><w:rPr><w:color w:val=\"B45309\"/><w:b/></w:rPr>"
+            '<w:p><w:r><w:rPr><w:color w:val="B45309"/><w:b/></w:rPr>'
             f'<w:t xml:space="preserve">{escape(trap_summary)}</w:t>'
             "</w:r></w:p>"
         )
@@ -198,7 +200,9 @@ def compile_track_changes_docx(
             non_overlapping.append((s_pos, e_pos, finding))
 
     def _emit_plain_paragraph(txt: str) -> None:
-        cleaned = _rehydrate_text(txt, rehydrate_pii, pii_vault, pii_placeholders).strip()
+        cleaned = _rehydrate_text(
+            txt, rehydrate_pii, pii_vault, pii_placeholders
+        ).strip()
         if not cleaned:
             return
         paragraph_xml_blocks.append(
@@ -216,9 +220,11 @@ def compile_track_changes_docx(
             finding.recommended_redline, rehydrate_pii, pii_vault, pii_placeholders
         )
 
-        needs_change = bool(new_txt.strip()) and not new_txt.lower().startswith(
-            "no redline required"
-        ) and new_txt.strip() != old_txt.strip()
+        needs_change = (
+            bool(new_txt.strip())
+            and not new_txt.lower().startswith("no redline required")
+            and new_txt.strip() != old_txt.strip()
+        )
 
         cid = comment_id
         comment_id += 1
@@ -237,13 +243,13 @@ def compile_track_changes_docx(
                 "<w:p>"
                 f'<w:commentRangeStart w:id="{cid}"/>'
                 f'<w:del w:id="{del_id}" w:author="{escape(author)}" w:date="{escape(rev_date)}">'
-                "<w:r><w:delText xml:space=\"preserve\">"
+                '<w:r><w:delText xml:space="preserve">'
                 f"{escape(old_txt)}"
                 "</w:delText></w:r>"
                 "</w:del>"
                 '<w:r><w:t xml:space="preserve"> </w:t></w:r>'
                 f'<w:ins w:id="{ins_id}" w:author="{escape(author)}" w:date="{escape(rev_date)}">'
-                "<w:r><w:t xml:space=\"preserve\">"
+                '<w:r><w:t xml:space="preserve">'
                 f"{escape(new_txt)}"
                 "</w:t></w:r>"
                 "</w:ins>"
@@ -318,9 +324,7 @@ def compile_track_changes_docx(
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        "<w:body>"
-        + "".join(paragraph_xml_blocks)
-        + "<w:sectPr/></w:body></w:document>"
+        "<w:body>" + "".join(paragraph_xml_blocks) + "<w:sectPr/></w:body></w:document>"
     )
 
     comment_xml_nodes: list[str] = []

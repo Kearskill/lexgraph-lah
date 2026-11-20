@@ -112,8 +112,13 @@ def test_deontic_envelope_bitemporal_transitions_act709_act854_bnm_rmit():
         regimes=["ACT_709", "ACT_854"],
         as_of_date=date(2024, 10, 15),
     )
-    assert env_late2024.resolved_bounds["incident_notice_max_hours"].strictest_value == 6.0
-    assert env_late2024.resolved_bounds["incident_notice_max_hours"].dominating_regime == "ACT_854"
+    assert (
+        env_late2024.resolved_bounds["incident_notice_max_hours"].strictest_value == 6.0
+    )
+    assert (
+        env_late2024.resolved_bounds["incident_notice_max_hours"].dominating_regime
+        == "ACT_854"
+    )
     assert env_late2024.resolved_bounds["full_report_max_days"].strictest_value == 14.0
     assert "PDPA-2010-SEC-9-V2" not in env_late2024.active_node_ids
 
@@ -143,7 +148,9 @@ def test_deontic_envelope_bitemporal_transitions_act709_act854_bnm_rmit():
     assert b_tri.strictest_value == 1.0
     assert b_tri.dominating_regime == "BNM_RMIT"
     assert b_tri.dominating_node_id == "BNM-RMIT-SEC-10-32-V1"
-    assert env_tri_2026.resolved_bounds["regulator_audit_access"].strictest_value is True
+    assert (
+        env_tri_2026.resolved_bounds["regulator_audit_access"].strictest_value is True
+    )
 
 
 def test_contract_ast_shadow_override_en_bm_narrow_definition_and_reversible_pii_vault():
@@ -213,9 +220,7 @@ async def test_counterfactual_critic_rejects_under_strict_24h_redline_and_passes
         "SEC-5.1 Breach Notice: For NRIC [MYKAD_01], Vendor shall notify Client of any "
         "cyber incident within 10 days."
     )
-    scrubbed_quote_14_1 = (
-        "SEC-14.1 Carve-Out: Notwithstanding Clause 5.1, Vendor shall bear zero statutory liability."
-    )
+    scrubbed_quote_14_1 = "SEC-14.1 Carve-Out: Notwithstanding Clause 5.1, Vendor shall bear zero statutory liability."
 
     attempt1 = [
         ClauseAudit(
@@ -258,7 +263,9 @@ async def test_counterfactual_critic_rejects_under_strict_24h_redline_and_passes
         captured_prompts.append(messages[0].content + "\n" + messages[1].content)
         idx = len(captured_prompts) - 1
         clauses, in_tok, out_tok = [(attempt1, 450, 140), (attempt2, 520, 170)][idx]
-        raw_msg = SimpleNamespace(usage_metadata={"input_tokens": in_tok, "output_tokens": out_tok})
+        raw_msg = SimpleNamespace(
+            usage_metadata={"input_tokens": in_tok, "output_tokens": out_tok}
+        )
         return {"parsed": ClauseExtractionList(clauses=clauses), "raw": raw_msg}
 
     structured_mock = MagicMock()
@@ -340,14 +347,15 @@ def test_ooxml_track_changes_docx_compiler_and_reversible_rehydration():
     assert "PDPA-2010-SEC-9-V2" in inspected["comments"][0]["text"]
 
     # Also verify docx & pdf text extractors round-trip cleanly
-    src_docx = _make_simple_docx_bytes(
-        ["SEC-5.1 Vendor shall notify within 10 days."]
-    )
+    src_docx = _make_simple_docx_bytes(["SEC-5.1 Vendor shall notify within 10 days."])
     assert extract_text_from_docx_bytes(src_docx) == [
         (1, "SEC-5.1 Vendor shall notify within 10 days.")
     ]
     src_pdf = _make_simple_pdf_bytes("SEC-5.1 Vendor shall notify within 10 days.")
-    assert "Vendor shall notify within 10 days." in extract_text_from_pdf_bytes(src_pdf)[0][1]
+    assert (
+        "Vendor shall notify within 10 days."
+        in extract_text_from_pdf_bytes(src_pdf)[0][1]
+    )
 
 
 @pytest.mark.asyncio
@@ -412,7 +420,12 @@ async def test_sse_stream_multipart_upload_docx_export_dual_layer_and_mcp():
         )
         assert up_res.status_code == 200
         up_json = up_res.json()
-        assert up_json["deontic_envelope"]["resolved_bounds"]["incident_notice_max_hours"]["strictest_value"] == 1.0
+        assert (
+            up_json["deontic_envelope"]["resolved_bounds"]["incident_notice_max_hours"][
+                "strictest_value"
+            ]
+            == 1.0
+        )
         assert len(up_json["contract_ast"]["shadow_override_traps"]) >= 1
         assert up_json["attestation_manifest"]["manifest_sha256"]
 
@@ -451,7 +464,12 @@ async def test_sse_stream_multipart_upload_docx_export_dual_layer_and_mcp():
         dual_data = dual_res.json()
         assert len(dual_data["contract_nodes"]) >= 2
         assert len(dual_data["contract_edges"]) >= 1
-        assert dual_data["deontic_envelope"]["resolved_bounds"]["incident_notice_max_hours"]["strictest_value"] == 1.0
+        assert (
+            dual_data["deontic_envelope"]["resolved_bounds"][
+                "incident_notice_max_hours"
+            ]["strictest_value"]
+            == 1.0
+        )
 
         # 5. New MCP tools via /api/v1/mcp/call
         mcp_env = await client.post(
@@ -513,7 +531,7 @@ async def test_sse_stream_multipart_upload_docx_export_dual_layer_and_mcp():
     assert "runSseStreamBtn" in demo_html
     assert "downloadRedlineDocxBtn" in demo_html
     assert "shadowOverrideTrapBanner" in demo_html
-    assert r'Clause 1 Definitions: \"Security Incident\"' in demo_html
+    assert r"Clause 1 Definitions: \"Security Incident\"" in demo_html
     assert r"buffer.split('\n\n')" in demo_html
 
     dash_html = sync_client.get("/dashboard").text
@@ -529,7 +547,9 @@ def test_ui_html_inline_scripts_have_valid_js_syntax() -> None:
     sync_client = TestClient(app)
     for route_path in ("/demo", "/dashboard"):
         html_doc = sync_client.get(route_path).text
-        for script_body in re.findall(r"<script[^>]*>(.*?)</script>", html_doc, re.DOTALL):
+        for script_body in re.findall(
+            r"<script[^>]*>(.*?)</script>", html_doc, re.DOTALL
+        ):
             if not script_body.strip():
                 continue
             with tempfile.NamedTemporaryFile(
@@ -544,6 +564,8 @@ def test_ui_html_inline_scripts_have_valid_js_syntax() -> None:
                     text=True,
                     check=False,
                 )
-                assert proc.returncode == 0, f"{route_path} inline JS error: {proc.stderr}"
+                assert proc.returncode == 0, (
+                    f"{route_path} inline JS error: {proc.stderr}"
+                )
             finally:
                 os.unlink(tmp_path)

@@ -89,13 +89,22 @@ def extract_numeric_sla_from_text(text: str) -> tuple[float | None, float | None
             window = low[max(0, m.start() - 48) : min(len(low), m.end() + 24)]
             if any(
                 kw in window
-                for kw in ("full report", "comprehensive report", "post-incident", "laporan penuh")
+                for kw in (
+                    "full report",
+                    "comprehensive report",
+                    "post-incident",
+                    "laporan penuh",
+                )
             ):
                 report_days = val if report_days is None else min(report_days, val)
             elif notice_hours is None:
                 notice_hours = val * 24.0
-        if report_days is None and len(days_matches) > 0 and any(
-            kw in low for kw in ("full report", "laporan penuh", "written report")
+        if (
+            report_days is None
+            and len(days_matches) > 0
+            and any(
+                kw in low for kw in ("full report", "laporan penuh", "written report")
+            )
         ):
             report_days = min(days_matches)
 
@@ -269,7 +278,9 @@ def _segment_scrubbed_text(
     matches = [
         m
         for m in _CLAUSE_BOUNDARY_RE.finditer(scrubbed_text)
-        if not _INLINE_REF_PREFIX_RE.search(scrubbed_text[max(0, m.start() - 25) : m.start()])
+        if not _INLINE_REF_PREFIX_RE.search(
+            scrubbed_text[max(0, m.start() - 25) : m.start()]
+        )
     ]
     segments: list[tuple[str, str, int, int, int, int]] = []
 
@@ -299,7 +310,9 @@ def _segment_scrubbed_text(
     seen_ids: dict[str, int] = {}
     for idx, match in enumerate(matches):
         seg_start = match.start()
-        seg_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(scrubbed_text)
+        seg_end = (
+            matches[idx + 1].start() if idx + 1 < len(matches) else len(scrubbed_text)
+        )
         raw_seg = scrubbed_text[seg_start:seg_end]
         lead_ws = len(raw_seg) - len(raw_seg.lstrip())
         start_char = seg_start + lead_ws
@@ -484,19 +497,27 @@ def build_contract_ast(
     clauses: list[ContractClauseNode] = []
 
     for clause_id, seg_txt, page_no, para_idx, start_char, end_char in raw_segments:
-        first_line = seg_txt.split(":", 1)[0].strip() if ":" in seg_txt else seg_txt[:60]
-        section_type: Literal["DEFINITION", "OPERATIVE", "PRIORITY_OVERRIDE", "GENERAL"] = (
-            "OPERATIVE"
+        first_line = (
+            seg_txt.split(":", 1)[0].strip() if ":" in seg_txt else seg_txt[:60]
         )
+        section_type: Literal[
+            "DEFINITION", "OPERATIVE", "PRIORITY_OVERRIDE", "GENERAL"
+        ] = "OPERATIVE"
         low_seg = seg_txt.lower()
-        if _DEFINITION_RE.search(seg_txt) or "definition" in first_line.lower() or "definisi" in first_line.lower():
+        if (
+            _DEFINITION_RE.search(seg_txt)
+            or "definition" in first_line.lower()
+            or "definisi" in first_line.lower()
+        ):
             section_type = "DEFINITION"
         elif _OVERRIDE_TRIGGER_RE.search(seg_txt):
             section_type = "PRIORITY_OVERRIDE"
         elif "preamble" in first_line.lower():
             section_type = "GENERAL"
 
-        defined_terms = [m.group("term").strip() for m in _DEFINITION_RE.finditer(seg_txt)]
+        defined_terms = [
+            m.group("term").strip() for m in _DEFINITION_RE.finditer(seg_txt)
+        ]
         refs = [f"SEC-{m.group(1)}" for m in _CLAUSE_REF_RE.finditer(seg_txt)]
         # Deduplicate preserving order
         seen_refs: list[str] = []
@@ -552,7 +573,9 @@ def build_contract_ast(
                     continue
                 if re.search(rf"\b{re.escape(term_lower)}\b", op_clause.text.lower()):
                     target_ids.append(op_clause.clause_id)
-                    conflict_desc = _detect_narrow_definition_trap(term, def_clause.text)
+                    conflict_desc = _detect_narrow_definition_trap(
+                        term, def_clause.text
+                    )
                     edges.append(
                         ContractDependencyEdge(
                             source_clause_id=def_clause.clause_id,

@@ -52,16 +52,29 @@ def test_five_territory_deontic_solver_expansion_and_act_136():
     )
     assert pen.resolved_bounds["max_weekly_work_hours"].strictest_value == 45.0
     assert pen.resolved_bounds["max_weekly_work_hours"].dominating_regime == "ACT_265"
-    assert pen.resolved_bounds["max_weekly_work_hours"].dominating_node_id == "EA-1955-SEC-60A-V1"
+    assert (
+        pen.resolved_bounds["max_weekly_work_hours"].dominating_node_id
+        == "EA-1955-SEC-60A-V1"
+    )
     assert "sabah_non_resident_work_permit" not in pen.resolved_bounds
     assert "sarawak_non_resident_licence" not in pen.resolved_bounds
     assert "labuan_lfsa_license_required" not in pen.resolved_bounds
-    assert pen.resolved_bounds["penalty_clause_reasonable_compensation_cap"].strictest_value is True
     assert (
-        pen.resolved_bounds["penalty_clause_reasonable_compensation_cap"].dominating_node_id
+        pen.resolved_bounds[
+            "penalty_clause_reasonable_compensation_cap"
+        ].strictest_value
+        is True
+    )
+    assert (
+        pen.resolved_bounds[
+            "penalty_clause_reasonable_compensation_cap"
+        ].dominating_node_id
         == "ACT-136-SEC-75-V1"
     )
-    assert pen.resolved_bounds["electronic_contract_formation_valid"].strictest_value is True
+    assert (
+        pen.resolved_bounds["electronic_contract_formation_valid"].strictest_value
+        is True
+    )
 
     sabah = resolver.resolve(
         regimes=["TERRITORIAL", "ACT_658"],
@@ -69,11 +82,24 @@ def test_five_territory_deontic_solver_expansion_and_act_136():
         territorial_scope=TerritorialScope.SABAH,
     )
     assert sabah.resolved_bounds["max_weekly_work_hours"].strictest_value == 48.0
-    assert sabah.resolved_bounds["max_weekly_work_hours"].dominating_regime == "SABAH_CAP67"
-    assert sabah.resolved_bounds["max_weekly_work_hours"].dominating_node_id == "SABAH-CAP67-SEC-104-V1"
-    assert sabah.resolved_bounds["sabah_non_resident_work_permit"].strictest_value is True
+    assert (
+        sabah.resolved_bounds["max_weekly_work_hours"].dominating_regime
+        == "SABAH_CAP67"
+    )
+    assert (
+        sabah.resolved_bounds["max_weekly_work_hours"].dominating_node_id
+        == "SABAH-CAP67-SEC-104-V1"
+    )
+    assert (
+        sabah.resolved_bounds["sabah_non_resident_work_permit"].strictest_value is True
+    )
     assert "sarawak_non_resident_licence" not in sabah.resolved_bounds
-    assert sabah.resolved_bounds["penalty_clause_reasonable_compensation_cap"].strictest_value is True
+    assert (
+        sabah.resolved_bounds[
+            "penalty_clause_reasonable_compensation_cap"
+        ].strictest_value
+        is True
+    )
 
     sarawak = resolver.resolve(
         regimes=["TERRITORIAL", "ACT_658"],
@@ -81,24 +107,44 @@ def test_five_territory_deontic_solver_expansion_and_act_136():
         territorial_scope=TerritorialScope.SARAWAK,
     )
     assert sarawak.resolved_bounds["max_weekly_work_hours"].strictest_value == 48.0
-    assert sarawak.resolved_bounds["max_weekly_work_hours"].dominating_regime == "SARAWAK_CAP76"
+    assert (
+        sarawak.resolved_bounds["max_weekly_work_hours"].dominating_regime
+        == "SARAWAK_CAP76"
+    )
     assert (
         sarawak.resolved_bounds["max_weekly_work_hours"].dominating_node_id
         == "SARAWAK-CAP76-SEC-105-V1"
     )
-    assert sarawak.resolved_bounds["sarawak_non_resident_licence"].strictest_value is True
+    assert (
+        sarawak.resolved_bounds["sarawak_non_resident_licence"].strictest_value is True
+    )
     assert "sabah_non_resident_work_permit" not in sarawak.resolved_bounds
-    assert sarawak.resolved_bounds["penalty_clause_reasonable_compensation_cap"].strictest_value is True
+    assert (
+        sarawak.resolved_bounds[
+            "penalty_clause_reasonable_compensation_cap"
+        ].strictest_value
+        is True
+    )
 
     labuan = resolver.resolve(
         regimes=["TERRITORIAL", "ACT_658"],
         as_of_date=as_of,
         territorial_scope=TerritorialScope.LABUAN,
     )
-    assert labuan.resolved_bounds["labuan_lfsa_license_required"].strictest_value is True
-    assert labuan.resolved_bounds["labuan_lfsa_license_required"].dominating_node_id == "LABUAN-FSA-SEC-10-V1"
+    assert (
+        labuan.resolved_bounds["labuan_lfsa_license_required"].strictest_value is True
+    )
+    assert (
+        labuan.resolved_bounds["labuan_lfsa_license_required"].dominating_node_id
+        == "LABUAN-FSA-SEC-10-V1"
+    )
     assert "max_weekly_work_hours" not in labuan.resolved_bounds
-    assert labuan.resolved_bounds["penalty_clause_reasonable_compensation_cap"].strictest_value is True
+    assert (
+        labuan.resolved_bounds[
+            "penalty_clause_reasonable_compensation_cap"
+        ].strictest_value
+        is True
+    )
 
     fed = resolver.resolve(
         regimes=["TERRITORIAL", "ACT_709"],
@@ -161,13 +207,20 @@ def test_portfolio_blast_radius_aliases_ranking_and_pii_safety():
     assert res.telemetry.estimated_cost_usd == 0.0
     assert res.ranked_impacts[-1].document_id == "C-OK"
 
-    regressed = next(i for i in res.ranked_impacts if i.document_id == "C-REGRESSED-48H")
+    regressed = next(
+        i for i in res.ranked_impacts if i.document_id == "C-REGRESSED-48H"
+    )
     assert regressed.contract_id == "C-REGRESSED-48H"
     assert regressed.became_non_compliant is True
     assert "900101-14-5678" not in regressed.pii_scrub.masked_text
     assert "900101-14-5678" not in regressed.remediation_summary_practitioner
     assert "incident_notice_max_hours" in regressed.strictest_deontic_bounds
-    assert regressed.strictest_deontic_bounds["incident_notice_max_hours"]["strictest_value"] == 6.0
+    assert (
+        regressed.strictest_deontic_bounds["incident_notice_max_hours"][
+            "strictest_value"
+        ]
+        == 6.0
+    )
 
 
 def test_sqlite_wal_attestation_ledger_single_byte_tamper_detection(tmp_path):

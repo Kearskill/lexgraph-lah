@@ -315,7 +315,9 @@ async def test_mcp_jsonrpc_http_11_tools_and_model_tier_telemetry():
             },
         )
         assert rpc_call_ver.status_code == 200
-        assert rpc_call_ver.json()["result"]["structuredContent"]["status"] == "VERIFIED"
+        assert (
+            rpc_call_ver.json()["result"]["structuredContent"]["status"] == "VERIFIED"
+        )
 
         rpc_bad_method = await client.post(
             "/mcp",
@@ -344,14 +346,19 @@ async def test_mcp_jsonrpc_http_11_tools_and_model_tier_telemetry():
 
 def test_mcp_jsonrpc_stdio_cli_subprocess():
     """Verifies `python -m lexgraph_lah.mcp.jsonrpc --stdio` roundtrips JSON-RPC 2.0 lines."""
-    requests_payload = "\n".join(
-        [
-            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
-            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}),
-            json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}),
-        ]
-    ) + "\n"
+    requests_payload = (
+        "\n".join(
+            [
+                json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+                ),
+                json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}),
+                json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}),
+            ]
+        )
+        + "\n"
+    )
 
     proc = subprocess.run(
         [sys.executable, "-m", "lexgraph_lah.mcp.jsonrpc", "--stdio"],

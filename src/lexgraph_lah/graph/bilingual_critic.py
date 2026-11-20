@@ -223,8 +223,7 @@ def _format_rm(amounts: set[float]) -> str:
     if not amounts:
         return "none"
     return ", ".join(
-        f"RM {int(v):,}" if v.is_integer() else f"RM {v:,.2f}"
-        for v in sorted(amounts)
+        f"RM {int(v):,}" if v.is_integer() else f"RM {v:,.2f}" for v in sorted(amounts)
     )
 
 
@@ -292,17 +291,29 @@ def audit_bilingual_pair(
         auth_lang: Literal["ms", "en"]
         if authoritative_language is not None:
             auth_lang = "ms" if authoritative_language.lower() in {"ms", "bm"} else "en"
-        elif bm_node and bm_node.authoritative_language and not (
-            en_node and en_node.authoritative_language
+        elif (
+            bm_node
+            and bm_node.authoritative_language
+            and not (en_node and en_node.authoritative_language)
         ):
             auth_lang = "ms"
-        elif en_node and en_node.authoritative_language and not (
-            bm_node and bm_node.authoritative_language
+        elif (
+            en_node
+            and en_node.authoritative_language
+            and not (bm_node and bm_node.authoritative_language)
         ):
             auth_lang = "en"
-        elif authoritative_node_id and bm_node and authoritative_node_id == bm_node.node_id:
+        elif (
+            authoritative_node_id
+            and bm_node
+            and authoritative_node_id == bm_node.node_id
+        ):
             auth_lang = "ms"
-        elif authoritative_node_id and en_node and authoritative_node_id == en_node.node_id:
+        elif (
+            authoritative_node_id
+            and en_node
+            and authoritative_node_id == en_node.node_id
+        ):
             auth_lang = "en"
         else:
             # Post-1967 Acts default to BM authoritative unless designated EN
@@ -313,7 +324,9 @@ def audit_bilingual_pair(
             if auth_lang == "ms"
             else (en_node.node_id if en_node else "EN-TEXT")
         )
-        auth_label = "Bahasa Melayu (National Language)" if auth_lang == "ms" else "English"
+        auth_label = (
+            "Bahasa Melayu (National Language)" if auth_lang == "ms" else "English"
+        )
 
         en_spans: list[SourceSpan] = (
             list(en_node.source_spans)
@@ -415,7 +428,9 @@ def audit_bilingual_pair(
             and "PERMISSION" in en_mod_set
             and "PERMISSION" not in bm_mod_set
         )
-        has_polarity_flip = bool(en_mod_set and bm_mod_set and en_mod_set.isdisjoint(bm_mod_set))
+        has_polarity_flip = bool(
+            en_mod_set and bm_mod_set and en_mod_set.isdisjoint(bm_mod_set)
+        )
         if has_perm_mismatch or has_polarity_flip:
             issues.append(
                 BilingualDivergenceIssue(
@@ -620,7 +635,9 @@ def audit_bilingual_divergence(
 
         pair = store.get_bilingual_pair(target_id)
         if pair is None:
-            raise KeyError(f"Statutory node '{node_id}' not found in TemporalGraphStore.")
+            raise KeyError(
+                f"Statutory node '{node_id}' not found in TemporalGraphStore."
+            )
 
         return audit_bilingual_pair(
             en_node=pair.en_node,

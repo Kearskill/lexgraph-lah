@@ -2,7 +2,11 @@ import re
 
 # Bidirectional Malaysian Legal Bilingual Lexicon (Bahasa Melayu <-> English)
 BM_TO_EN_PHRASES: dict[str, list[str]] = {
-    "akta perlindungan data peribadi": ["personal data protection act", "act 709", "pdpa"],
+    "akta perlindungan data peribadi": [
+        "personal data protection act",
+        "act 709",
+        "pdpa",
+    ],
     "akta 709": ["act 709", "personal data protection act 2010", "pdpa"],
     "kanun keseksaan": ["penal code", "act 574"],
     "akta 574": ["act 574", "penal code", "kanun keseksaan"],
@@ -36,7 +40,11 @@ BM_TO_EN_PHRASES: dict[str, list[str]] = {
     "prinsip integriti data": ["data integrity principle", "section 11"],
     "prinsip akses": ["access principle", "section 12"],
     "persetujuan": ["consent", "authorized"],
-    "penzahiran tanpa kebenaran": ["unlawful disclosure", "unauthorized disclosure", "section 130"],
+    "penzahiran tanpa kebenaran": [
+        "unlawful disclosure",
+        "unauthorized disclosure",
+        "section 130",
+    ],
     "keselamatan": ["security", "safeguards"],
     "pampasan": ["liability", "indemnity", "compensation", "damages"],
     "liabiliti": ["liability", "statutory liability"],
@@ -65,19 +73,36 @@ BM_TO_EN_PHRASES: dict[str, list[str]] = {
     "akta keselamatan siber": ["cyber security act 2024", "act 854", "ncii", "nacsa"],
     "akta 854": ["act 854", "cyber security act 2024", "p.u. (a) 220/2024"],
     "keselamatan siber": ["cyber security", "cyber incident", "act 854"],
-    "insiden keselamatan siber": ["cyber security incident", "6 hours", "14 days", "ncii"],
-    "infrastruktur maklumat kritikal negara": ["national critical information infrastructure", "ncii"],
+    "insiden keselamatan siber": [
+        "cyber security incident",
+        "6 hours",
+        "14 days",
+        "ncii",
+    ],
+    "infrastruktur maklumat kritikal negara": [
+        "national critical information infrastructure",
+        "ncii",
+    ],
     "penilaian risiko siber": ["cyber security risk assessment", "audit", "section 22"],
     "pengurusan risiko teknologi": ["risk management in technology", "rmit", "bnm"],
     "perkhidmatan awan": ["cloud", "cloud audit", "exit plan"],
     "pelan keluar": ["exit plan", "cloud", "bnm rmit"],
     "walau apa pun": ["notwithstanding", "override"],
-    "akta tafsiran": ["interpretation acts", "act 388", "authoritative text", "section 63"],
+    "akta tafsiran": [
+        "interpretation acts",
+        "act 388",
+        "authoritative text",
+        "section 63",
+    ],
     "akta 388": ["act 388", "interpretation acts", "section 63"],
     "teks sahih": ["authoritative text", "act 388", "section 63"],
     "labuan": ["labuan", "act 704", "labuan financial services"],
     "akta 704": ["act 704", "labuan financial services", "labuan"],
-    "akta perdagangan elektronik": ["electronic commerce act 2006", "act 658", "electronic message"],
+    "akta perdagangan elektronik": [
+        "electronic commerce act 2006",
+        "act 658",
+        "electronic message",
+    ],
     "akta 658": ["act 658", "electronic commerce act 2006"],
     "mesej elektronik": ["electronic message", "electronic consent", "act 658"],
 }
@@ -110,7 +135,11 @@ EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "cheating": ["penipuan", "seksyen 420", "kanun keseksaan"],
     "amendment": ["pindaan"],
     "data breach": ["pecah data", "kebocoran data", "pelanggaran data peribadi"],
-    "breach notification": ["notis pelanggaran data", "pemberitahuan pelanggaran data", "72 jam"],
+    "breach notification": [
+        "notis pelanggaran data",
+        "pemberitahuan pelanggaran data",
+        "72 jam",
+    ],
     "data processor": ["pemproses data"],
     "data user": ["pengguna data"],
     "data subject": ["subjek data"],
@@ -145,7 +174,11 @@ EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "authoritative text": ["teks sahih", "akta 388"],
     "labuan": ["labuan", "akta 704", "perkhidmatan kewangan labuan"],
     "act 704": ["akta 704", "perkhidmatan kewangan labuan", "labuan"],
-    "electronic commerce act": ["akta perdagangan elektronik 2006", "akta 658", "mesej elektronik"],
+    "electronic commerce act": [
+        "akta perdagangan elektronik 2006",
+        "akta 658",
+        "mesej elektronik",
+    ],
     "act 658": ["akta 658", "akta perdagangan elektronik 2006", "mesej elektronik"],
     "electronic consent": ["persetujuan elektronik", "mesej elektronik", "akta 658"],
 }
@@ -389,9 +422,21 @@ def normalize_and_expand_query(query: str) -> tuple[str, str, list[str]]:
 
     # Normalize Malaysian code-switched shorthand (e.g., "Sek. 9", "Sec 12B", "s.9")
     normalized = lowered
-    normalized = re.sub(r"\b(?:sek\.?|seksyen)\s*(\d+[a-z]?)\b", r"seksyen \1 section \1 sec-\1", normalized)
-    normalized = re.sub(r"\b(?:sec\.?|section|s\.)\s*(\d+[a-z]?)\b", r"section \1 seksyen \1 sec-\1", normalized)
-    normalized = re.sub(r"\b(?:art\.?|perkara)\s*(\d+[a-z]?)\b", r"article \1 perkara \1 art-\1", normalized)
+    normalized = re.sub(
+        r"\b(?:sek\.?|seksyen)\s*(\d+[a-z]?)\b",
+        r"seksyen \1 section \1 sec-\1",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\b(?:sec\.?|section|s\.)\s*(\d+[a-z]?)\b",
+        r"section \1 seksyen \1 sec-\1",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\b(?:art\.?|perkara)\s*(\d+[a-z]?)\b",
+        r"article \1 perkara \1 art-\1",
+        normalized,
+    )
 
     for alias in resolve_cross_lingual_statute_aliases(lowered):
         _add_term(alias)

@@ -42,7 +42,9 @@ _SEVERITY_RANK: dict[RiskSeverity, int] = {
 
 
 def _extract_matching_sentence(text: str, keywords: tuple[str, ...]) -> str:
-    segments = [seg.strip() for seg in re.split(r"(?<=[.!?\n])\s+", text.strip()) if seg.strip()]
+    segments = [
+        seg.strip() for seg in re.split(r"(?<=[.!?\n])\s+", text.strip()) if seg.strip()
+    ]
     for seg in segments:
         low = seg.lower()
         if any(kw in low for kw in keywords):
@@ -170,7 +172,9 @@ def build_persona_summaries(
         return irac, rakyat
 
     cited_sections = ", ".join(g.section_ref for g in non_compliant)
-    top_issues = "; ".join(f"{g.principle_name} ({g.severity.value})" for g in non_compliant)
+    top_issues = "; ".join(
+        f"{g.principle_name} ({g.severity.value})" for g in non_compliant
+    )
     irac = IRACAnalysis(
         issue=f"Whether {document_id} exposes the Data User / Data Processor to statutory liability under {cited_sections} as of {as_of_date.isoformat()}.",
         rule=(
@@ -300,14 +304,23 @@ def scan_pdpa_compliance(
         sec9_span_ids, sec9_spans = _spans_for_nodes(graph_store, sec9_nodes)
         sec9_quote = _extract_matching_sentence(
             safe_text,
-            ("security", "liability", "processor", "encryption", "plaintext", "keselamatan"),
+            (
+                "security",
+                "liability",
+                "processor",
+                "encryption",
+                "plaintext",
+                "keselamatan",
+            ),
         )
         if has_security_violation:
             gaps.append(
                 PDPAGapItem(
                     rule_id="ACT709-SEC9-SECURITY",
                     principle_name="Security Principle & Processor Liability",
-                    section_ref="Section 9 & 9(1A) [Act 709]" if is_post_2025 else "Section 9 [Act 709]",
+                    section_ref="Section 9 & 9(1A) [Act 709]"
+                    if is_post_2025
+                    else "Section 9 [Act 709]",
                     status="NON_COMPLIANT",
                     severity=RiskSeverity.CRITICAL,
                     exact_quote=sec9_quote,
@@ -324,7 +337,9 @@ def scan_pdpa_compliance(
                     source_span_ids=sec9_span_ids,
                     source_spans=sec9_spans,
                     authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
-                    gazette_ref="Act A1727 / P.U. (B) 512/2024" if is_post_2025 else "Act 709",
+                    gazette_ref="Act A1727 / P.U. (B) 512/2024"
+                    if is_post_2025
+                    else "Act 709",
                     irac=IRACAnalysis(
                         issue="Can a Data Processor exclude statutory security liability or store personal data in plaintext?",
                         rule=f"Act 709 {sec9_node_id}: Both Data Users and Data Processors must implement practical security safeguards.",
@@ -379,13 +394,33 @@ def scan_pdpa_compliance(
                 graph_store, ["PDPA-2010-SEC-12B-V1", "PUA-342-2024-REG-3"]
             )
             breach_quote = _extract_matching_sentence(
-                safe_text, ("breach", "incident", "notify", "notification", "kebocoran", "pecah data")
+                safe_text,
+                (
+                    "breach",
+                    "incident",
+                    "notify",
+                    "notification",
+                    "kebocoran",
+                    "pecah data",
+                ),
             )
             delayed_breach = any(
                 kw in low_text
-                for kw in ("14 days", "10 days", "14 business days", "sole discretion", "without notice", "30 days")
+                for kw in (
+                    "14 days",
+                    "10 days",
+                    "14 business days",
+                    "sole discretion",
+                    "without notice",
+                    "30 days",
+                )
             )
-            has_72h = ("72 hours" in low_text or "24 hours" in low_text or "48 hours" in low_text or "72 jam" in low_text)
+            has_72h = (
+                "72 hours" in low_text
+                or "24 hours" in low_text
+                or "48 hours" in low_text
+                or "72 jam" in low_text
+            )
             if delayed_breach or ("breach" in low_text and not has_72h):
                 gaps.append(
                     PDPAGapItem(
@@ -448,7 +483,9 @@ def scan_pdpa_compliance(
                         rakyat_guidance=RakyatGuidance(
                             plain_summary_en="The 72-hour data leak notification requirement is properly included.",
                             plain_summary_bm="Tempoh pemberitahuan kebocoran data 72 jam telah dipatuhi.",
-                            gov_my_checklist=["Keep JPDP breach portal credentials ready at https://portal.pdp.gov.my."],
+                            gov_my_checklist=[
+                                "Keep JPDP breach portal credentials ready at https://portal.pdp.gov.my."
+                            ],
                             official_portals=["https://portal.pdp.gov.my"],
                         ),
                     )
@@ -457,11 +494,22 @@ def scan_pdpa_compliance(
         # Rule 3: General Principle / Consent & Disclosure (Sec 6, 8, 130)
         implicated_node_ids.extend(["PDPA-2010-SEC-6-V1", "PDPA-2010-SEC-8-V1"])
         dis_span_ids, dis_spans = _spans_for_nodes(
-            graph_store, ["PDPA-2010-SEC-6-V1", "PDPA-2010-SEC-8-V1", "PDPA-2010-SEC-130-V1"]
+            graph_store,
+            ["PDPA-2010-SEC-6-V1", "PDPA-2010-SEC-8-V1", "PDPA-2010-SEC-130-V1"],
         )
         dis_quote = _extract_matching_sentence(
             safe_text,
-            ("sell", "marketing", "disclose", "disclosure", "cross-border", "offshore", "consent", "persetujuan", "penzahiran"),
+            (
+                "sell",
+                "marketing",
+                "disclose",
+                "disclosure",
+                "cross-border",
+                "offshore",
+                "consent",
+                "persetujuan",
+                "penzahiran",
+            ),
         )
         unlawful_disclosure = any(
             kw in low_text
@@ -473,9 +521,18 @@ def scan_pdpa_compliance(
                 "tanpa persetujuan",
             )
         )
-        cross_border_gap = any(
-            kw in low_text for kw in ("cross-border", "offshore", "mirrored to regional", "rentas sempadan")
-        ) and "consent" not in low_text
+        cross_border_gap = (
+            any(
+                kw in low_text
+                for kw in (
+                    "cross-border",
+                    "offshore",
+                    "mirrored to regional",
+                    "rentas sempadan",
+                )
+            )
+            and "consent" not in low_text
+        )
         if unlawful_disclosure:
             gaps.append(
                 PDPAGapItem(
@@ -500,7 +557,9 @@ def scan_pdpa_compliance(
                     rakyat_guidance=RakyatGuidance(
                         plain_summary_en="Businesses cannot sell or share your personal details with marketers without your clear permission.",
                         plain_summary_bm="Perniagaan dilarang menjual atau berkongsi data peribadi anda tanpa persetujuan jelas anda.",
-                        gov_my_checklist=["Withdraw marketing consent or report misuse at https://www.pdp.gov.my."],
+                        gov_my_checklist=[
+                            "Withdraw marketing consent or report misuse at https://www.pdp.gov.my."
+                        ],
                         official_portals=["https://www.pdp.gov.my"],
                     ),
                 )
@@ -529,7 +588,9 @@ def scan_pdpa_compliance(
                     rakyat_guidance=RakyatGuidance(
                         plain_summary_en="Sending your data outside Malaysia requires extra legal protection or your consent.",
                         plain_summary_bm="Pemindahan data ke luar Malaysia memerlukan perlindungan setara atau persetujuan anda.",
-                        gov_my_checklist=["Confirm overseas storage safeguards in your privacy notice."],
+                        gov_my_checklist=[
+                            "Confirm overseas storage safeguards in your privacy notice."
+                        ],
                         official_portals=["https://www.pdp.gov.my"],
                     ),
                 )
@@ -539,10 +600,23 @@ def scan_pdpa_compliance(
         implicated_node_ids.append("PDPA-2010-SEC-7-V1")
         n_span_ids, n_spans = _spans_for_nodes(graph_store, ["PDPA-2010-SEC-7-V1"])
         notice_quote = _extract_matching_sentence(
-            safe_text, ("notice", "notis", "privacy", "english", "bahasa melayu", "policy", "dasar")
+            safe_text,
+            (
+                "notice",
+                "notis",
+                "privacy",
+                "english",
+                "bahasa melayu",
+                "policy",
+                "dasar",
+            ),
         )
-        has_bilingual_notice = ("bahasa melayu" in low_text or "malay" in low_text) and ("english" in low_text or "inggeris" in low_text)
-        if ("privacy" in low_text or "policy" in low_text or "notice" in low_text) and not has_bilingual_notice:
+        has_bilingual_notice = (
+            "bahasa melayu" in low_text or "malay" in low_text
+        ) and ("english" in low_text or "inggeris" in low_text)
+        if (
+            "privacy" in low_text or "policy" in low_text or "notice" in low_text
+        ) and not has_bilingual_notice:
             gaps.append(
                 PDPAGapItem(
                     rule_id="ACT709-SEC7-NOTICE",
@@ -566,17 +640,29 @@ def scan_pdpa_compliance(
                     rakyat_guidance=RakyatGuidance(
                         plain_summary_en="In Malaysia, privacy notices must be provided in both Bahasa Melayu and English so everyone understands.",
                         plain_summary_bm="Notis privasi di Malaysia wajib disediakan dalam Bahasa Melayu dan Bahasa Inggeris.",
-                        gov_my_checklist=["Ensure both BM and English privacy notices are linked on your site."],
+                        gov_my_checklist=[
+                            "Ensure both BM and English privacy notices are linked on your site."
+                        ],
                         official_portals=["https://www.pdp.gov.my"],
                     ),
                 )
             )
 
         # Rule 5: Retention, Integrity & Access Principles (Sections 10, 11, 12)
-        if any(kw in low_text for kw in ("indefinitely", "forever", "never deleted", "permanently retained")):
+        if any(
+            kw in low_text
+            for kw in (
+                "indefinitely",
+                "forever",
+                "never deleted",
+                "permanently retained",
+            )
+        ):
             implicated_node_ids.append("PDPA-2010-SEC-10-V1")
             r_span_ids, r_spans = _spans_for_nodes(graph_store, ["PDPA-2010-SEC-10-V1"])
-            r_quote = _extract_matching_sentence(safe_text, ("indefinitely", "forever", "retain", "deleted"))
+            r_quote = _extract_matching_sentence(
+                safe_text, ("indefinitely", "forever", "retain", "deleted")
+            )
             gaps.append(
                 PDPAGapItem(
                     rule_id="ACT709-SEC10-RETENTION",
@@ -600,7 +686,9 @@ def scan_pdpa_compliance(
                     rakyat_guidance=RakyatGuidance(
                         plain_summary_en="Companies cannot keep your personal data forever after you stop using their service.",
                         plain_summary_bm="Syarikat tidak boleh menyimpan data peribadi anda selama-lamanya selepas tujuan tamat.",
-                        gov_my_checklist=["Request deletion once an account or contract ends."],
+                        gov_my_checklist=[
+                            "Request deletion once an account or contract ends."
+                        ],
                         official_portals=["https://www.pdp.gov.my"],
                     ),
                 )
@@ -613,13 +701,27 @@ def scan_pdpa_compliance(
                 graph_store, ["PDPA-2010-SEC-12A-V1", "JPDP-CIRC-01-2025"]
             )
             has_dpo_mention = any(
-                kw in low_text for kw in ("dpo", "data protection officer", "pegawai perlindungan data", "ppd")
+                kw in low_text
+                for kw in (
+                    "dpo",
+                    "data protection officer",
+                    "pegawai perlindungan data",
+                    "ppd",
+                )
             )
             no_dpo_explicit = any(
-                kw in low_text for kw in ("no dpo", "without a dpo", "not appoint a dpo", "waive dpo")
+                kw in low_text
+                for kw in ("no dpo", "without a dpo", "not appoint a dpo", "waive dpo")
             )
             dpo_quote = _extract_matching_sentence(
-                safe_text, ("dpo", "data protection officer", "pegawai perlindungan data", "processor", "data")
+                safe_text,
+                (
+                    "dpo",
+                    "data protection officer",
+                    "pegawai perlindungan data",
+                    "processor",
+                    "data",
+                ),
             )
             if no_dpo_explicit or (not has_dpo_mention and len(gaps) > 0):
                 gaps.append(
@@ -628,7 +730,9 @@ def scan_pdpa_compliance(
                         principle_name="Data Protection Officer (DPO) Appointment",
                         section_ref="Section 12A [Act 709] & JPDP Circular 01/2025",
                         status="NON_COMPLIANT" if no_dpo_explicit else "PARTIAL_GAP",
-                        severity=RiskSeverity.HIGH if no_dpo_explicit else RiskSeverity.MEDIUM,
+                        severity=RiskSeverity.HIGH
+                        if no_dpo_explicit
+                        else RiskSeverity.MEDIUM,
                         exact_quote=dpo_quote,
                         gap_description=(
                             "Document omits or rejects appointment of a Data Protection Officer (DPO) "
@@ -650,7 +754,9 @@ def scan_pdpa_compliance(
                         rakyat_guidance=RakyatGuidance(
                             plain_summary_en="Organizations processing large or sensitive data must designate a Data Protection Officer you can contact.",
                             plain_summary_bm="Organisasi perlu melantik Pegawai Perlindungan Data (DPO) untuk dihubungi jika ada isu privasi.",
-                            gov_my_checklist=["Register DPO contact info via https://portal.pdp.gov.my."],
+                            gov_my_checklist=[
+                                "Register DPO contact info via https://portal.pdp.gov.my."
+                            ],
                             official_portals=["https://portal.pdp.gov.my"],
                         ),
                     )

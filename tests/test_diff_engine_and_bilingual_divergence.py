@@ -51,7 +51,9 @@ def test_diff_statute_lineage_amended_newly_enacted_repealed_and_unchanged():
     assert diff_sec9.from_node_id == "PDPA-2010-SEC-9-V1"
     assert diff_sec9.to_node_id == "PDPA-2010-SEC-9-V2"
     assert date(2025, 1, 1) in diff_sec9.transition_dates
-    assert any(t.edge_type == TemporalEdgeType.AMENDED_BY for t in diff_sec9.transitions)
+    assert any(
+        t.edge_type == TemporalEdgeType.AMENDED_BY for t in diff_sec9.transitions
+    )
     assert len(diff_sec9.from_source_spans) >= 1
     assert len(diff_sec9.to_source_spans) >= 1
     assert len(diff_sec9.unified_redline) >= 1
@@ -128,10 +130,14 @@ def test_diff_statute_lineage_amended_newly_enacted_repealed_and_unchanged():
     assert rep_diff.to_node_id is None
     assert rep_diff.to_status == StatutoryStatus.REPEALED
     assert len(rep_diff.removed_clauses) >= 1
-    assert any(t.edge_type == TemporalEdgeType.REPEALED_BY for t in rep_diff.transitions)
+    assert any(
+        t.edge_type == TemporalEdgeType.REPEALED_BY for t in rep_diff.transitions
+    )
 
     with pytest.raises(ValueError, match="from_date"):
-        diff_statute_lineage("PDPA-2010-SEC-9-V2", date(2026, 5, 1), date(2024, 1, 1), store=store)
+        diff_statute_lineage(
+            "PDPA-2010-SEC-9-V2", date(2026, 5, 1), date(2024, 1, 1), store=store
+        )
 
 
 def test_contract_delta_audit_detects_pdpa_and_act854_gazette_regressions_with_pii_scrub():
@@ -194,17 +200,23 @@ def test_act388_bilingual_divergence_critic_detections_and_precedence():
     """
     store = get_default_temporal_store()
 
-    aligned = audit_bilingual_divergence("PDPA-2010-SEC-9-V2", date(2026, 3, 15), store=store)
+    aligned = audit_bilingual_divergence(
+        "PDPA-2010-SEC-9-V2", date(2026, 3, 15), store=store
+    )
     assert aligned.alignment_status == "ALIGNED"
     assert aligned.has_divergence is False
     assert aligned.authoritative_language == "ms"
     assert "Act 388" in aligned.act_388_authority_basis
     assert aligned.telemetry.total_tokens == 0
 
-    penal = audit_bilingual_divergence("ACT-574-SEC-420-V1", date(2026, 3, 15), store=store)
+    penal = audit_bilingual_divergence(
+        "ACT-574-SEC-420-V1", date(2026, 3, 15), store=store
+    )
     assert penal.alignment_status == "DIVERGENCE_DETECTED"
     assert penal.has_divergence is True
-    assert any(i.divergence_type == "NUMERIC_DEADLINE_DISCREPANCY" for i in penal.issues)
+    assert any(
+        i.divergence_type == "NUMERIC_DEADLINE_DISCREPANCY" for i in penal.issues
+    )
 
     # Synthetic full mismatch (modality + deadline + RM ceiling + missing subclause + inline PII)
     syn = audit_bilingual_pair(
@@ -382,7 +394,10 @@ async def test_api_endpoints_mcp_tools_and_ui_lineage_divergence():
         )
         assert mcp_diff.status_code == 200
         assert mcp_diff.json()["result"]["change_status"] == "AMENDED"
-        assert mcp_diff.json()["result"]["contract_delta_audit"]["became_non_compliant"] is True
+        assert (
+            mcp_diff.json()["result"]["contract_delta_audit"]["became_non_compliant"]
+            is True
+        )
 
         mcp_cw = await client.post(
             "/api/v1/mcp/call",

@@ -297,7 +297,9 @@ _SEVERITY_RANK: dict[RiskSeverity, int] = {
 }
 
 
-def _dispatch_sync_only(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+def _dispatch_sync_only(
+    tool_name: str, arguments: dict[str, Any]
+) -> dict[str, Any] | None:
     if tool_name == "lexgraph_pdpa_compliance_scan":
         req = PDPAComplianceScanRequest(
             document_id=arguments.get("document_id", "MCP-SCAN-001"),
@@ -392,7 +394,9 @@ def _dispatch_sync_only(tool_name: str, arguments: dict[str, Any]) -> dict[str, 
                 to_date=to_d,
                 regimes=arguments.get("regimes"),
                 territorial_scope=TerritorialScope(
-                    arguments.get("territorial_scope", TerritorialScope.ALL_MALAYSIA.value)
+                    arguments.get(
+                        "territorial_scope", TerritorialScope.ALL_MALAYSIA.value
+                    )
                 ),
                 persona=OutputPersona(
                     arguments.get("persona", OutputPersona.PRACTITIONER.value)

@@ -133,9 +133,12 @@ class SourceSpan(BaseModel):
         description="Canonical Malaysian legal citation, e.g., Act 709 s. 9(1A) or [2025] 2 MLJ 101 (FC)",
     )
     language: str = Field(
-        default="en", description="ISO/normalized statutory language ('ms', 'bm', or 'en')"
+        default="en",
+        description="ISO/normalized statutory language ('ms', 'bm', or 'en')",
     )
-    pdf_page: int = Field(default=1, ge=1, description="1-based page number in gazette PDF")
+    pdf_page: int = Field(
+        default=1, ge=1, description="1-based page number in gazette PDF"
+    )
     start_char: int = Field(
         default=0, ge=0, description="0-based inclusive character start offset"
     )
@@ -157,7 +160,8 @@ class SourceSpan(BaseModel):
         description="SHA-256 cryptographic digest of the verified statutory span text (alias)",
     )
     text: str = Field(
-        default="", description="Verbatim statutory span excerpt for side-by-side inspection"
+        default="",
+        description="Verbatim statutory span excerpt for side-by-side inspection",
     )
 
     @model_validator(mode="before")
@@ -178,7 +182,9 @@ class SourceSpan(BaseModel):
         if not d.get("canonical_citation"):
             d["canonical_citation"] = f"{act_number} {section_id}".strip()
         if not d.get("source_uri"):
-            slug = re.sub(r"[^a-z0-9]+", "-", str(doc_id).lower()).strip("-") or "statute"
+            slug = (
+                re.sub(r"[^a-z0-9]+", "-", str(doc_id).lower()).strip("-") or "statute"
+            )
             d["source_uri"] = f"https://lom.agc.gov.my/ilims/{slug}"
 
         if "start_char" in d and "char_offset_start" not in d:
@@ -196,7 +202,9 @@ class SourceSpan(BaseModel):
             d["end_char"] = d["char_offset_end"]
         else:
             text_val = str(d.get("text", "")).strip()
-            default_end = max(int(d["start_char"]) + 1, int(d["start_char"]) + len(text_val))
+            default_end = max(
+                int(d["start_char"]) + 1, int(d["start_char"]) + len(text_val)
+            )
             end_val = d.get("end_char", d.get("char_offset_end", default_end))
             d["end_char"] = end_val
             d["char_offset_end"] = end_val
@@ -221,7 +229,10 @@ class SourceSpan(BaseModel):
 
     @model_validator(mode="after")
     def _validate_offsets_and_hash(self) -> "SourceSpan":
-        if self.char_offset_end <= self.char_offset_start or self.end_char <= self.start_char:
+        if (
+            self.char_offset_end <= self.char_offset_start
+            or self.end_char <= self.start_char
+        ):
             raise ValueError(
                 f"char_offset_end ({self.char_offset_end}) must be strictly greater than "
                 f"char_offset_start ({self.char_offset_start})"
@@ -300,7 +311,9 @@ class StatutoryNode(BaseModel):
     version: int = Field(
         default=1, ge=1, description="Sequential legislative version number"
     )
-    text: str = Field(..., description="Verbatim statutory provision or judicial extract text")
+    text: str = Field(
+        ..., description="Verbatim statutory provision or judicial extract text"
+    )
     valid_from: date = Field(..., description="Effective start date (inclusive)")
     valid_to: date | None = Field(
         default=None,
@@ -330,12 +343,18 @@ class StatutoryNode(BaseModel):
     parent_node_id: str | None = Field(
         default=None, description="Immediate structural parent node ID"
     )
-    part_code: str | None = Field(default=None, description="Part / Bahagian identifier, e.g., PART-II")
-    chapter_code: str | None = Field(default=None, description="Chapter / Bab identifier, e.g., CHAPTER-I")
+    part_code: str | None = Field(
+        default=None, description="Part / Bahagian identifier, e.g., PART-II"
+    )
+    chapter_code: str | None = Field(
+        default=None, description="Chapter / Bab identifier, e.g., CHAPTER-I"
+    )
     subsection_code: str | None = Field(
         default=None, description="Subsection identifier, e.g., (1A)"
     )
-    language: str = Field(default="en", description="Provision language: 'ms', 'bm', or 'en'")
+    language: str = Field(
+        default="en", description="Provision language: 'ms', 'bm', or 'en'"
+    )
     authoritative_language: bool = Field(
         default=True,
         description="True when this node is the authoritative statutory text",
@@ -348,7 +367,8 @@ class StatutoryNode(BaseModel):
         default=None, description="Point-in-time inclusive effective_from date"
     )
     effective_to: date | None = Field(
-        default=None, description="Point-in-time inclusive effective_to date (day before amendment takes effect)"
+        default=None,
+        description="Point-in-time inclusive effective_to date (day before amendment takes effect)",
     )
     gazette_ref: str | None = Field(
         default=None,
@@ -420,7 +440,9 @@ class StatutoryNode(BaseModel):
         if self.effective_to is None and self.valid_to is not None:
             candidate_eff_to = self.valid_to - timedelta(days=1)
             self.effective_to = (
-                candidate_eff_to if candidate_eff_to >= self.effective_from else self.valid_to
+                candidate_eff_to
+                if candidate_eff_to >= self.effective_from
+                else self.valid_to
             )
         elif self.valid_to is None and self.effective_to is not None:
             self.valid_to = self.effective_to + timedelta(days=1)
@@ -443,8 +465,7 @@ class StatutoryNode(BaseModel):
         if not self.source_spans:
             clean_text = self.text.strip()
             citation = (
-                self.case_citation
-                or f"{self.act_number} {self.section_code}".strip()
+                self.case_citation or f"{self.act_number} {self.section_code}".strip()
             )
             self.source_spans = [
                 SourceSpan(
@@ -679,7 +700,9 @@ class ContractEdgeType(str, Enum):
 class ContractClauseNode(BaseModel):
     clause_id: str
     heading: str = ""
-    section_type: Literal["DEFINITION", "OPERATIVE", "PRIORITY_OVERRIDE", "GENERAL"] = "OPERATIVE"
+    section_type: Literal["DEFINITION", "OPERATIVE", "PRIORITY_OVERRIDE", "GENERAL"] = (
+        "OPERATIVE"
+    )
     text: str
     paragraph_idx: int = 0
     pdf_page: int = 1
@@ -968,7 +991,9 @@ class TelemetryMetricsResponse(BaseModel):
 
 
 class PointInTimeResearchRequest(BaseModel):
-    query: str = Field(..., min_length=1, description="Malaysian legal query in BM, EN, or mixed")
+    query: str = Field(
+        ..., min_length=1, description="Malaysian legal query in BM, EN, or mixed"
+    )
     as_of_date: date | None = Field(
         default=None,
         description="Point-in-time date (YYYY-MM-DD); defaults to current date",
@@ -1079,7 +1104,9 @@ class PointInTimeResearchResponse(BaseModel):
         default_factory=list
     )
     judicial_treatments: list[JudicialTreatmentItem] = Field(default_factory=list)
-    subgraph: SubgraphVisualizationData = Field(default_factory=SubgraphVisualizationData)
+    subgraph: SubgraphVisualizationData = Field(
+        default_factory=SubgraphVisualizationData
+    )
     telemetry: TelemetrySummary
     disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
 
@@ -1197,7 +1224,9 @@ class ContractDeltaAuditResponse(BaseModel):
     became_non_compliant: bool
     compliance_regression_detected: bool
     pii_scrub: PIIScrubSummary
-    intervening_statutory_diffs: list[StatutoryVersionDiff] = Field(default_factory=list)
+    intervening_statutory_diffs: list[StatutoryVersionDiff] = Field(
+        default_factory=list
+    )
     newly_commenced_gazettes: list[str] = Field(default_factory=list)
     delta_findings: list[ContractDeltaFinding] = Field(default_factory=list)
     summary_practitioner: str
@@ -1248,9 +1277,13 @@ class PortfolioContractInput(BaseModel):
         if not self.text and self.raw_text:
             self.text = self.raw_text
         if not self.document_id.strip():
-            raise ValueError("PortfolioContractInput requires non-empty document_id or contract_id.")
+            raise ValueError(
+                "PortfolioContractInput requires non-empty document_id or contract_id."
+            )
         if not self.raw_text.strip():
-            raise ValueError("PortfolioContractInput requires non-empty raw_text or text.")
+            raise ValueError(
+                "PortfolioContractInput requires non-empty raw_text or text."
+            )
         return self
 
 

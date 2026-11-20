@@ -112,7 +112,9 @@ def _resolve_notice_sla_target(
         else:
             target_hours = min(24.0, val)
     if envelope and "full_report_max_days" in envelope.resolved_bounds:
-        target_days = float(envelope.resolved_bounds["full_report_max_days"].strictest_value)
+        target_days = float(
+            envelope.resolved_bounds["full_report_max_days"].strictest_value
+        )
     return target_hours, target_days, dom_node
 
 
@@ -193,7 +195,9 @@ def _offline_deterministic_assess(
     language = str(state.get("language") or "bilingual")
 
     env_dict = state.get("deontic_envelope")
-    envelope = CompositeDeonticEnvelope(**env_dict) if isinstance(env_dict, dict) else None
+    envelope = (
+        CompositeDeonticEnvelope(**env_dict) if isinstance(env_dict, dict) else None
+    )
     ast_dict = state.get("contract_ast")
     ast_graph = ContractASTGraph(**ast_dict) if isinstance(ast_dict, dict) else None
 
@@ -202,7 +206,9 @@ def _offline_deterministic_assess(
         if "PDPA-2010-SEC-9-V2" in active_ids
         else "PDPA-2010-SEC-9-V1"
     )
-    proposed_h, proposed_d, notice_dom_id = _resolve_notice_sla_target(envelope, active_ids)
+    proposed_h, proposed_d, notice_dom_id = _resolve_notice_sla_target(
+        envelope, active_ids
+    )
 
     clauses: list[ClauseAudit] = []
     covered_clause_ids: set[str] = set()
@@ -257,8 +263,13 @@ def _offline_deterministic_assess(
         and ("14 days" in lower_text or "10 days" in lower_text)
     ):
         quote_8_2 = _extract_verbatim_sentence(safe_text, "SEC-8.2")
-        violated_8_2 = [notice_dom_id] if notice_dom_id in active_ids else [primary_pdpa_id]
-        if "PDPA-2010-SEC-12B-V1" in active_ids and "PDPA-2010-SEC-12B-V1" not in violated_8_2:
+        violated_8_2 = (
+            [notice_dom_id] if notice_dom_id in active_ids else [primary_pdpa_id]
+        )
+        if (
+            "PDPA-2010-SEC-12B-V1" in active_ids
+            and "PDPA-2010-SEC-12B-V1" not in violated_8_2
+        ):
             violated_8_2.append("PDPA-2010-SEC-12B-V1")
         trap_82 = shadow_by_target.get("SEC-8.2")
         report_clause = (
@@ -301,7 +312,10 @@ def _offline_deterministic_assess(
         )
         covered_clause_ids.add("SEC-8.2")
 
-    if "sec-4.2" in lower_text or "14 business days at its sole discretion" in lower_text:
+    if (
+        "sec-4.2" in lower_text
+        or "14 business days at its sole discretion" in lower_text
+    ):
         quote_4_2 = _extract_verbatim_sentence(safe_text, "SEC-4.2")
         violated = [primary_pdpa_id]
         clauses.append(
@@ -357,9 +371,7 @@ def _offline_deterministic_assess(
             if trap.overriding_clause_id in covered_clause_ids:
                 continue
             violated_sids = [
-                sid
-                for sid in (notice_dom_id, primary_pdpa_id)
-                if sid in active_ids
+                sid for sid in (notice_dom_id, primary_pdpa_id) if sid in active_ids
             ] or [primary_pdpa_id]
             over_id = trap.overriding_clause_id
             tgt_id = trap.target_clause_id
@@ -410,9 +422,7 @@ def _offline_deterministic_assess(
             if def_cid in covered_clause_ids:
                 continue
             violated_sids = [
-                sid
-                for sid in (notice_dom_id, primary_pdpa_id)
-                if sid in active_ids
+                sid for sid in (notice_dom_id, primary_pdpa_id) if sid in active_ids
             ] or [primary_pdpa_id]
             clauses.append(
                 ClauseAudit(
@@ -451,23 +461,37 @@ def _offline_deterministic_assess(
                 and "incident_notice_max_hours" in envelope.resolved_bounds
                 and clause_notice_h is not None
                 and clause_notice_h
-                > float(envelope.resolved_bounds["incident_notice_max_hours"].strictest_value)
+                > float(
+                    envelope.resolved_bounds[
+                        "incident_notice_max_hours"
+                    ].strictest_value
+                )
             )
             violates_report = (
                 envelope is not None
                 and "full_report_max_days" in envelope.resolved_bounds
                 and clause_report_d is not None
                 and clause_report_d
-                > float(envelope.resolved_bounds["full_report_max_days"].strictest_value)
+                > float(
+                    envelope.resolved_bounds["full_report_max_days"].strictest_value
+                )
             )
             violates_audit = (
                 envelope is not None
                 and "regulator_audit_access" in envelope.resolved_bounds
                 and cnode.extracted_metrics.get("regulator_audit_access") is False
             )
-            has_waiver = cnode.extracted_metrics.get("processor_direct_liability") is not None
+            has_waiver = (
+                cnode.extracted_metrics.get("processor_direct_liability") is not None
+            )
 
-            if violates_notice or violates_report or violates_audit or has_waiver or linked_trap:
+            if (
+                violates_notice
+                or violates_report
+                or violates_audit
+                or has_waiver
+                or linked_trap
+            ):
                 v_ids: list[str] = []
                 if violates_notice or violates_report:
                     v_ids.append(notice_dom_id)
@@ -505,7 +529,9 @@ def _offline_deterministic_assess(
                             else "Statutory Compliance Gap"
                         ),
                         exact_quote=cnode.text,
-                        severity=RiskSeverity.CRITICAL if (has_waiver or linked_trap) else RiskSeverity.HIGH,
+                        severity=RiskSeverity.CRITICAL
+                        if (has_waiver or linked_trap)
+                        else RiskSeverity.HIGH,
                         rationale=_format_rationale(
                             practitioner_en=(
                                 f"Clause {cnode.clause_id} fails the composite deontic envelope "
@@ -698,7 +724,9 @@ def _compute_text_relevance(
         best_score = max(best_score, full_score)
 
     has_legal_anchor = bool(_LEGAL_DOMAIN_ANCHOR_RE.search(safe_text))
-    is_abstained = (not any_passed) and (best_score < threshold) and (not has_legal_anchor)
+    is_abstained = (
+        (not any_passed) and (best_score < threshold) and (not has_legal_anchor)
+    )
     return is_abstained, round(best_score, 4)
 
 
@@ -713,7 +741,9 @@ async def deontic_temporal_retriever_node(state: AgentState) -> dict[str, Any]:
     regimes = state.get("regimes")
     territorial_scope = state.get("territorial_scope")
     raw_thresh = state.get("abstention_threshold")
-    threshold = float(raw_thresh) if raw_thresh is not None else settings.abstention_threshold
+    threshold = (
+        float(raw_thresh) if raw_thresh is not None else settings.abstention_threshold
+    )
 
     if regimes:
         active_statutes = _DEFAULT_ENVELOPE_RESOLVER.filter_active_nodes_for_regimes(
@@ -863,8 +893,8 @@ async def cross_clause_risk_assessor_node(state: AgentState) -> dict[str, Any]:
             f"(dominating: {v['dominating_regime']} / {v['dominating_node_id']})"
             for k, v in env_dict["resolved_bounds"].items()
         ]
-        system_prompt += (
-            "\n\nSTRICTEST COMPOSITE DEONTIC ENVELOPE:\n" + "\n".join(bounds_lines)
+        system_prompt += "\n\nSTRICTEST COMPOSITE DEONTIC ENVELOPE:\n" + "\n".join(
+            bounds_lines
         )
 
     ast_dict = state.get("contract_ast")
@@ -872,9 +902,8 @@ async def cross_clause_risk_assessor_node(state: AgentState) -> dict[str, Any]:
         traps = ast_dict.get("shadow_override_traps") or []
         narrow = ast_dict.get("narrow_definition_traps") or []
         if traps or narrow:
-            system_prompt += (
-                "\n\nINTRA-CONTRACT AST TRAPS DETECTED:\n"
-                + json.dumps({"shadow_traps": traps, "narrow_definitions": narrow})
+            system_prompt += "\n\nINTRA-CONTRACT AST TRAPS DETECTED:\n" + json.dumps(
+                {"shadow_traps": traps, "narrow_definitions": narrow}
             )
 
     if state.get("auditor_feedback"):
@@ -892,7 +921,9 @@ async def cross_clause_risk_assessor_node(state: AgentState) -> dict[str, Any]:
     usage = getattr(raw_msg, "usage_metadata", {}) or {}
     clauses = parsed.clauses if parsed else []
 
-    envelope = CompositeDeonticEnvelope(**env_dict) if isinstance(env_dict, dict) else None
+    envelope = (
+        CompositeDeonticEnvelope(**env_dict) if isinstance(env_dict, dict) else None
+    )
     ast_graph = ContractASTGraph(**ast_dict) if isinstance(ast_dict, dict) else None
     exec_summary = _build_executive_summary(
         clauses=clauses,
@@ -918,7 +949,9 @@ async def risk_assessor_node(state: AgentState) -> dict[str, Any]:
     return await cross_clause_risk_assessor_node(state)
 
 
-def _neutralizes_shadow_override(clause: ClauseAudit, overriding_clause_id: str) -> bool:
+def _neutralizes_shadow_override(
+    clause: ClauseAudit, overriding_clause_id: str
+) -> bool:
     if clause.addresses_shadow_override:
         return True
     red = clause.recommended_redline.lower()
@@ -971,9 +1004,7 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
 
     env_dict = state.get("deontic_envelope")
     envelope = (
-        CompositeDeonticEnvelope(**env_dict)
-        if isinstance(env_dict, dict)
-        else None
+        CompositeDeonticEnvelope(**env_dict) if isinstance(env_dict, dict) else None
     )
 
     shadow_traps_by_target: dict[str, dict[str, Any]] = {}
@@ -1034,7 +1065,9 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
             clause_ok = False
 
         # (c) Deontic Envelope Satisfaction Invariant (Counterfactual Patch Simulation)
-        if envelope and (clause.severity != RiskSeverity.LOW or clause.violated_statute_ids):
+        if envelope and (
+            clause.severity != RiskSeverity.LOW or clause.violated_statute_ids
+        ):
             # Virtually patch redline into text surface to verify resulting parameters
             ext_h, ext_d = extract_numeric_sla_from_text(red_clean)
             sim_h = (
@@ -1048,7 +1081,10 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
                 else ext_d
             )
 
-            if "incident_notice_max_hours" in envelope.resolved_bounds and sim_h is not None:
+            if (
+                "incident_notice_max_hours" in envelope.resolved_bounds
+                and sim_h is not None
+            ):
                 bound_h = envelope.resolved_bounds["incident_notice_max_hours"]
                 limit_h = float(bound_h.strictest_value)
                 if sim_h > limit_h:
@@ -1140,13 +1176,17 @@ async def redline_manifest_node(state: AgentState) -> dict[str, Any]:
     env_dict = state.get("deontic_envelope") or {}
     raw_ref = state.get("reference_date")
     as_of = date.fromisoformat(raw_ref) if raw_ref else date.today()
-    regimes = normalize_regimes(state.get("regimes")) if state.get("regimes") else ["ACT_709"]
+    regimes = (
+        normalize_regimes(state.get("regimes")) if state.get("regimes") else ["ACT_709"]
+    )
     scope = state.get("territorial_scope") or TerritorialScope.ALL_MALAYSIA.value
 
     graph_state_basis = json.dumps(
         {
             "active_node_ids": sorted(s.node_id for s in retrieved_statutes),
-            "envelope_hash": env_dict.get("envelope_hash", "") if isinstance(env_dict, dict) else "",
+            "envelope_hash": env_dict.get("envelope_hash", "")
+            if isinstance(env_dict, dict)
+            else "",
             "as_of_date": as_of.isoformat(),
         },
         sort_keys=True,
@@ -1160,7 +1200,9 @@ async def redline_manifest_node(state: AgentState) -> dict[str, Any]:
         completion_tokens=state.get("completion_tokens", 0),
         latency_ms=0.0,
         retry_count=state.get("retry_count", 0),
-        is_verified_grounded=bool(state.get("is_grounded", False) or state.get("is_abstained", False)),
+        is_verified_grounded=bool(
+            state.get("is_grounded", False) or state.get("is_abstained", False)
+        ),
         trace_id=trace_id,
         model_name=selected_model,
     )

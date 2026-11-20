@@ -134,9 +134,7 @@ def scan_portfolio_blast_radius(
                 else (15.0 if delta.compliance_regression_detected else 0.0)
             )
             clause_pts = min(25.0, float(broken_count) * 8.0)
-            impact_score = round(
-                min(100.0, risk_pts + regression_pts + clause_pts), 2
-            )
+            impact_score = round(min(100.0, risk_pts + regression_pts + clause_pts), 2)
 
             if broken_count > 0 or delta.became_non_compliant:
                 bounds_hint = ", ".join(

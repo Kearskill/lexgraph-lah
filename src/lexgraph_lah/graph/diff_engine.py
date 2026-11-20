@@ -72,7 +72,9 @@ def _resolve_seed_node(store: "TemporalGraphStore", provision_id: str) -> Statut
     for nid, node in nodes.items():
         if nid.lower() == low:
             return node
-    raise KeyError(f"Statutory provision '{provision_id}' not found in TemporalGraphStore.")
+    raise KeyError(
+        f"Statutory provision '{provision_id}' not found in TemporalGraphStore."
+    )
 
 
 def _collect_same_provision_versions(
@@ -98,10 +100,18 @@ def _collect_same_provision_versions(
         for edge in edges:
             if edge.edge_type not in amend_edges:
                 continue
-            if edge.source_id == cur and edge.target_id in nodes and edge.target_id not in visited:
+            if (
+                edge.source_id == cur
+                and edge.target_id in nodes
+                and edge.target_id not in visited
+            ):
                 visited.add(edge.target_id)
                 queue.append(edge.target_id)
-            elif edge.target_id == cur and edge.source_id in nodes and edge.source_id not in visited:
+            elif (
+                edge.target_id == cur
+                and edge.source_id in nodes
+                and edge.source_id not in visited
+            ):
                 visited.add(edge.source_id)
                 queue.append(edge.source_id)
 
@@ -128,7 +138,9 @@ def _active_version_on(
     active = [n for n in versions if store._is_node_valid_on(n, target_date)]
     if not active:
         return None
-    active.sort(key=lambda n: (n.version, n.effective_from or n.valid_from), reverse=True)
+    active.sort(
+        key=lambda n: (n.version, n.effective_from or n.valid_from), reverse=True
+    )
     return active[0]
 
 
@@ -246,7 +258,9 @@ def diff_statute_lineage(
                             gazette_ref=edge.gazette_ref,
                         )
                     )
-        transitions.sort(key=lambda t: (t.effective_date, t.edge_type.value, t.source_node_id))
+        transitions.sort(
+            key=lambda t: (t.effective_date, t.edge_type.value, t.source_node_id)
+        )
 
         transition_dates_set: set[date] = {t.effective_date for t in transitions}
         for v in versions:
@@ -535,7 +549,12 @@ def evaluate_contract_delta_impact(
 
         candidate_nodes = sorted(
             store.nodes.values(),
-            key=lambda n: (n.normalized_language != "en", n.act_number, n.section_code, n.node_id),
+            key=lambda n: (
+                n.normalized_language != "en",
+                n.act_number,
+                n.section_code,
+                n.node_id,
+            ),
         )
         for node in candidate_nodes:
             if node.normalized_language != "en":
@@ -586,11 +605,11 @@ def evaluate_contract_delta_impact(
                         to_severity=g_to.severity,
                         exact_quote=g_to.exact_quote,
                         triggering_statute_ids=[
-                            d.to_node_id
-                            for d in intervening_diffs
-                            if d.to_node_id
+                            d.to_node_id for d in intervening_diffs if d.to_node_id
                         ][:3],
-                        triggering_gazettes=[g_to.gazette_ref] if g_to.gazette_ref else [],
+                        triggering_gazettes=[g_to.gazette_ref]
+                        if g_to.gazette_ref
+                        else [],
                         source_spans=list(g_to.source_spans),
                         explanation_practitioner=(
                             f"New statutory obligation ({g_to.section_ref}) commenced between "
@@ -614,7 +633,9 @@ def evaluate_contract_delta_impact(
                         to_severity=g_to.severity,
                         exact_quote=g_to.exact_quote,
                         triggering_statute_ids=[],
-                        triggering_gazettes=[g_to.gazette_ref] if g_to.gazette_ref else [],
+                        triggering_gazettes=[g_to.gazette_ref]
+                        if g_to.gazette_ref
+                        else [],
                         source_spans=list(g_to.source_spans),
                         explanation_practitioner=(
                             f"Clause compliant at {req.from_date.isoformat()} became {g_to.status} "
@@ -638,7 +659,9 @@ def evaluate_contract_delta_impact(
                         to_severity=g_to.severity,
                         exact_quote=g_to.exact_quote,
                         triggering_statute_ids=[],
-                        triggering_gazettes=[g_to.gazette_ref] if g_to.gazette_ref else [],
+                        triggering_gazettes=[g_to.gazette_ref]
+                        if g_to.gazette_ref
+                        else [],
                         source_spans=list(g_to.source_spans),
                         explanation_practitioner=(
                             f"Exposure escalated from {g_from.severity.value} to {g_to.severity.value} "
@@ -653,11 +676,16 @@ def evaluate_contract_delta_impact(
 
         # Evaluate multi-regime deontic SLA tightening (e.g. P.U. (A) 220/2024 6h rule commencing 2024-08-26)
         contract_h, contract_d = extract_numeric_sla_from_text(safe_text)
-        if "incident_notice_max_hours" in env_to.resolved_bounds and contract_h is not None:
+        if (
+            "incident_notice_max_hours" in env_to.resolved_bounds
+            and contract_h is not None
+        ):
             bound_to = env_to.resolved_bounds["incident_notice_max_hours"]
             limit_to = float(bound_to.strictest_value)
             bound_from = env_from.resolved_bounds.get("incident_notice_max_hours")
-            was_compliant_from = bound_from is None or contract_h <= float(bound_from.strictest_value)
+            was_compliant_from = bound_from is None or contract_h <= float(
+                bound_from.strictest_value
+            )
             if contract_h > limit_to and was_compliant_from:
                 to_max_rank = max(to_max_rank, _SEVERITY_RANK[RiskSeverity.HIGH])
                 dom_node = store.nodes.get(bound_to.dominating_node_id)
@@ -666,7 +694,9 @@ def evaluate_contract_delta_impact(
                         rule_id=f"DELTA-{bound_to.dominating_regime}-NOTICE",
                         section_ref=bound_to.dominating_citation,
                         impact_type="NEW_STATUTORY_MANDATE",
-                        from_status="COMPLIANT" if bound_from is None else f"WITHIN_{bound_from.strictest_value}H",
+                        from_status="COMPLIANT"
+                        if bound_from is None
+                        else f"WITHIN_{bound_from.strictest_value}H",
                         to_status="NON_COMPLIANT",
                         from_severity=RiskSeverity.LOW,
                         to_severity=RiskSeverity.HIGH,
@@ -692,7 +722,9 @@ def evaluate_contract_delta_impact(
             bound_d_to = env_to.resolved_bounds["full_report_max_days"]
             limit_d_to = float(bound_d_to.strictest_value)
             bound_d_from = env_from.resolved_bounds.get("full_report_max_days")
-            was_d_ok = bound_d_from is None or contract_d <= float(bound_d_from.strictest_value)
+            was_d_ok = bound_d_from is None or contract_d <= float(
+                bound_d_from.strictest_value
+            )
             if contract_d > limit_d_to and was_d_ok:
                 to_max_rank = max(to_max_rank, _SEVERITY_RANK[RiskSeverity.HIGH])
                 dom_node = store.nodes.get(bound_d_to.dominating_node_id)
@@ -732,7 +764,11 @@ def evaluate_contract_delta_impact(
             and f.from_severity in {None, RiskSeverity.LOW}
             for f in delta_findings
         )
-        regression_detected = became_non_compliant or (to_max_rank > from_max_rank) or bool(delta_findings)
+        regression_detected = (
+            became_non_compliant
+            or (to_max_rank > from_max_rank)
+            or bool(delta_findings)
+        )
 
         if regression_detected:
             summary_pract = (

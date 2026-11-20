@@ -153,7 +153,9 @@ def _highest_severity(findings: list[DocumentSecurityFinding]) -> RiskSeverity:
     return max(findings, key=lambda f: _SEVERITY_ORDER[f.severity]).severity
 
 
-def _extract_matching_ipi(text: str) -> tuple[SecurityCategory, RiskSeverity, str] | None:
+def _extract_matching_ipi(
+    text: str,
+) -> tuple[SecurityCategory, RiskSeverity, str] | None:
     for pattern, cat, sev, rationale in _COMPILED_IPI_RULES:
         if pattern.search(text):
             return cat, sev, rationale
@@ -222,7 +224,9 @@ def _filter_visible_line_for_ipi(
                     category=cat,
                     severity=sev,
                     source_format=source_format,
-                    location=f"{location}:sent[{s_idx}]" if len(sentences) > 1 else location,
+                    location=f"{location}:sent[{s_idx}]"
+                    if len(sentences) > 1
+                    else location,
                     excerpt=_safe_excerpt(s_clean),
                     rationale=rationale,
                     quarantined=True,
@@ -394,16 +398,22 @@ def _inspect_docx_security(
                     for elem in part_root.iter()
                     for kw in ("prompt", "instruction", "system", "override", "inject")
                 )
-                ipi_hit = _extract_matching_ipi(joined_custom) if joined_custom else None
+                ipi_hit = (
+                    _extract_matching_ipi(joined_custom) if joined_custom else None
+                )
                 if tag_signal or ipi_hit is not None:
                     findings.append(
                         DocumentSecurityFinding(
                             finding_id=f"SEC-{len(findings) + 1:03d}",
                             category="SUSPICIOUS_CUSTOM_XML",
-                            severity=RiskSeverity.CRITICAL if ipi_hit else RiskSeverity.HIGH,
+                            severity=RiskSeverity.CRITICAL
+                            if ipi_hit
+                            else RiskSeverity.HIGH,
                             source_format="docx",
                             location=name,
-                            excerpt=_safe_excerpt(joined_custom or f"<{part_root.tag}>"),
+                            excerpt=_safe_excerpt(
+                                joined_custom or f"<{part_root.tag}>"
+                            ),
                             rationale="Suspicious customXml instruction payload quarantined outside visible body.",
                             quarantined=True,
                         )
@@ -627,7 +637,9 @@ def _inspect_pdf_security(
                 if render_mode == 3:
                     hidden_reasons.append("PDF invisible text rendering mode (`3 Tr`)")
                 if font_size <= 2.0:
-                    hidden_reasons.append(f"PDF micro/zero font size (`{font_size} Tf`)")
+                    hidden_reasons.append(
+                        f"PDF micro/zero font size (`{font_size} Tf`)"
+                    )
                 if is_near_white:
                     hidden_reasons.append("PDF white/near-white fill color")
                 if off_page:
@@ -715,15 +727,15 @@ def _inspect_text_security(
     return sanitized, findings, quarantined
 
 
-def _strip_hidden_runs_from_elem(
-    elem: ET.Element, parent_hidden: bool = False
-) -> None:
+def _strip_hidden_runs_from_elem(elem: ET.Element, parent_hidden: bool = False) -> None:
     """Recursively removes hidden OOXML `<w:r>` runs while preserving paragraph indices."""
     for child in list(elem):
         if child.tag == f"{_W_NS}p":
             p_rpr = child.find(f"{_W_NS}pPr/{_W_NS}rPr")
             para_hidden = _detect_run_hidden_reason(p_rpr) is not None
-            _strip_hidden_runs_from_elem(child, parent_hidden=parent_hidden or para_hidden)
+            _strip_hidden_runs_from_elem(
+                child, parent_hidden=parent_hidden or para_hidden
+            )
         elif child.tag == f"{_W_NS}r":
             is_hidden = parent_hidden or (
                 _detect_run_hidden_reason(child.find(f"{_W_NS}rPr")) is not None
@@ -789,9 +801,10 @@ def sanitize_docx_bytes(
 
     in_buf = io.BytesIO(data)
     out_buf = io.BytesIO()
-    with zipfile.ZipFile(in_buf, "r") as zin, zipfile.ZipFile(
-        out_buf, "w", compression=zipfile.ZIP_DEFLATED
-    ) as zout:
+    with (
+        zipfile.ZipFile(in_buf, "r") as zin,
+        zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout,
+    ):
         for info in zin.infolist():
             name = info.filename
             low = name.lower()
@@ -815,9 +828,7 @@ def sanitize_docx_bytes(
                 try:
                     root = ET.fromstring(raw_part)
                     _strip_hidden_runs_from_elem(root)
-                    raw_part = ET.tostring(
-                        root, encoding="utf-8", xml_declaration=True
-                    )
+                    raw_part = ET.tostring(root, encoding="utf-8", xml_declaration=True)
                 except ET.ParseError:
                     pass
             elif low == "word/comments.xml" and suspicious_comment_indices:

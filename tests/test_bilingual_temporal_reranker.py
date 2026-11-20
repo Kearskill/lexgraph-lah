@@ -193,8 +193,12 @@ def test_bitemporal_gazette_pu_a_b_and_amends_repeals_filtering():
         gazette_ref="P.U. (A) 200/2025",
     )
     assert any(e.edge_type == TemporalEdgeType.REPEALS for e in custom.edges)
-    assert [n.node_id for n in custom.query_point_in_time(date(2025, 5, 31))] == ["PUA-100-2020"]
-    assert [n.node_id for n in custom.query_point_in_time(date(2025, 6, 1))] == ["PUA-200-2025"]
+    assert [n.node_id for n in custom.query_point_in_time(date(2025, 5, 31))] == [
+        "PUA-100-2020"
+    ]
+    assert [n.node_id for n in custom.query_point_in_time(date(2025, 6, 1))] == [
+        "PUA-200-2025"
+    ]
 
 
 def test_five_tier_authority_reranker_and_territorial_isolation():
@@ -214,7 +218,15 @@ def test_five_tier_authority_reranker_and_territorial_isolation():
             text=common_text,
             valid_from=date(2025, 1, 1),
             authority_tier=AuthorityTier.TIER_5_AGENCY_CIRCULAR,
-            source_spans=[SourceSpan(span_id="S5", act_number="Circular 1/2025", section_id="C-1", text=common_text, char_offset_end=len(common_text))],
+            source_spans=[
+                SourceSpan(
+                    span_id="S5",
+                    act_number="Circular 1/2025",
+                    section_id="C-1",
+                    text=common_text,
+                    char_offset_end=len(common_text),
+                )
+            ],
         ),
         StatutoryNode(
             node_id="T4-PUA",
@@ -224,7 +236,15 @@ def test_five_tier_authority_reranker_and_territorial_isolation():
             text=common_text,
             valid_from=date(2025, 1, 1),
             authority_tier=AuthorityTier.TIER_4_SUBSIDIARY_LEGISLATION,
-            source_spans=[SourceSpan(span_id="S4", act_number="P.U. (A) 1/2025", section_id="R-1", text=common_text, char_offset_end=len(common_text))],
+            source_spans=[
+                SourceSpan(
+                    span_id="S4",
+                    act_number="P.U. (A) 1/2025",
+                    section_id="R-1",
+                    text=common_text,
+                    char_offset_end=len(common_text),
+                )
+            ],
         ),
         StatutoryNode(
             node_id="T3-ORD",
@@ -234,7 +254,15 @@ def test_five_tier_authority_reranker_and_territorial_isolation():
             text=common_text,
             valid_from=date(2025, 1, 1),
             authority_tier=AuthorityTier.TIER_3_ORDINANCE,
-            source_spans=[SourceSpan(span_id="S3", act_number="Cap. 67", section_id="O-1", text=common_text, char_offset_end=len(common_text))],
+            source_spans=[
+                SourceSpan(
+                    span_id="S3",
+                    act_number="Cap. 67",
+                    section_id="O-1",
+                    text=common_text,
+                    char_offset_end=len(common_text),
+                )
+            ],
         ),
         StatutoryNode(
             node_id="T2-ACT",
@@ -244,7 +272,15 @@ def test_five_tier_authority_reranker_and_territorial_isolation():
             text=common_text,
             valid_from=date(2025, 1, 1),
             authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
-            source_spans=[SourceSpan(span_id="S2", act_number="Act 709", section_id="A-1", text=common_text, char_offset_end=len(common_text))],
+            source_spans=[
+                SourceSpan(
+                    span_id="S2",
+                    act_number="Act 709",
+                    section_id="A-1",
+                    text=common_text,
+                    char_offset_end=len(common_text),
+                )
+            ],
         ),
         StatutoryNode(
             node_id="T1-CONST",
@@ -254,7 +290,15 @@ def test_five_tier_authority_reranker_and_territorial_isolation():
             text=common_text,
             valid_from=date(1957, 8, 31),
             authority_tier=AuthorityTier.TIER_1_FEDERAL_CONSTITUTION,
-            source_spans=[SourceSpan(span_id="S1", act_number="Federal Constitution", section_id="ART-1", text=common_text, char_offset_end=len(common_text))],
+            source_spans=[
+                SourceSpan(
+                    span_id="S1",
+                    act_number="Federal Constitution",
+                    section_id="ART-1",
+                    text=common_text,
+                    char_offset_end=len(common_text),
+                )
+            ],
         ),
     ]
 

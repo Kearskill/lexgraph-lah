@@ -128,14 +128,19 @@ def filter_by_territorial_scope(
     if scope is None:
         return list(nodes)
 
-    target_val = scope.value if isinstance(scope, TerritorialScope) else str(scope).strip()
+    target_val = (
+        scope.value if isinstance(scope, TerritorialScope) else str(scope).strip()
+    )
     if not target_val or target_val == TerritorialScope.ALL_MALAYSIA.value:
         return list(nodes)
 
     filtered: list[StatutoryNode] = []
     for node in nodes:
         node_scopes = {s.value for s in node.territorial_scope}
-        if target_val in node_scopes or TerritorialScope.ALL_MALAYSIA.value in node_scopes:
+        if (
+            target_val in node_scopes
+            or TerritorialScope.ALL_MALAYSIA.value in node_scopes
+        ):
             filtered.append(node)
     return filtered
 
@@ -158,7 +163,11 @@ def _char_trigram_cosine(a: str, b: str) -> float:
 
 def _content_tokens(text: str) -> list[str]:
     raw = re.findall(r"[a-z0-9.-]+", text.lower())
-    return [tok.strip(".-") for tok in raw if len(tok.strip(".-")) >= 2 and tok.strip(".-") not in _QUERY_STOPWORDS]
+    return [
+        tok.strip(".-")
+        for tok in raw
+        if len(tok.strip(".-")) >= 2 and tok.strip(".-") not in _QUERY_STOPWORDS
+    ]
 
 
 def compute_hybrid_relevance_score(
@@ -188,14 +197,24 @@ def compute_hybrid_relevance_score(
     node_tokens = set(_content_tokens(node_blob))
     query_tokens = _content_tokens(query)
     if not query_tokens:
-        query_tokens = [tok for tok in re.findall(r"[a-z0-9]+", query.lower()) if len(tok) >= 2]
+        query_tokens = [
+            tok for tok in re.findall(r"[a-z0-9]+", query.lower()) if len(tok) >= 2
+        ]
     if not query_tokens:
         return 0.0
 
     # Check direct content matches AND bilingual expanded phrase/token matches
-    direct_matches = sum(1 for tok in query_tokens if tok in node_tokens or tok in node_blob)
-    expanded_tokens = [tok for tok in _content_tokens(" ".join(expanded_terms)) if tok not in set(query_tokens)]
-    expanded_matches = sum(1 for tok in set(expanded_tokens) if tok in node_tokens or tok in node_blob)
+    direct_matches = sum(
+        1 for tok in query_tokens if tok in node_tokens or tok in node_blob
+    )
+    expanded_tokens = [
+        tok
+        for tok in _content_tokens(" ".join(expanded_terms))
+        if tok not in set(query_tokens)
+    ]
+    expanded_matches = sum(
+        1 for tok in set(expanded_tokens) if tok in node_tokens or tok in node_blob
+    )
 
     if direct_matches == 0 and expanded_matches == 0:
         ngram = _char_trigram_cosine(query.lower(), node_blob)
@@ -204,7 +223,10 @@ def compute_hybrid_relevance_score(
     # Same-language direct coverage gets full weight; cross-lingual expanded terms
     # ensure BM queries match EN nodes and vice versa without penalizing direct matches.
     direct_coverage = direct_matches / max(1.0, float(len(query_tokens)))
-    cross_coverage = min(1.0, (direct_matches + expanded_matches * 0.85) / max(1.0, float(len(query_tokens))))
+    cross_coverage = min(
+        1.0,
+        (direct_matches + expanded_matches * 0.85) / max(1.0, float(len(query_tokens))),
+    )
     concept_coverage = max(direct_coverage, cross_coverage * 0.96)
 
     # Phrase match boost for multi-word legal concepts
@@ -215,7 +237,12 @@ def compute_hybrid_relevance_score(
 
     # Structural match boost for exact Section / Article / Act / P.U. Gazette citations
     structural_bonus = 0.0
-    sec_norm = node.section_code.lower().replace("sec-", "").replace("seksyen-", "").replace("art-", "")
+    sec_norm = (
+        node.section_code.lower()
+        .replace("sec-", "")
+        .replace("seksyen-", "")
+        .replace("art-", "")
+    )
     if sec_norm and (
         f"section {sec_norm}" in normalized_query
         or f"seksyen {sec_norm}" in normalized_query
@@ -224,13 +251,18 @@ def compute_hybrid_relevance_score(
         or f"perkara {sec_norm}" in normalized_query
     ):
         structural_bonus += 0.14
-    if node.act_number.lower() in normalized_query or node.act_name.lower() in normalized_query:
+    if (
+        node.act_number.lower() in normalized_query
+        or node.act_name.lower() in normalized_query
+    ):
         structural_bonus += 0.08
     if node.gazette_ref and node.gazette_ref.lower() in normalized_query:
         structural_bonus += 0.10
 
     ngram_cos = _char_trigram_cosine(normalized_query, node_blob)
-    raw_score = 0.80 * concept_coverage + 0.14 * ngram_cos + phrase_bonus + structural_bonus
+    raw_score = (
+        0.80 * concept_coverage + 0.14 * ngram_cos + phrase_bonus + structural_bonus
+    )
     return round(max(0.0, min(1.0, raw_score)), 4)
 
 
@@ -247,7 +279,9 @@ def rerank_statutes_and_spans(
     Returns:
         (is_abstained, max_relevance_score, normalized_query, detected_language, ranked_spans)
     """
-    normalized_query, detected_language, expanded_terms = normalize_and_expand_query(query)
+    normalized_query, detected_language, expanded_terms = normalize_and_expand_query(
+        query
+    )
     scoped_nodes = filter_by_territorial_scope(nodes, territorial_scope)
 
     scored_spans: list[ScoredSourceSpan] = []
@@ -267,7 +301,9 @@ def rerank_statutes_and_spans(
 
         auth_weight = AUTHORITY_WEIGHTS.get(node.authority_tier, 0.70)
         penalty = 0.25 if node.is_overruled else 0.0
-        composite = round(max(0.0, min(1.0, 0.75 * vec_score + 0.25 * auth_weight - penalty)), 4)
+        composite = round(
+            max(0.0, min(1.0, 0.75 * vec_score + 0.25 * auth_weight - penalty)), 4
+        )
 
         for span in node.source_spans:
             scored_spans.append(
@@ -291,8 +327,19 @@ def rerank_statutes_and_spans(
 
     # Sort strictly by composite final_score descending, then authority tier ascending (Tier 1 first)
     scored_spans.sort(
-        key=lambda item: (-item.final_score, int(item.authority_tier), item.node_id, item.span.span_id)
+        key=lambda item: (
+            -item.final_score,
+            int(item.authority_tier),
+            item.node_id,
+            item.span.span_id,
+        )
     )
 
     is_abstained = len(scored_spans) == 0
-    return is_abstained, round(max_vector_score, 4), normalized_query, detected_language, scored_spans
+    return (
+        is_abstained,
+        round(max_vector_score, 4),
+        normalized_query,
+        detected_language,
+        scored_spans,
+    )

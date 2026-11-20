@@ -54,7 +54,9 @@ async def test_risk_assessor_masks_pii_before_llm_invocation():
 
     async def _fake_ainvoke(messages):
         captured_prompts.append(messages[1].content)
-        raw_msg = SimpleNamespace(usage_metadata={"input_tokens": 120, "output_tokens": 60})
+        raw_msg = SimpleNamespace(
+            usage_metadata={"input_tokens": 120, "output_tokens": 60}
+        )
         return {
             "parsed": ClauseExtractionList(
                 clauses=[
@@ -189,7 +191,10 @@ async def test_api_v1_compliance_scan_pdpa_and_pii_and_mcp_endpoints():
 
         search_res = await client.get(
             "/api/v1/retrieval/search",
-            params={"q": "notis kebocoran data 72 jam pemproses data", "as_of_date": "2026-03-15"},
+            params={
+                "q": "notis kebocoran data 72 jam pemproses data",
+                "as_of_date": "2026-03-15",
+            },
         )
         assert search_res.status_code == 200
         assert search_res.json()["is_abstained"] is False

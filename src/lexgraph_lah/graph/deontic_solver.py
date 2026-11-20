@@ -111,7 +111,11 @@ def normalize_regime_key(raw: str) -> str:
         return "BNM_RMIT"
     if "709" in cleaned or "pdpa" in cleaned or "data peribadi" in cleaned:
         return "ACT_709"
-    if "658" in cleaned or "electronic commerce" in cleaned or "perdagangan elektronik" in cleaned:
+    if (
+        "658" in cleaned
+        or "electronic commerce" in cleaned
+        or "perdagangan elektronik" in cleaned
+    ):
         return "ACT_658"
     if "sabah" in cleaned or "cap. 67" in cleaned or "cap 67" in cleaned:
         return "SABAH_CAP67"
@@ -134,10 +138,21 @@ def normalize_regimes(regimes: list[str] | None) -> list[str]:
     ordered: list[str] = []
     for item in regimes:
         cleaned = item.strip().lower()
-        if cleaned in {"labour", "employment", "east_malaysia_labour", "labour_ordinance"}:
+        if cleaned in {
+            "labour",
+            "employment",
+            "east_malaysia_labour",
+            "labour_ordinance",
+        }:
             candidates = ["ACT_265", "SABAH_CAP67", "SARAWAK_CAP76"]
         elif cleaned in {"territorial", "5_territory", "all_territories"}:
-            candidates = ["ACT_265", "SABAH_CAP67", "SARAWAK_CAP76", "ACT_704", "ACT_136"]
+            candidates = [
+                "ACT_265",
+                "SABAH_CAP67",
+                "SARAWAK_CAP76",
+                "ACT_704",
+                "ACT_136",
+            ]
         elif cleaned == "all":
             candidates = list(ALL_SUPPORTED_REGIMES)
         else:
@@ -166,9 +181,17 @@ def _constraint_rank_key(cand: RegimeConstraintCandidate) -> tuple[float, int, s
     tier = int(cand.authority_tier)
     val = c.threshold_value
 
-    if c.operator == "<=" and isinstance(val, (int, float)) and not isinstance(val, bool):
+    if (
+        c.operator == "<="
+        and isinstance(val, (int, float))
+        and not isinstance(val, bool)
+    ):
         return (float(val), tier, cand.node_id)
-    if c.operator == ">=" and isinstance(val, (int, float)) and not isinstance(val, bool):
+    if (
+        c.operator == ">="
+        and isinstance(val, (int, float))
+        and not isinstance(val, bool)
+    ):
         return (-float(val), tier, cand.node_id)
     if c.operator == "FORBIDDEN_CLAUSE":
         return (0.0, tier, cand.node_id)

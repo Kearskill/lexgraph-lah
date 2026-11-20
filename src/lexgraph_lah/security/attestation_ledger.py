@@ -226,7 +226,9 @@ class AttestationLedger:
                 "SELECT seq, chain_hash FROM attestations ORDER BY seq DESC LIMIT 1"
             ).fetchone()
             next_seq = (int(tail["seq"]) + 1) if tail is not None else 1
-            prev_hash = str(tail["chain_hash"]) if tail is not None else GENESIS_CHAIN_HASH
+            prev_hash = (
+                str(tail["chain_hash"]) if tail is not None else GENESIS_CHAIN_HASH
+            )
 
             sorted_citations = sorted(set(manifest.citation_span_ids))
             chain_hash = compute_chain_hash(
@@ -327,7 +329,11 @@ class AttestationLedger:
         target_id = (
             manifest_id.strip()
             if manifest_id
-            else (manifest.manifest_id.strip() if manifest and manifest.manifest_id else "")
+            else (
+                manifest.manifest_id.strip()
+                if manifest and manifest.manifest_id
+                else ""
+            )
         )
 
         with self._lock:
@@ -453,7 +459,8 @@ class AttestationLedger:
                 )
 
         if expected_doc_sha256 is not None and (
-            expected_doc_sha256.strip().lower() != target_record.input_doc_sha256.lower()
+            expected_doc_sha256.strip().lower()
+            != target_record.input_doc_sha256.lower()
         ):
             digest_matches = False
             tamper_reasons.append(

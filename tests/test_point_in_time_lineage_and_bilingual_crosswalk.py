@@ -21,7 +21,11 @@ from lexgraph_lah.schemas.domain import (
     TemporalEdgeType,
 )
 
-FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "malaysian_bilingual_lineage_fixture.json"
+FIXTURE_PATH = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "malaysian_bilingual_lineage_fixture.json"
+)
 
 
 def test_structure_aware_ingestion_exact_offsets_and_bilingual_crosswalk():
@@ -107,8 +111,12 @@ def test_structure_aware_ingestion_exact_offsets_and_bilingual_crosswalk():
     )
 
     # Cross-lingual statute alias resolution
-    assert "penal code" in BilingualCrosswalkResolver.resolve_aliases("Kanun Keseksaan Seksyen 420")
-    assert "contracts act 1950" in BilingualCrosswalkResolver.resolve_aliases("Akta Kontrak 1950 Seksyen 75")
+    assert "penal code" in BilingualCrosswalkResolver.resolve_aliases(
+        "Kanun Keseksaan Seksyen 420"
+    )
+    assert "contracts act 1950" in BilingualCrosswalkResolver.resolve_aliases(
+        "Akta Kontrak 1950 Seksyen 75"
+    )
 
 
 def test_point_in_time_before_and_after_amendment_with_timeline():
@@ -149,7 +157,9 @@ def test_point_in_time_before_and_after_amendment_with_timeline():
         )
     )
     assert pre_res.status == "grounded"
-    active_pre = [e.node_id for e in pre_res.amendment_timeline if e.is_active_at_query_date]
+    active_pre = [
+        e.node_id for e in pre_res.amendment_timeline if e.is_active_at_query_date
+    ]
     assert "FIX-PDPA-SEC-9-V1-EN" in active_pre
     assert "FIX-PDPA-SEC-9-V2-EN" not in active_pre
 
@@ -163,8 +173,12 @@ def test_point_in_time_before_and_after_amendment_with_timeline():
         )
     )
     assert post_res.status == "grounded"
-    active_post = [e.node_id for e in post_res.amendment_timeline if e.is_active_at_query_date]
-    superseded_post = [e.node_id for e in post_res.amendment_timeline if not e.is_active_at_query_date]
+    active_post = [
+        e.node_id for e in post_res.amendment_timeline if e.is_active_at_query_date
+    ]
+    superseded_post = [
+        e.node_id for e in post_res.amendment_timeline if not e.is_active_at_query_date
+    ]
     assert "FIX-PDPA-SEC-9-V2-EN" in active_post
     assert "FIX-PDPA-SEC-9-V1-EN" in superseded_post
 
@@ -199,10 +213,16 @@ def test_bahasa_melayu_query_traverses_english_judicial_interpretations_and_rank
     assert case_ids.index("FIX-CASE-FC-2025") < case_ids.index("FIX-CASE-HC-2021")
 
     case_breakdown = [
-        item for item in bm_res.authority_breakdown if item.hierarchy_level == HierarchyLevel.CASE
+        item
+        for item in bm_res.authority_breakdown
+        if item.hierarchy_level == HierarchyLevel.CASE
     ]
-    fc_item = next(item for item in case_breakdown if item.node_id == "FIX-CASE-FC-2025")
-    hc_item = next(item for item in case_breakdown if item.node_id == "FIX-CASE-HC-2021")
+    fc_item = next(
+        item for item in case_breakdown if item.node_id == "FIX-CASE-FC-2025"
+    )
+    hc_item = next(
+        item for item in case_breakdown if item.node_id == "FIX-CASE-HC-2021"
+    )
 
     assert fc_item.authority_tier == AuthorityTier.TIER_4_FEDERAL_COURT
     assert hc_item.authority_tier == AuthorityTier.TIER_6_HIGH_COURT
@@ -266,8 +286,14 @@ def test_api_endpoints_and_provenance_ui_end_to_end():
     assert len(body["citations"]) >= 2
     assert len(body["claims"]) >= 2
     assert len(body["bilingual_crosswalk"]) >= 1
-    assert any(e["node_id"] == "PDPA-2010-SEC-9-V1-BM" and not e["is_active_at_query_date"] for e in body["amendment_timeline"])
-    assert any(e["node_id"] == "PDPA-2010-SEC-9-V2-BM" and e["is_active_at_query_date"] for e in body["amendment_timeline"])
+    assert any(
+        e["node_id"] == "PDPA-2010-SEC-9-V1-BM" and not e["is_active_at_query_date"]
+        for e in body["amendment_timeline"]
+    )
+    assert any(
+        e["node_id"] == "PDPA-2010-SEC-9-V2-BM" and e["is_active_at_query_date"]
+        for e in body["amendment_timeline"]
+    )
 
     case_order = [
         item["node_id"]
@@ -290,7 +316,10 @@ def test_api_endpoints_and_provenance_ui_end_to_end():
     assert ca_res.status_code == 200
     ca_body = ca_res.json()
     assert ca_body["status"] == "grounded"
-    assert any(jt["case_node_id"] == "CASE-FC-2019-CUBIC" for jt in ca_body["judicial_treatments"])
+    assert any(
+        jt["case_node_id"] == "CASE-FC-2019-CUBIC"
+        for jt in ca_body["judicial_treatments"]
+    )
 
     # Insufficient evidence refusal via API
     ood_res = client.post(
@@ -314,7 +343,10 @@ def test_api_endpoints_and_provenance_ui_end_to_end():
     lineage_data = lineage_res.json()
     assert lineage_data["current_active_node_id"] == "PDPA-2010-SEC-9-V1"
     assert [e["version"] for e in lineage_data["amendment_timeline"]] == [1, 2]
-    assert lineage_data["bilingual_equivalent"]["bm_node"]["node_id"] == "PDPA-2010-SEC-9-V1-BM"
+    assert (
+        lineage_data["bilingual_equivalent"]["bm_node"]["node_id"]
+        == "PDPA-2010-SEC-9-V1-BM"
+    )
     assert len(lineage_data["judicial_treatments"]) >= 1
 
     missing_lineage = client.get("/api/v1/provisions/UNKNOWN-PROVISION/lineage")

@@ -16,9 +16,7 @@ _PASSPORT_PATTERN = re.compile(r"\b[AHK]\d{8}\b")
 _PHONE_PATTERN = re.compile(
     r"(?:\+?60|0)(?:1\d[-\s]?\d{3,4}[-\s]?\d{4}|[3-9][-\s]?\d{3,4}[-\s]?\d{4})\b"
 )
-_EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-)
+_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 # Malaysian SSM (12-digit new reg e.g. 202001012345 (1358123-K) or standalone legacy 6-7 digits + check letter)
 _SSM_NEW_PATTERN = re.compile(
     r"\b(?:19|20)\d{2}0[1-6]\d{6}(?:\s*\(\d{5,7}-[A-HJ-NP-Z]\))?\b"
@@ -129,6 +127,7 @@ def scrub_malaysian_pii(text: str) -> PIIScrubSummary:
     value_to_placeholder: dict[tuple[str, str], str] = {}
 
     for label, pattern in _PATTERN_SPECS:
+
         def _replacer(match: re.Match[str], entity_label: str = label) -> str:
             raw_val = match.group(0)
             cache_key = (entity_label, raw_val)

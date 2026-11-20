@@ -208,7 +208,8 @@ def build_point_in_time_cypher(
     act_clause = "AND s.act_name = $act_name\n" if act_name else ""
     scope_clause = (
         "AND ($territorial_scope IN s.territorial_scope OR 'All Malaysia' IN s.territorial_scope)\n"
-        if territorial_scope and territorial_scope != TerritorialScope.ALL_MALAYSIA.value
+        if territorial_scope
+        and territorial_scope != TerritorialScope.ALL_MALAYSIA.value
         else ""
     )
     query = (
@@ -278,7 +279,9 @@ class TemporalGraphStore:
             updated_prev = prev.model_copy(
                 update={
                     "valid_to": eff_date,
-                    "effective_to": prev_eff_to if prev_eff_to >= (prev.effective_from or prev.valid_from) else eff_date,
+                    "effective_to": prev_eff_to
+                    if prev_eff_to >= (prev.effective_from or prev.valid_from)
+                    else eff_date,
                     "is_in_force": False,
                     "status": StatutoryStatus.AMENDED,
                 }
@@ -369,7 +372,9 @@ class TemporalGraphStore:
         self._nodes[target_node_id] = target.model_copy(
             update={
                 "valid_to": effective_date,
-                "effective_to": prev_eff_to if prev_eff_to >= (target.effective_from or target.valid_from) else effective_date,
+                "effective_to": prev_eff_to
+                if prev_eff_to >= (target.effective_from or target.valid_from)
+                else effective_date,
                 "is_in_force": False,
                 "status": StatutoryStatus.REPEALED,
             }
@@ -574,7 +579,8 @@ class TemporalGraphStore:
             and (
                 language is None
                 or node.language == language
-                or node.normalized_language == ("ms" if language in {"bm", "ms"} else language)
+                or node.normalized_language
+                == ("ms" if language in {"bm", "ms"} else language)
             )
             and node.hierarchy_level not in excluded_levels
         ]
@@ -586,7 +592,10 @@ class TemporalGraphStore:
             allowed_edges = {TemporalEdgeType.CITES}
             if include_translations:
                 allowed_edges.update(
-                    {TemporalEdgeType.HAS_TRANSLATION, TemporalEdgeType.BM_EN_EQUIVALENT}
+                    {
+                        TemporalEdgeType.HAS_TRANSLATION,
+                        TemporalEdgeType.BM_EN_EQUIVALENT,
+                    }
                 )
 
             frontier = {n.node_id for n in seed_nodes}
@@ -624,7 +633,12 @@ class TemporalGraphStore:
 
         return sorted(
             resolved.values(),
-            key=lambda n: (int(n.authority_tier), n.act_name, n.section_code, n.version),
+            key=lambda n: (
+                int(n.authority_tier),
+                n.act_name,
+                n.section_code,
+                n.version,
+            ),
         )
 
     def get_bilingual_pair(
@@ -655,7 +669,11 @@ class TemporalGraphStore:
         )
 
         auth_id = node.node_id
-        if partner and partner.authoritative_language and not node.authoritative_language:
+        if (
+            partner
+            and partner.authoritative_language
+            and not node.authoritative_language
+        ):
             auth_id = partner.node_id
 
         spans: list[SourceSpan] = []
@@ -835,10 +853,18 @@ class TemporalGraphStore:
             for edge in self._edges:
                 if edge.edge_type not in lineage_edges:
                     continue
-                if edge.source_id == cur and edge.target_id in self._nodes and edge.target_id not in visited:
+                if (
+                    edge.source_id == cur
+                    and edge.target_id in self._nodes
+                    and edge.target_id not in visited
+                ):
                     visited.add(edge.target_id)
                     queue.append(edge.target_id)
-                elif edge.target_id == cur and edge.source_id in self._nodes and edge.source_id not in visited:
+                elif (
+                    edge.target_id == cur
+                    and edge.source_id in self._nodes
+                    and edge.source_id not in visited
+                ):
                     visited.add(edge.source_id)
                     queue.append(edge.source_id)
 
@@ -910,7 +936,8 @@ class TemporalGraphStore:
                         case_node_id=case_node.node_id,
                         case_title=case_node.act_name,
                         case_citation=case_node.case_citation or case_node.act_number,
-                        court_name=case_node.court_name or AUTHORITY_LABELS.get(case_node.authority_tier, "Court"),
+                        court_name=case_node.court_name
+                        or AUTHORITY_LABELS.get(case_node.authority_tier, "Court"),
                         authority_tier=case_node.authority_tier,
                         authority_label=AUTHORITY_LABELS.get(
                             case_node.authority_tier, "Tier 6: High Court"
@@ -1003,7 +1030,9 @@ class TemporalGraphStore:
                     self._collect_lineage_node_ids(bilingual_equiv.bm_node.node_id)
                 )
 
-        treatments = self._collect_judicial_treatments(treatment_targets, effective_date)
+        treatments = self._collect_judicial_treatments(
+            treatment_targets, effective_date
+        )
         subgraph_ids = set(treatment_targets) | {t.case_node_id for t in treatments}
         lineage_edges = [
             e
@@ -1038,12 +1067,18 @@ class TemporalGraphStore:
         effective_date = req.as_of_date or date.today()
         raw_mode = req.language_mode.lower()
         lang_mode: Literal["ms", "en", "bilingual"] = (
-            "ms" if raw_mode in {"ms", "bm"} else ("en" if raw_mode == "en" else "bilingual")
+            "ms"
+            if raw_mode in {"ms", "bm"}
+            else ("en" if raw_mode == "en" else "bilingual")
         )
-        threshold = req.abstention_threshold if req.abstention_threshold is not None else 0.65
+        threshold = (
+            req.abstention_threshold if req.abstention_threshold is not None else 0.65
+        )
 
         with measure_latency_ms() as elapsed_holder:
-            normalized_query, detected_lang, expanded_terms = normalize_and_expand_query(req.query)
+            normalized_query, detected_lang, expanded_terms = (
+                normalize_and_expand_query(req.query)
+            )
 
             # Stage 1: Active statutory nodes on as_of_date
             candidate_statutes = self.query_point_in_time(
@@ -1077,7 +1112,9 @@ class TemporalGraphStore:
                     if n.hierarchy_level == HierarchyLevel.CASE
                     and self._is_node_valid_on(n, effective_date)
                 ]
-                for cnode in filter_by_territorial_scope(candidate_cases, req.territorial_scope):
+                for cnode in filter_by_territorial_scope(
+                    candidate_cases, req.territorial_scope
+                ):
                     cscore = compute_hybrid_relevance_score(
                         query=req.query,
                         normalized_query=normalized_query,
@@ -1136,7 +1173,9 @@ class TemporalGraphStore:
                 )
 
             # Stage 2: Bilingual Graph Expansion (BM_EN_EQUIVALENT & CITES & Judicial Edges)
-            expanded_statutes: dict[str, StatutoryNode] = {n.node_id: n for n in matched_statutes}
+            expanded_statutes: dict[str, StatutoryNode] = {
+                n.node_id: n for n in matched_statutes
+            }
             bilingual_pairs_map: dict[str, BilingualClausePair] = {}
             traversal_target_ids: set[str] = set()
 
@@ -1149,16 +1188,22 @@ class TemporalGraphStore:
                     dedup_key = f"{pair.act_number}:{pair.section_code}"
                     if dedup_key not in bilingual_pairs_map:
                         bilingual_pairs_map[dedup_key] = pair
-                    if pair.en_node and self._is_node_valid_on(pair.en_node, effective_date):
+                    if pair.en_node and self._is_node_valid_on(
+                        pair.en_node, effective_date
+                    ):
                         expanded_statutes.setdefault(pair.en_node.node_id, pair.en_node)
                         statute_scores.setdefault(
-                            pair.en_node.node_id, statute_scores.get(node.node_id, threshold)
+                            pair.en_node.node_id,
+                            statute_scores.get(node.node_id, threshold),
                         )
                         traversal_target_ids.add(pair.en_node.node_id)
-                    if pair.bm_node and self._is_node_valid_on(pair.bm_node, effective_date):
+                    if pair.bm_node and self._is_node_valid_on(
+                        pair.bm_node, effective_date
+                    ):
                         expanded_statutes.setdefault(pair.bm_node.node_id, pair.bm_node)
                         statute_scores.setdefault(
-                            pair.bm_node.node_id, statute_scores.get(node.node_id, threshold)
+                            pair.bm_node.node_id,
+                            statute_scores.get(node.node_id, threshold),
                         )
                         traversal_target_ids.add(pair.bm_node.node_id)
 
@@ -1178,7 +1223,10 @@ class TemporalGraphStore:
                                 max(
                                     0.70,
                                     compute_hybrid_relevance_score(
-                                        req.query, normalized_query, expanded_terms, cited
+                                        req.query,
+                                        normalized_query,
+                                        expanded_terms,
+                                        cited,
                                     ),
                                 ),
                             )
@@ -1195,7 +1243,8 @@ class TemporalGraphStore:
                     if (
                         req.include_repealed_lineage or entry.is_active_at_query_date
                     ) and (
-                        lang_mode == "bilingual" or lnode.normalized_language == lang_mode
+                        lang_mode == "bilingual"
+                        or lnode.normalized_language == lang_mode
                     ):
                         timeline_map[lid] = entry
 
@@ -1208,13 +1257,21 @@ class TemporalGraphStore:
 
             amendment_timeline = sorted(
                 timeline_map.values(),
-                key=lambda e: (e.act_number, e.section_code, e.language, e.version, e.effective_from),
+                key=lambda e: (
+                    e.act_number,
+                    e.section_code,
+                    e.language,
+                    e.version,
+                    e.effective_from,
+                ),
             )
 
             # Gather judicial treatments interpreting/applying any node in the matched set,
             # its bilingual counterpart, or (when include_repealed_lineage=True) its lineage chain
             judicial_targets = (
-                lineage_all_ids if req.include_repealed_lineage else traversal_target_ids
+                lineage_all_ids
+                if req.include_repealed_lineage
+                else traversal_target_ids
             )
             judicial_treatments = self._collect_judicial_treatments(
                 judicial_targets, effective_date
@@ -1272,7 +1329,8 @@ class TemporalGraphStore:
                         hierarchy_level=snode.hierarchy_level,
                         authority_tier=snode.authority_tier,
                         authority_label=AUTHORITY_LABELS.get(
-                            snode.authority_tier, "Tier 2: Acts of Parliament (Akta) & State Enactments"
+                            snode.authority_tier,
+                            "Tier 2: Acts of Parliament (Akta) & State Enactments",
                         ),
                         authority_weight=auth_w,
                         relevance_score=round(rel_score, 4),
@@ -1325,7 +1383,9 @@ class TemporalGraphStore:
                 key=lambda item: (
                     item.is_overruled,
                     int(item.authority_tier),
-                    0.0 if item.hierarchy_level == HierarchyLevel.CASE else -item.relevance_score,
+                    0.0
+                    if item.hierarchy_level == HierarchyLevel.CASE
+                    else -item.relevance_score,
                     -item.effective_from.toordinal(),
                     -item.final_score,
                     item.node_id,
@@ -1387,7 +1447,11 @@ class TemporalGraphStore:
                 )[:3],
                 start=1,
             ):
-                s_span_ids = [sp.span_id for sp in snode.source_spans if sp.span_id in citations_by_id]
+                s_span_ids = [
+                    sp.span_id
+                    for sp in snode.source_spans
+                    if sp.span_id in citations_by_id
+                ]
                 if s_span_ids:
                     claims.append(
                         GroundedClaim(
@@ -1404,10 +1468,16 @@ class TemporalGraphStore:
                     )
 
             for idx, jt in enumerate(judicial_treatments[:4], start=1):
-                c_span_ids = [sp.span_id for sp in jt.source_spans if sp.span_id in citations_by_id]
+                c_span_ids = [
+                    sp.span_id
+                    for sp in jt.source_spans
+                    if sp.span_id in citations_by_id
+                ]
                 if c_span_ids:
                     overruled_tag = (
-                        f" [OVERRULED by {jt.overruled_by_node_id}]" if jt.is_overruled else ""
+                        f" [OVERRULED by {jt.overruled_by_node_id}]"
+                        if jt.is_overruled
+                        else ""
                     )
                     claims.append(
                         GroundedClaim(
@@ -1422,13 +1492,19 @@ class TemporalGraphStore:
                         )
                     )
 
-            superseded_entries = [e for e in amendment_timeline if not e.is_active_at_query_date]
+            superseded_entries = [
+                e for e in amendment_timeline if not e.is_active_at_query_date
+            ]
             if superseded_entries:
                 hist = superseded_entries[0]
                 for h_span in hist.source_spans:
                     citations_by_id.setdefault(h_span.span_id, h_span)
                 citations = list(citations_by_id.values())
-                hist_spans = [sp.span_id for sp in hist.source_spans if sp.span_id in citations_by_id]
+                hist_spans = [
+                    sp.span_id
+                    for sp in hist.source_spans
+                    if sp.span_id in citations_by_id
+                ]
                 if hist_spans:
                     claims.append(
                         GroundedClaim(
@@ -1445,16 +1521,25 @@ class TemporalGraphStore:
                         )
                     )
 
-            answer_parts = [f"[{c.claim_id}] {c.statement} (Sources: {', '.join(c.source_span_ids)})" for c in claims]
+            answer_parts = [
+                f"[{c.claim_id}] {c.statement} (Sources: {', '.join(c.source_span_ids)})"
+                for c in claims
+            ]
             answer_text = "\n".join(answer_parts)
 
             subgraph_node_ids = (
                 lineage_all_ids
                 | {jt.case_node_id for jt in judicial_treatments}
-                | {jt.overruled_by_node_id for jt in judicial_treatments if jt.overruled_by_node_id}
+                | {
+                    jt.overruled_by_node_id
+                    for jt in judicial_treatments
+                    if jt.overruled_by_node_id
+                }
             )
             subgraph_nodes = [
-                self._nodes[nid] for nid in sorted(subgraph_node_ids) if nid in self._nodes
+                self._nodes[nid]
+                for nid in sorted(subgraph_node_ids)
+                if nid in self._nodes
             ]
             subgraph_edges = [
                 e
@@ -1483,7 +1568,8 @@ class TemporalGraphStore:
             divergence_warnings = [
                 pair.divergence_report
                 for pair in bilingual_crosswalk_list
-                if pair.divergence_report is not None and pair.divergence_report.has_divergence
+                if pair.divergence_report is not None
+                and pair.divergence_report.has_divergence
             ]
 
             return PointInTimeResearchResponse(
@@ -3084,7 +3170,9 @@ def get_default_temporal_store() -> TemporalGraphStore:
         regime_code="BNM_RMIT",
         deontic_constraints=bnm_rmit_incident_en.deontic_constraints,
     )
-    _add_bilingual_pair(store, bnm_rmit_incident_en, bnm_rmit_incident_bm, authoritative="en")
+    _add_bilingual_pair(
+        store, bnm_rmit_incident_en, bnm_rmit_incident_bm, authoritative="en"
+    )
 
     # =========================================================================
     # Cross-reference CITES edges
@@ -3096,16 +3184,28 @@ def get_default_temporal_store() -> TemporalGraphStore:
         "PDPA-2010-SEC-9-V2", "PDPA-2010-SEC-130-V1", effective_date=date(2025, 1, 1)
     )
     store.add_citation(
-        "PDPA-2010-SEC-12B-V1", "PUA-342-2024-REG-3", effective_date=date(2025, 1, 1), gazette_ref="P.U. (A) 342/2024"
+        "PDPA-2010-SEC-12B-V1",
+        "PUA-342-2024-REG-3",
+        effective_date=date(2025, 1, 1),
+        gazette_ref="P.U. (A) 342/2024",
     )
     store.add_citation(
-        "PDPA-2010-SEC-12A-V1", "JPDP-CIRC-01-2025", effective_date=date(2025, 2, 1), gazette_ref="JPDP Circular 01/2025"
+        "PDPA-2010-SEC-12A-V1",
+        "JPDP-CIRC-01-2025",
+        effective_date=date(2025, 2, 1),
+        gazette_ref="JPDP Circular 01/2025",
     )
     store.add_citation(
-        "CSA-2024-SEC-23-V1", "PUA-220-2024-REG-4", effective_date=date(2024, 8, 26), gazette_ref="P.U. (A) 220/2024"
+        "CSA-2024-SEC-23-V1",
+        "PUA-220-2024-REG-4",
+        effective_date=date(2024, 8, 26),
+        gazette_ref="P.U. (A) 220/2024",
     )
     store.add_citation(
-        "BNM-RMIT-SEC-10-32-V1", "CSA-2024-SEC-23-V1", effective_date=date(2024, 8, 26), gazette_ref="Act 854"
+        "BNM-RMIT-SEC-10-32-V1",
+        "CSA-2024-SEC-23-V1",
+        effective_date=date(2024, 8, 26),
+        gazette_ref="Act 854",
     )
 
     return store

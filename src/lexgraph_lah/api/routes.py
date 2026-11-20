@@ -157,7 +157,11 @@ def _compute_overall_risk(clauses: list[ClauseAudit]) -> RiskSeverity:
 
 
 def _cache_key(req: ComplianceCheckRequest) -> str:
-    scope_val = req.territorial_scope.value if req.territorial_scope else TerritorialScope.ALL_MALAYSIA.value
+    scope_val = (
+        req.territorial_scope.value
+        if req.territorial_scope
+        else TerritorialScope.ALL_MALAYSIA.value
+    )
     ref_d = req.as_of_date or req.reference_date or "TODAY"
     regimes_str = ",".join(normalize_regimes(req.regimes)) if req.regimes else "DEFAULT"
     payload = (
@@ -175,7 +179,11 @@ def _build_audit_persona_blocks(
 ) -> tuple[IRACAnalysis, RakyatGuidance]:
     violated = sorted({sid for c in clauses for sid in c.violated_statute_ids})
     stat_str = ", ".join(violated) if violated else "Act 709 (PDPA) Part II Principles"
-    high_risk_clauses = [c for c in clauses if c.severity in {RiskSeverity.MEDIUM, RiskSeverity.HIGH, RiskSeverity.CRITICAL}]
+    high_risk_clauses = [
+        c
+        for c in clauses
+        if c.severity in {RiskSeverity.MEDIUM, RiskSeverity.HIGH, RiskSeverity.CRITICAL}
+    ]
 
     if not high_risk_clauses:
         irac = IRACAnalysis(
@@ -192,7 +200,11 @@ def _build_audit_persona_blocks(
                 "Verify your Data Protection Officer (DPO) contact details at https://portal.pdp.gov.my.",
                 "Retain signed compliance records for inspection by JPDP (https://www.pdp.gov.my).",
             ],
-            official_portals=["https://www.pdp.gov.my", "https://portal.pdp.gov.my", "https://lom.agc.gov.my"],
+            official_portals=[
+                "https://www.pdp.gov.my",
+                "https://portal.pdp.gov.my",
+                "https://lom.agc.gov.my",
+            ],
         )
         return irac, rakyat
 
@@ -217,7 +229,11 @@ def _build_audit_persona_blocks(
             "Ensure confirmed personal data breaches must be escalated in <= 24h so JPDP can be notified within 72h at https://portal.pdp.gov.my.",
             "Check official Malaysian PDPA guidance or file a public complaint at https://www.pdp.gov.my.",
         ],
-        official_portals=["https://www.pdp.gov.my", "https://portal.pdp.gov.my", "https://lom.agc.gov.my"],
+        official_portals=[
+            "https://www.pdp.gov.my",
+            "https://portal.pdp.gov.my",
+            "https://lom.agc.gov.my",
+        ],
     )
     return irac, rakyat
 
@@ -236,7 +252,8 @@ def _build_initial_agent_state(
         "territorial_scope": scope.value,
         "persona": payload.persona.value,
         "language": payload.language,
-        "abstention_threshold": payload.abstention_threshold or settings.abstention_threshold,
+        "abstention_threshold": payload.abstention_threshold
+        or settings.abstention_threshold,
         "extracted_clauses": [],
         "auditor_feedback": "",
         "is_grounded": False,
@@ -290,7 +307,9 @@ def _finalize_audit_response(
         completion_tokens=int(final_state.get("completion_tokens", 0)),
         latency_ms=elapsed_ms,
         retry_count=int(final_state.get("retry_count", 0)),
-        is_verified_grounded=bool(final_state.get("is_grounded", False) or is_abstained),
+        is_verified_grounded=bool(
+            final_state.get("is_grounded", False) or is_abstained
+        ),
         trace_id=span_id,
         model_name=selected_model,
     )
@@ -471,7 +490,9 @@ async def stream_compliance(payload: ComplianceCheckRequest) -> StreamingRespons
                     completion_tokens=cumulative_completion,
                     latency_ms=elapsed_so_far,
                     retry_count=int(accumulated_state.get("retry_count", 0)),
-                    is_verified_grounded=bool(accumulated_state.get("is_grounded", False)),
+                    is_verified_grounded=bool(
+                        accumulated_state.get("is_grounded", False)
+                    ),
                 )
 
                 node_event: dict[str, Any] = {
@@ -482,12 +503,16 @@ async def stream_compliance(payload: ComplianceCheckRequest) -> StreamingRespons
                     "is_abstained": bool(accumulated_state.get("is_abstained", False)),
                 }
                 if isinstance(accumulated_state.get("pii_scrub"), dict):
-                    node_event["pii_redaction_count"] = accumulated_state["pii_scrub"].get(
-                        "redaction_count", 0
-                    )
+                    node_event["pii_redaction_count"] = accumulated_state[
+                        "pii_scrub"
+                    ].get("redaction_count", 0)
                 if "max_relevance_score" in node_payload:
-                    node_event["max_relevance_score"] = node_payload["max_relevance_score"]
-                    node_event["abstention_threshold"] = initial_state["abstention_threshold"]
+                    node_event["max_relevance_score"] = node_payload[
+                        "max_relevance_score"
+                    ]
+                    node_event["abstention_threshold"] = initial_state[
+                        "abstention_threshold"
+                    ]
 
                 yield _sse_frame("node_update", node_event)
 
@@ -496,9 +521,15 @@ async def stream_compliance(payload: ComplianceCheckRequest) -> StreamingRespons
                         "abstention_gate",
                         {
                             "threshold": initial_state["abstention_threshold"],
-                            "max_relevance_score": accumulated_state.get("max_relevance_score", 1.0),
-                            "is_abstained": bool(accumulated_state.get("is_abstained", False)),
-                            "abstention_reason": accumulated_state.get("abstention_reason"),
+                            "max_relevance_score": accumulated_state.get(
+                                "max_relevance_score", 1.0
+                            ),
+                            "is_abstained": bool(
+                                accumulated_state.get("is_abstained", False)
+                            ),
+                            "abstention_reason": accumulated_state.get(
+                                "abstention_reason"
+                            ),
                             "active_statute_count": len(
                                 accumulated_state.get("retrieved_statutes") or []
                             ),
@@ -514,7 +545,9 @@ async def stream_compliance(payload: ComplianceCheckRequest) -> StreamingRespons
                             "attempt": latest_cf.get("attempt", 1),
                             "passed": bool(accumulated_state.get("is_grounded", False)),
                             "failures": latest_cf.get("failures", []),
-                            "auditor_feedback": accumulated_state.get("auditor_feedback", ""),
+                            "auditor_feedback": accumulated_state.get(
+                                "auditor_feedback", ""
+                            ),
                         },
                     )
 
@@ -740,9 +773,7 @@ async def export_redline_docx(payload: ExportDocxRequest) -> Response:
     findings = payload.findings if payload.findings is not None else audit_resp.findings
     vault_map = final_state.get("pii_vault_map") or {}
     vault = ReversiblePIIVault(initial_mapping=vault_map)
-    placeholders = (
-        audit_resp.pii_scrub.placeholders if audit_resp.pii_scrub else {}
-    )
+    placeholders = audit_resp.pii_scrub.placeholders if audit_resp.pii_scrub else {}
 
     docx_bytes = compile_track_changes_docx(
         document_id=payload.document_id,
@@ -758,7 +789,9 @@ async def export_redline_docx(payload: ExportDocxRequest) -> Response:
     )
 
     manifest = audit_resp.attestation_manifest
-    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in payload.document_id)
+    safe_name = "".join(
+        c if c.isalnum() or c in "-_" else "_" for c in payload.document_id
+    )
     headers = {
         "Content-Disposition": f'attachment; filename="{safe_name}_redlined.docx"',
         "X-LexGraph-Attestation-SHA256": manifest.manifest_sha256 if manifest else "",
@@ -816,16 +849,33 @@ async def api_v1_pii_scrub(payload: PIIScrubRequest) -> PIIScrubSummary:
 
 @router.get("/api/v1/retrieval/search", response_model=RetrievalSearchResponse)
 async def api_v1_retrieval_search(
-    q: Annotated[str, Query(..., min_length=1, description="BM, EN, or code-switched legal query")],
-    as_of_date: Annotated[date | None, Query(description="Point-in-time date (YYYY-MM-DD)")] = None,
-    territorial_scope: Annotated[str | None, Query(description="Peninsular Malaysia | Sabah | Sarawak | Federal Territories | All Malaysia")] = None,
-    threshold: Annotated[float | None, Query(ge=0.0, le=1.0, description="Abstention relevance threshold (default 0.78)")] = None,
+    q: Annotated[
+        str,
+        Query(..., min_length=1, description="BM, EN, or code-switched legal query"),
+    ],
+    as_of_date: Annotated[
+        date | None, Query(description="Point-in-time date (YYYY-MM-DD)")
+    ] = None,
+    territorial_scope: Annotated[
+        str | None,
+        Query(
+            description="Peninsular Malaysia | Sabah | Sarawak | Federal Territories | All Malaysia"
+        ),
+    ] = None,
+    threshold: Annotated[
+        float | None,
+        Query(
+            ge=0.0, le=1.0, description="Abstention relevance threshold (default 0.78)"
+        ),
+    ] = None,
 ) -> RetrievalSearchResponse:
     """
     Hybrid bilingual statutory search with 5-tier Malaysian authority reranking,
     territorial scope filtering, and deterministic 0.78 Abstention Gate.
     """
-    effective_threshold = threshold if threshold is not None else settings.abstention_threshold
+    effective_threshold = (
+        threshold if threshold is not None else settings.abstention_threshold
+    )
     return _DEFAULT_TEMPORAL_STORE.search_with_abstention(
         query=q,
         as_of_date=as_of_date or date.today(),
@@ -847,15 +897,23 @@ async def api_v1_bilingual_statute(
         as_of_date=as_of_date,
     )
     if not pair:
-        raise HTTPException(status_code=404, detail=f"Statutory node '{node_id}' not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Statutory node '{node_id}' not found."
+        )
     return pair
 
 
 @router.get("/api/v1/lineage/diff", response_model=StatutoryVersionDiff)
 async def api_v1_lineage_diff_get(
-    provision_id: Annotated[str, Query(..., min_length=1, description="Target statutory provision node ID")],
-    from_date: Annotated[date, Query(..., description="Baseline comparison date (YYYY-MM-DD)")],
-    to_date: Annotated[date, Query(..., description="Target comparison date (YYYY-MM-DD)")],
+    provision_id: Annotated[
+        str, Query(..., min_length=1, description="Target statutory provision node ID")
+    ],
+    from_date: Annotated[
+        date, Query(..., description="Baseline comparison date (YYYY-MM-DD)")
+    ],
+    to_date: Annotated[
+        date, Query(..., description="Target comparison date (YYYY-MM-DD)")
+    ],
 ) -> StatutoryVersionDiff:
     """Zero-token bi-temporal statutory redline diff across AMENDED_BY / REPEALED_BY chains."""
     try:
@@ -913,7 +971,9 @@ async def api_v1_lineage_delta_audit(
 )
 async def api_v1_crosswalk_divergence_get(
     node_id: str,
-    as_of_date: Annotated[date | None, Query(description="Point-in-time date (YYYY-MM-DD)")] = None,
+    as_of_date: Annotated[
+        date | None, Query(description="Point-in-time date (YYYY-MM-DD)")
+    ] = None,
 ) -> BilingualDivergenceReport:
     """Act 388 s. 63 Bilingual Divergence Critic inspecting paired BM/EN statutory nodes."""
     try:
@@ -966,7 +1026,9 @@ async def api_v1_crosswalk_divergence_post(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.post("/api/v1/research/point-in-time", response_model=PointInTimeResearchResponse)
+@router.post(
+    "/api/v1/research/point-in-time", response_model=PointInTimeResearchResponse
+)
 async def api_v1_research_point_in_time(
     payload: PointInTimeResearchRequest,
 ) -> PointInTimeResearchResponse:
@@ -978,11 +1040,17 @@ async def api_v1_research_point_in_time(
     return _DEFAULT_TEMPORAL_STORE.execute_point_in_time_research(payload)
 
 
-@router.get("/api/v1/provisions/{provision_id}/lineage", response_model=ProvisionLineageResponse)
+@router.get(
+    "/api/v1/provisions/{provision_id}/lineage", response_model=ProvisionLineageResponse
+)
 async def api_v1_provision_lineage(
     provision_id: str,
-    as_of_date: Annotated[date | None, Query(description="Point-in-time evaluation date (YYYY-MM-DD)")] = None,
-    include_repealed_lineage: Annotated[bool, Query(description="Include superseded/repealed versions")] = True,
+    as_of_date: Annotated[
+        date | None, Query(description="Point-in-time evaluation date (YYYY-MM-DD)")
+    ] = None,
+    include_repealed_lineage: Annotated[
+        bool, Query(description="Include superseded/repealed versions")
+    ] = True,
 ) -> ProvisionLineageResponse:
     """
     Returns full chronological amendment history, linked BM/EN counterpart text,
@@ -1046,7 +1114,9 @@ async def api_v1_security_scan(request: Request) -> DocumentSecurityReport:
         raw_body = await request.json()
         parsed_req = SecurityScanRequest(**raw_body)
     except (json.JSONDecodeError, TypeError, ValidationError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid request body: {exc}") from exc
+        raise HTTPException(
+            status_code=422, detail=f"Invalid request body: {exc}"
+        ) from exc
 
     return scan_document_security(
         document_id=parsed_req.document_id,
@@ -1138,19 +1208,23 @@ async def get_graph_nodes(
         str | None, Query(description="Optional canonical act name filter")
     ] = None,
     territorial_scope: Annotated[
-        str | None, Query(description="Optional Malaysian territorial jurisdiction filter")
+        str | None,
+        Query(description="Optional Malaysian territorial jurisdiction filter"),
     ] = None,
     language: Annotated[
         str | None, Query(description="Optional language filter ('en' or 'bm')")
     ] = None,
     include_contract_ast: Annotated[
-        bool, Query(description="Include Dual-Layer Contract AST & Deontic Envelope links")
+        bool,
+        Query(description="Include Dual-Layer Contract AST & Deontic Envelope links"),
     ] = False,
     regimes: Annotated[
-        str | None, Query(description="Comma-separated regimes for Dual-Layer Deontic Envelope")
+        str | None,
+        Query(description="Comma-separated regimes for Dual-Layer Deontic Envelope"),
     ] = None,
     raw_text: Annotated[
-        str | None, Query(description="Optional contract text for Dual-Layer AST overlay")
+        str | None,
+        Query(description="Optional contract text for Dual-Layer AST overlay"),
     ] = None,
     document_id: Annotated[str, Query()] = "DEMO-AST",
 ) -> GraphTopologyResponse:

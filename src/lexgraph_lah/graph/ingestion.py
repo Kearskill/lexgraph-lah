@@ -23,7 +23,9 @@ _SUB_RE = re.compile(r"(?m)^[ \t]*(?P<code>\(\d+[A-Za-z]?\))")
 _PROVISO_RE = re.compile(
     r"(?im)^[ \t]*(?P<marker>Provided\s+that\b|Dengan\s+syarat\s+bahawa\b)"
 )
-_ILLUSTRATION_RE = re.compile(r"(?im)^[ \t]*(?P<marker>Illustrations?\b|Misalan\b)\s*:?")
+_ILLUSTRATION_RE = re.compile(
+    r"(?im)^[ \t]*(?P<marker>Illustrations?\b|Misalan\b)\s*:?"
+)
 
 
 def _trim_span(raw_text: str, start: int, end: int) -> tuple[int, int, str]:
@@ -147,7 +149,9 @@ def ingest_structured_statute(
     for idx, m in enumerate(matches):
         kind_raw = m.group("kind").upper()
         code = m.group("code").upper()
-        block_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_text)
+        block_end = (
+            matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_text)
+        )
 
         if kind_raw in {"PART", "BAHAGIAN"}:
             p_start, p_end, p_txt = _trim_span(raw_text, m.start(), block_end)
@@ -284,17 +288,23 @@ def ingest_structured_statute(
         # Sub-boundaries inside Section: Subsections, Provisos, Illustrations
         sub_markers: list[tuple[int, HierarchyLevel, str]] = []
         for sm in _SUB_RE.finditer(raw_text, m.end(), s_end):
-            sub_markers.append((sm.start(), HierarchyLevel.SUBSECTION, sm.group("code")))
+            sub_markers.append(
+                (sm.start(), HierarchyLevel.SUBSECTION, sm.group("code"))
+            )
         for pm in _PROVISO_RE.finditer(raw_text, m.end(), s_end):
             sub_markers.append((pm.start(), HierarchyLevel.PROVISO, "PROVISO"))
         for im in _ILLUSTRATION_RE.finditer(raw_text, m.end(), s_end):
-            sub_markers.append((im.start(), HierarchyLevel.ILLUSTRATION, "ILLUSTRATION"))
+            sub_markers.append(
+                (im.start(), HierarchyLevel.ILLUSTRATION, "ILLUSTRATION")
+            )
         sub_markers.sort(key=lambda item: item[0])
 
         proviso_count = 0
         illus_count = 0
         for s_idx, (sub_pos, level, marker_code) in enumerate(sub_markers):
-            sub_end = sub_markers[s_idx + 1][0] if s_idx + 1 < len(sub_markers) else s_end
+            sub_end = (
+                sub_markers[s_idx + 1][0] if s_idx + 1 < len(sub_markers) else s_end
+            )
             c_s, c_e, c_text = _trim_span(raw_text, sub_pos, sub_end)
             if not c_text:
                 continue
@@ -425,7 +435,9 @@ class BilingualCrosswalkResolver:
             bm_node = bm_index.get(key)
             if not bm_node:
                 continue
-            auth_id = bm_node.node_id if authoritative in {"ms", "bm"} else en_node.node_id
+            auth_id = (
+                bm_node.node_id if authoritative in {"ms", "bm"} else en_node.node_id
+            )
             eff = effective_date or en_node.effective_from or en_node.valid_from
             store.link_translation(
                 en_node_id=en_node.node_id,

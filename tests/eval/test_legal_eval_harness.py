@@ -11,6 +11,7 @@ from lexgraph_lah.eval.harness import (
     get_golden_legal_scenarios,
 )
 from lexgraph_lah.schemas.domain import ClauseAudit, ClauseExtractionList, RiskSeverity
+from lexgraph_lah.schemas.state import AgentState
 from lexgraph_lah.telemetry.cost_tracker import (
     BudgetExceededError,
     assert_within_budget,
@@ -74,7 +75,7 @@ async def test_golden_legal_scenarios_end_to_end_pipeline(
 
     with patch("lexgraph_lah.agents.graph.get_llm", return_value=mock_llm):
         graph = build_compliance_graph()
-        initial_state = {
+        initial_state: AgentState = {
             "document_id": scenario.scenario_id,
             "raw_text": scenario.contract_text,
             "reference_date": scenario.reference_date.isoformat(),
