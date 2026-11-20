@@ -12,6 +12,7 @@ from lexgraph_lah.graph.ingestion import (
     ingest_structured_statute,
     load_lineage_fixture_store,
 )
+from lexgraph_lah.graph.portfolio_scanner import scan_portfolio_blast_radius
 from lexgraph_lah.graph.temporal_store import (
     CypherQueryBundle,
     TemporalGraphStore,
@@ -36,4 +37,5 @@ __all__ = [
     "ingest_amended_provision",
     "ingest_structured_statute",
     "load_lineage_fixture_store",
+    "scan_portfolio_blast_radius",
 ]

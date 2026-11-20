@@ -231,6 +231,7 @@ class SourceSpan(BaseModel):
 
 class TelemetrySummary(BaseModel):
     prompt_tokens: int = 0
+    cached_prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int
     estimated_cost_usd: float
@@ -238,6 +239,7 @@ class TelemetrySummary(BaseModel):
     latency_ms: float
     retry_count: int
     is_verified_grounded: bool
+    model_name: str | None = None
     trace_id: str | None = None
 
 
@@ -729,7 +731,44 @@ class ContractASTGraph(BaseModel):
     shadow_override_traps: list[ShadowOverrideTrap] = Field(default_factory=list)
 
 
+class DocumentSecurityFinding(BaseModel):
+    finding_id: str
+    category: Literal[
+        "HIDDEN_OOXML_TEXT",
+        "HIDDEN_FONT_SIZE",
+        "NEAR_WHITE_TEXT",
+        "SUSPICIOUS_CUSTOM_XML",
+        "MACRO_OR_EMBEDDED",
+        "HIDDEN_PDF_LAYER",
+        "INDIRECT_PROMPT_INJECTION",
+        "STATUTORY_SPOOF_OVERRIDE",
+    ]
+    severity: RiskSeverity
+    source_format: Literal["docx", "pdf", "text"]
+    location: str
+    excerpt: str
+    rationale: str
+    quarantined: bool = True
+
+
+SecurityFinding = DocumentSecurityFinding
+
+
+class DocumentSecurityReport(BaseModel):
+    document_id: str
+    source_format: Literal["docx", "pdf", "text"]
+    passed: bool
+    risk_level: RiskSeverity = RiskSeverity.LOW
+    blocked_injection_count: int = 0
+    quarantined_segments: list[str] = Field(default_factory=list)
+    findings: list[DocumentSecurityFinding] = Field(default_factory=list)
+    sanitized_text: str
+    pii_scrub_applied: bool = True
+    telemetry: TelemetrySummary
+
+
 class ComplianceAttestationManifest(BaseModel):
+    manifest_id: str = ""
     document_id: str
     input_doc_sha256: str
     graph_state_hash: str
@@ -741,8 +780,12 @@ class ComplianceAttestationManifest(BaseModel):
     estimated_cost_usd: float = 0.0
     estimated_cost_myr: float = 0.0
     total_tokens: int = 0
+    model_used: str | None = None
     trace_id: str | None = None
+    citation_span_ids: list[str] = Field(default_factory=list)
     manifest_sha256: str = ""
+    prev_chain_hash: str = ""
+    chain_hash: str = ""
 
 
 class ClauseAudit(BaseModel):
@@ -823,6 +866,8 @@ class ContractAuditResponse(BaseModel):
     deontic_envelope: CompositeDeonticEnvelope | None = None
     contract_ast: ContractASTGraph | None = None
     attestation_manifest: ComplianceAttestationManifest | None = None
+    security_findings: list[DocumentSecurityFinding] = Field(default_factory=list)
+    security_report: DocumentSecurityReport | None = None
     disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
 
 
@@ -1157,5 +1202,148 @@ class ContractDeltaAuditResponse(BaseModel):
     delta_findings: list[ContractDeltaFinding] = Field(default_factory=list)
     summary_practitioner: str
     summary_rakyat: str
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+class SecurityScanRequest(BaseModel):
+    document_id: str = Field(default="SEC-SCAN-001", min_length=1)
+    raw_text: str = Field(..., min_length=1)
+
+
+class PortfolioContractInput(BaseModel):
+    document_id: str = ""
+    contract_id: str | None = None
+    title: str | None = None
+    raw_text: str = ""
+    text: str | None = None
+    territorial_scope: TerritorialScope | None = None
+    regimes: list[str] | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sync_contract_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        if not d.get("document_id") and d.get("contract_id"):
+            d["document_id"] = d["contract_id"]
+        if not d.get("contract_id") and d.get("document_id"):
+            d["contract_id"] = d["document_id"]
+        if not d.get("raw_text") and d.get("text"):
+            d["raw_text"] = d["text"]
+        if not d.get("text") and d.get("raw_text"):
+            d["text"] = d["raw_text"]
+        return d
+
+    @model_validator(mode="after")
+    def _validate_contract_fields(self) -> "PortfolioContractInput":
+        if not self.document_id and self.contract_id:
+            self.document_id = self.contract_id
+        if not self.contract_id and self.document_id:
+            self.contract_id = self.document_id
+        if not self.raw_text and self.text:
+            self.raw_text = self.text
+        if not self.text and self.raw_text:
+            self.text = self.raw_text
+        if not self.document_id.strip():
+            raise ValueError("PortfolioContractInput requires non-empty document_id or contract_id.")
+        if not self.raw_text.strip():
+            raise ValueError("PortfolioContractInput requires non-empty raw_text or text.")
+        return self
+
+
+class PortfolioBlastRadiusRequest(BaseModel):
+    from_date: date
+    to_date: date
+    contracts: list[PortfolioContractInput] = Field(..., min_length=1, max_length=50)
+    regimes: list[str] | None = None
+    default_territorial_scope: TerritorialScope = Field(
+        default=TerritorialScope.ALL_MALAYSIA
+    )
+    persona: OutputPersona = Field(default=OutputPersona.PRACTITIONER)
+
+
+class PortfolioContractImpact(BaseModel):
+    document_id: str
+    contract_id: str | None = None
+    title: str | None = None
+    territorial_scope: TerritorialScope
+    rank: int = 1
+    impact_score: float = 0.0
+    from_overall_risk: RiskSeverity
+    to_overall_risk: RiskSeverity
+    became_non_compliant: bool
+    broken_clause_count: int = 0
+    broken_rule_ids: list[str] = Field(default_factory=list)
+    triggering_gazettes: list[str] = Field(default_factory=list)
+    strictest_deontic_bounds: dict[str, Any] = Field(default_factory=dict)
+    pii_scrub: PIIScrubSummary
+    remediation_summary_practitioner: str
+    remediation_summary_rakyat: str
+    delta_findings: list[ContractDeltaFinding] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _sync_contract_id(self) -> "PortfolioContractImpact":
+        self.contract_id = self.contract_id or self.document_id
+        return self
+
+
+class PortfolioBlastRadiusResponse(BaseModel):
+    from_date: date
+    to_date: date
+    total_contracts_scanned: int
+    impacted_contracts_count: int
+    newly_non_compliant_count: int
+    newly_commenced_gazettes: list[str] = Field(default_factory=list)
+    affected_statute_ids: list[str] = Field(default_factory=list)
+    ranked_impacts: list[PortfolioContractImpact] = Field(default_factory=list)
+    executive_summary_practitioner: str
+    executive_summary_rakyat: str
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+class AttestationLedgerRecord(BaseModel):
+    manifest_id: str
+    document_id: str
+    input_doc_sha256: str
+    graph_state_hash: str
+    as_of_date: date
+    regimes: list[str] = Field(default_factory=list)
+    territorial_scope: str = TerritorialScope.ALL_MALAYSIA.value
+    is_verified_grounded: bool = True
+    retry_count: int = 0
+    estimated_cost_usd: float = 0.0
+    estimated_cost_myr: float = 0.0
+    total_tokens: int = 0
+    model_used: str | None = None
+    trace_id: str | None = None
+    citation_span_ids: list[str] = Field(default_factory=list)
+    manifest_sha256: str
+    prev_chain_hash: str
+    chain_hash: str
+    recorded_at: str
+    telemetry_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class AttestationVerifyRequest(BaseModel):
+    manifest_id: str | None = None
+    raw_text: str | None = None
+    expected_doc_sha256: str | None = None
+    manifest: ComplianceAttestationManifest | None = None
+
+
+class AttestationVerifyResponse(BaseModel):
+    manifest_id: str
+    verified: bool
+    status: Literal["VERIFIED", "TAMPERED", "NOT_FOUND"]
+    digest_matches: bool = False
+    manifest_sha256_valid: bool = False
+    chain_link_valid: bool = False
+    ledger_chain_valid: bool = False
+    tamper_reasons: list[str] = Field(default_factory=list)
+    record: AttestationLedgerRecord | None = None
     telemetry: TelemetrySummary
     disclaimer: str = DEFAULT_LEGAL_DISCLAIMER

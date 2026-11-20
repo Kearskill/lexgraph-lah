@@ -36,7 +36,11 @@ from lexgraph_lah.schemas.domain import (
     TerritorialScope,
 )
 from lexgraph_lah.schemas.state import AgentState
-from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
+from lexgraph_lah.security.doc_firewall import scan_document_security
+from lexgraph_lah.telemetry.cost_tracker import (
+    compute_telemetry_summary,
+    select_model_tier,
+)
 
 MAX_RETRIES = 2
 
@@ -51,7 +55,11 @@ _LEGAL_DOMAIN_ANCHOR_RE = re.compile(
     r"vendor|liability|liabiliti|audit|security|keselamatan|"
     r"encryption|plaintext|disclosure|penzahiran|consent|persetujuan|cross-border|"
     r"rentas\s+sempadan|notwithstanding|walau\s+apa\s+pun|indemnit|sub-?processor|"
-    r"cloud|awan|exit\s+plan|pelan\s+keluar)\b",
+    r"cloud|awan|exit\s+plan|pelan\s+keluar|"
+    r"sabah|sarawak|labuan|cap\.?\s*67|cap\.?\s*76|act\s+265|akta\s+265|"
+    r"act\s+658|akta\s+658|electronic\s+commerce|perdagangan\s+elektronik|"
+    r"working\s+hours|waktu\s+kerja|overtime|kerja\s+lebih\s+masa|"
+    r"non-resident|employment\s+act)\b",
     re.IGNORECASE,
 )
 
@@ -602,9 +610,9 @@ def _offline_deterministic_assess(
     }
 
 
-def get_llm():
+def get_llm(model_name: str | None = None):
     return ChatGoogleGenerativeAI(
-        model=settings.model_name,
+        model=model_name or settings.model_name,
         google_api_key=settings.gemini_api_key,
         temperature=0.0,
     )
@@ -612,21 +620,32 @@ def get_llm():
 
 async def contract_ast_ingestor_node(state: AgentState) -> dict[str, Any]:
     """
-    Node 1 (0 LLM tokens): Builds the Intra-Contract Dependency Graph (`ContractASTGraph`)
-    and scrubs Malaysian PII using `ReversiblePIIVault`.
+    Node 1 (0 LLM tokens): Scans untrusted document text through the zero-token
+    IPI Security Firewall BEFORE building `ContractASTGraph` and scrubbing Malaysian
+    PII with `ReversiblePIIVault`.
     """
     raw_text = state["raw_text"]
+    sec_report = scan_document_security(
+        document_id=state["document_id"],
+        raw_text=raw_text,
+    )
+    working_text = (
+        sec_report.sanitized_text
+        if sec_report.findings
+        else (sec_report.sanitized_text or raw_text)
+    )
+
     use_vault_style = bool(state.get("regimes"))
     token_style: Literal["vault", "legacy"] = "vault" if use_vault_style else "legacy"
 
     ast_graph, _ = build_contract_ast(
         document_id=state["document_id"],
-        raw_text=raw_text,
+        raw_text=working_text,
         token_style=token_style,
     )
     if settings.pii_scrub_enabled:
         timed_vault = ReversiblePIIVault(token_style=token_style)
-        _masked_txt, pii_summary_obj = timed_vault.scrub(raw_text)
+        _masked_txt, pii_summary_obj = timed_vault.scrub(working_text)
         pii_dict = pii_summary_obj.model_dump(mode="json")
         vault_map = timed_vault.token_map
     else:
@@ -635,6 +654,8 @@ async def contract_ast_ingestor_node(state: AgentState) -> dict[str, Any]:
 
     return {
         "contract_ast": ast_graph.model_dump(mode="json"),
+        "security_report": sec_report.model_dump(mode="json"),
+        "security_findings": [f.model_dump(mode="json") for f in sec_report.findings],
         "pii_scrub": pii_dict,
         "pii_vault_map": vault_map,
         "prompt_tokens": 0,
@@ -710,10 +731,16 @@ async def deontic_temporal_retriever_node(state: AgentState) -> dict[str, Any]:
         )
 
     pii_dict = state.get("pii_scrub") or {}
-    safe_text = (
-        pii_dict.get("masked_text", state["raw_text"])
-        if isinstance(pii_dict, dict)
+    sec_dict = state.get("security_report") or {}
+    sanitized_fallback = (
+        sec_dict["sanitized_text"]
+        if isinstance(sec_dict, dict) and "sanitized_text" in sec_dict
         else state["raw_text"]
+    )
+    safe_text = (
+        pii_dict.get("masked_text", sanitized_fallback)
+        if isinstance(pii_dict, dict) and "masked_text" in pii_dict
+        else sanitized_fallback
     )
     is_abstained, max_score = _compute_text_relevance(
         safe_text=safe_text,
@@ -759,27 +786,49 @@ async def cross_clause_risk_assessor_node(state: AgentState) -> dict[str, Any]:
     shadow clauses against the Composite Deontic Envelope, and adapts output to Persona & Language.
     """
     raw_text = state["raw_text"]
+    sec_dict = state.get("security_report") or {}
+    sanitized_fallback = (
+        sec_dict["sanitized_text"]
+        if isinstance(sec_dict, dict) and "sanitized_text" in sec_dict
+        else raw_text
+    )
     pii_dict = state.get("pii_scrub")
     if not isinstance(pii_dict, dict) and settings.pii_scrub_enabled:
         from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
 
-        pii_summary = scrub_malaysian_pii(raw_text)
+        pii_summary = scrub_malaysian_pii(sanitized_fallback)
         safe_text = pii_summary.masked_text
         pii_dict = pii_summary.model_dump(mode="json")
     else:
         safe_text = (
-            pii_dict.get("masked_text", raw_text)
+            pii_dict.get("masked_text", sanitized_fallback)
             if isinstance(pii_dict, dict)
-            else raw_text
+            else sanitized_fallback
         )
 
-    llm = get_llm()
+    ast_dict = state.get("contract_ast")
+    anomaly_count = 0
+    if isinstance(ast_dict, dict):
+        anomaly_count = len(ast_dict.get("shadow_override_traps") or []) + len(
+            ast_dict.get("narrow_definition_traps") or []
+        )
+    sec_count = len(state.get("security_findings") or [])
+    selected_model, routing_reason = select_model_tier(
+        retry_count=int(state.get("retry_count", 0)),
+        regimes=state.get("regimes"),
+        cross_clause_anomaly_count=anomaly_count,
+        security_finding_count=sec_count,
+    )
+
+    llm = get_llm(selected_model)
     if (
         isinstance(llm, ChatGoogleGenerativeAI)
         and settings.gemini_api_key.strip() in _OFFLINE_KEYS
     ):
         offline_out = _offline_deterministic_assess(state, safe_text=safe_text)
         offline_out["pii_scrub"] = pii_dict
+        offline_out["selected_model"] = selected_model
+        offline_out["model_routing_reason"] = routing_reason
         return offline_out
 
     structured_llm = llm.with_structured_output(ClauseExtractionList, include_raw=True)
@@ -857,6 +906,8 @@ async def cross_clause_risk_assessor_node(state: AgentState) -> dict[str, Any]:
         "extracted_clauses": clauses,
         "executive_summary": exec_summary,
         "pii_scrub": pii_dict,
+        "selected_model": selected_model,
+        "model_routing_reason": routing_reason,
         "prompt_tokens": usage.get("input_tokens", 0),
         "completion_tokens": usage.get("output_tokens", 0),
     }
@@ -1103,6 +1154,7 @@ async def redline_manifest_node(state: AgentState) -> dict[str, Any]:
     graph_state_hash = hashlib.sha256(graph_state_basis.encode("utf-8")).hexdigest()
 
     trace_id = state.get("trace_id") or f"span-{uuid.uuid4().hex[:8]}"
+    selected_model = state.get("selected_model")
     telemetry = compute_telemetry_summary(
         prompt_tokens=state.get("prompt_tokens", 0),
         completion_tokens=state.get("completion_tokens", 0),
@@ -1110,6 +1162,7 @@ async def redline_manifest_node(state: AgentState) -> dict[str, Any]:
         retry_count=state.get("retry_count", 0),
         is_verified_grounded=bool(state.get("is_grounded", False) or state.get("is_abstained", False)),
         trace_id=trace_id,
+        model_name=selected_model,
     )
 
     manifest_basis = json.dumps(
@@ -1124,8 +1177,14 @@ async def redline_manifest_node(state: AgentState) -> dict[str, Any]:
         sort_keys=True,
     )
     manifest_sha = hashlib.sha256(manifest_basis.encode("utf-8")).hexdigest()
+    citation_span_ids = sorted(
+        {sid for c in state.get("extracted_clauses", []) for sid in c.source_span_ids}
+        | {sp.span_id for s in retrieved_statutes for sp in s.source_spans}
+    )
+    manifest_id = f"ATT-{manifest_sha[:10].upper()}-{trace_id[-6:].upper()}"
 
     manifest = ComplianceAttestationManifest(
+        manifest_id=manifest_id,
         document_id=state["document_id"],
         input_doc_sha256=input_sha,
         graph_state_hash=graph_state_hash,
@@ -1137,7 +1196,9 @@ async def redline_manifest_node(state: AgentState) -> dict[str, Any]:
         estimated_cost_usd=telemetry.estimated_cost_usd,
         estimated_cost_myr=telemetry.estimated_cost_myr,
         total_tokens=telemetry.total_tokens,
+        model_used=selected_model,
         trace_id=trace_id,
+        citation_span_ids=citation_span_ids,
         manifest_sha256=manifest_sha,
     )
 

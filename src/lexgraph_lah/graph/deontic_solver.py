@@ -17,7 +17,17 @@ from lexgraph_lah.schemas.domain import (
     TerritorialScope,
 )
 
-ALL_SUPPORTED_REGIMES: tuple[str, ...] = ("ACT_709", "ACT_854", "BNM_RMIT")
+ALL_SUPPORTED_REGIMES: tuple[str, ...] = (
+    "ACT_709",
+    "ACT_854",
+    "BNM_RMIT",
+    "ACT_265",
+    "SABAH_CAP67",
+    "SARAWAK_CAP76",
+    "ACT_704",
+    "ACT_136",
+    "ACT_658",
+)
 
 _REGIME_ALIASES: dict[str, str] = {
     "act_709": "ACT_709",
@@ -41,6 +51,46 @@ _REGIME_ALIASES: dict[str, str] = {
     "rmit": "BNM_RMIT",
     "bnm": "BNM_RMIT",
     "bnm/rh/pd 028-98": "BNM_RMIT",
+    "act_265": "ACT_265",
+    "act 265": "ACT_265",
+    "act265": "ACT_265",
+    "ea 1955": "ACT_265",
+    "employment act 1955": "ACT_265",
+    "akta 265": "ACT_265",
+    "akta kerja 1955": "ACT_265",
+    "sabah_cap67": "SABAH_CAP67",
+    "sabah cap 67": "SABAH_CAP67",
+    "sabah cap. 67": "SABAH_CAP67",
+    "cap. 67": "SABAH_CAP67",
+    "cap 67": "SABAH_CAP67",
+    "sabah labour ordinance": "SABAH_CAP67",
+    "ordinan buruh sabah": "SABAH_CAP67",
+    "sarawak_cap76": "SARAWAK_CAP76",
+    "sarawak cap 76": "SARAWAK_CAP76",
+    "sarawak cap. 76": "SARAWAK_CAP76",
+    "cap. 76": "SARAWAK_CAP76",
+    "cap 76": "SARAWAK_CAP76",
+    "sarawak labour ordinance": "SARAWAK_CAP76",
+    "ordinan buruh sarawak": "SARAWAK_CAP76",
+    "act_704": "ACT_704",
+    "act 704": "ACT_704",
+    "akta 704": "ACT_704",
+    "labuan fsa": "ACT_704",
+    "act_136": "ACT_136",
+    "act 136": "ACT_136",
+    "act136": "ACT_136",
+    "akta 136": "ACT_136",
+    "contracts act": "ACT_136",
+    "contracts act 1950": "ACT_136",
+    "akta kontrak 1950": "ACT_136",
+    "act_658": "ACT_658",
+    "act 658": "ACT_658",
+    "act658": "ACT_658",
+    "eca": "ACT_658",
+    "eca 2006": "ACT_658",
+    "electronic commerce act 2006": "ACT_658",
+    "akta 658": "ACT_658",
+    "akta perdagangan elektronik 2006": "ACT_658",
 }
 
 _CONDITION_STRICTNESS_RANK: dict[str, int] = {
@@ -61,6 +111,18 @@ def normalize_regime_key(raw: str) -> str:
         return "BNM_RMIT"
     if "709" in cleaned or "pdpa" in cleaned or "data peribadi" in cleaned:
         return "ACT_709"
+    if "658" in cleaned or "electronic commerce" in cleaned or "perdagangan elektronik" in cleaned:
+        return "ACT_658"
+    if "sabah" in cleaned or "cap. 67" in cleaned or "cap 67" in cleaned:
+        return "SABAH_CAP67"
+    if "sarawak" in cleaned or "cap. 76" in cleaned or "cap 76" in cleaned:
+        return "SARAWAK_CAP76"
+    if "265" in cleaned or "employment act" in cleaned or "akta kerja" in cleaned:
+        return "ACT_265"
+    if "704" in cleaned or "labuan" in cleaned:
+        return "ACT_704"
+    if "136" in cleaned or "contracts act" in cleaned or "akta kontrak" in cleaned:
+        return "ACT_136"
     return raw.strip().upper().replace(" ", "_")
 
 
@@ -71,10 +133,19 @@ def normalize_regimes(regimes: list[str] | None) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
     for item in regimes:
-        code = normalize_regime_key(item)
-        if code and code not in seen:
-            seen.add(code)
-            ordered.append(code)
+        cleaned = item.strip().lower()
+        if cleaned in {"labour", "employment", "east_malaysia_labour", "labour_ordinance"}:
+            candidates = ["ACT_265", "SABAH_CAP67", "SARAWAK_CAP76"]
+        elif cleaned in {"territorial", "5_territory", "all_territories"}:
+            candidates = ["ACT_265", "SABAH_CAP67", "SARAWAK_CAP76", "ACT_704", "ACT_136"]
+        elif cleaned == "all":
+            candidates = list(ALL_SUPPORTED_REGIMES)
+        else:
+            candidates = [normalize_regime_key(item)]
+        for code in candidates:
+            if code and code not in seen:
+                seen.add(code)
+                ordered.append(code)
     return ordered or ["ACT_709"]
 
 

@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from lexgraph_lah.agents.graph import _DEFAULT_TEMPORAL_STORE, build_compliance_graph
 from lexgraph_lah.compliance.pdpa_scanner import scan_pdpa_compliance
@@ -25,17 +25,19 @@ from lexgraph_lah.graph.diff_engine import (
     diff_statute_lineage,
     evaluate_contract_delta_impact,
 )
+from lexgraph_lah.graph.portfolio_scanner import scan_portfolio_blast_radius
 from lexgraph_lah.graph.reranker import filter_by_territorial_scope
 from lexgraph_lah.graph.temporal_store import build_point_in_time_cypher
-from lexgraph_lah.ingestion.contract_ast import (
-    build_contract_ast,
-    extract_contract_paragraphs,
-)
+from lexgraph_lah.ingestion.contract_ast import build_contract_ast
 from lexgraph_lah.ingestion.ooxml_redliner import compile_track_changes_docx
+from lexgraph_lah.mcp.jsonrpc import handle_jsonrpc_message
 from lexgraph_lah.mcp.tools import MCP_TOOL_DEFINITIONS, dispatch_mcp_tool_async
 from lexgraph_lah.middleware.pii_scrubber import ReversiblePIIVault, scrub_malaysian_pii
 from lexgraph_lah.schemas.domain import (
     DEFAULT_LEGAL_DISCLAIMER,
+    AttestationLedgerRecord,
+    AttestationVerifyRequest,
+    AttestationVerifyResponse,
     BilingualClausePair,
     BilingualDivergenceReport,
     BilingualDivergenceRequest,
@@ -47,6 +49,8 @@ from lexgraph_lah.schemas.domain import (
     ContractAuditResponse,
     ContractDeltaAuditRequest,
     ContractDeltaAuditResponse,
+    DocumentSecurityFinding,
+    DocumentSecurityReport,
     GraphTopologyResponse,
     IRACAnalysis,
     OutputPersona,
@@ -55,16 +59,24 @@ from lexgraph_lah.schemas.domain import (
     PIIScrubSummary,
     PointInTimeResearchRequest,
     PointInTimeResearchResponse,
+    PortfolioBlastRadiusRequest,
+    PortfolioBlastRadiusResponse,
     ProvisionLineageResponse,
     RakyatGuidance,
     RetrievalSearchResponse,
     RiskSeverity,
+    SecurityScanRequest,
     StatutoryDiffRequest,
     StatutoryVersionDiff,
     TelemetryMetricsResponse,
     TerritorialScope,
 )
 from lexgraph_lah.schemas.state import AgentState
+from lexgraph_lah.security.attestation_ledger import (
+    compute_manifest_sha256,
+    default_attestation_ledger,
+)
+from lexgraph_lah.security.doc_firewall import scan_document_security
 from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
 from lexgraph_lah.telemetry.tracer import (
     ComplianceSpanRecord,
@@ -272,6 +284,7 @@ def _finalize_audit_response(
 
     span_id = final_state.get("trace_id") or f"span-{uuid.uuid4().hex[:8]}"
     is_abstained = bool(final_state.get("is_abstained", False))
+    selected_model = final_state.get("selected_model")
     telemetry = compute_telemetry_summary(
         prompt_tokens=int(final_state.get("prompt_tokens", 0)),
         completion_tokens=int(final_state.get("completion_tokens", 0)),
@@ -279,6 +292,7 @@ def _finalize_audit_response(
         retry_count=int(final_state.get("retry_count", 0)),
         is_verified_grounded=bool(final_state.get("is_grounded", False) or is_abstained),
         trace_id=span_id,
+        model_name=selected_model,
     )
 
     if record_span:
@@ -288,6 +302,8 @@ def _finalize_audit_response(
                 document_id=payload.document_id,
                 reference_date=effective_date.isoformat(),
                 active_statute_count=len(active_statutes),
+                model_tier=selected_model,
+                model_routing_reason=final_state.get("model_routing_reason"),
                 telemetry=telemetry,
                 timestamp_epoch=time.time(),
             )
@@ -299,19 +315,32 @@ def _finalize_audit_response(
     )
     ast_dict = final_state.get("contract_ast")
     contract_ast = ContractASTGraph(**ast_dict) if isinstance(ast_dict, dict) else None
+    sec_report_dict = final_state.get("security_report")
+    security_report = (
+        DocumentSecurityReport(**sec_report_dict)
+        if isinstance(sec_report_dict, dict)
+        else None
+    )
+    sec_findings_raw = final_state.get("security_findings") or []
+    security_findings = [
+        DocumentSecurityFinding(**f) if isinstance(f, dict) else f
+        for f in sec_findings_raw
+    ]
     manifest_dict = final_state.get("attestation_manifest")
-    manifest = (
-        ComplianceAttestationManifest(**manifest_dict).model_copy(
+    manifest: ComplianceAttestationManifest | None = None
+    if isinstance(manifest_dict, dict):
+        manifest = ComplianceAttestationManifest(**manifest_dict).model_copy(
             update={
                 "estimated_cost_usd": telemetry.estimated_cost_usd,
                 "estimated_cost_myr": telemetry.estimated_cost_myr,
                 "total_tokens": telemetry.total_tokens,
+                "model_used": selected_model,
                 "trace_id": span_id,
             }
         )
-        if isinstance(manifest_dict, dict)
-        else None
-    )
+        manifest.manifest_sha256 = compute_manifest_sha256(manifest)
+        default_attestation_ledger.record(manifest, telemetry=telemetry)
+
     regimes_out = (
         normalize_regimes(payload.regimes)
         if payload.regimes
@@ -340,6 +369,8 @@ def _finalize_audit_response(
         deontic_envelope=deontic_envelope,
         contract_ast=contract_ast,
         attestation_manifest=manifest,
+        security_findings=security_findings,
+        security_report=security_report,
         disclaimer=DEFAULT_LEGAL_DISCLAIMER,
     )
 
@@ -591,7 +622,8 @@ def _normalize_lang_literal(raw: str) -> Literal["bm", "ms", "en", "bilingual"]:
 async def upload_compliance_contract(request: Request) -> ContractAuditResponse:
     """
     Multipart `.docx` / `.pdf` / `.txt` multi-regime contract audit endpoint supporting
-    `regimes`, `as_of_date`, `territorial_scope`, `persona`, and `language`.
+    pre-AST IPI firewall scanning, `regimes`, `as_of_date`, `territorial_scope`, `persona`,
+    and `language`.
     """
     fields, file_bytes, filename = await _parse_multipart_upload(request)
     raw_text_field = fields.get("raw_text", "")
@@ -600,14 +632,6 @@ async def upload_compliance_contract(request: Request) -> ContractAuditResponse:
             status_code=422,
             detail="Provide either a multipart 'file' (.docx/.pdf/.txt) or 'raw_text'.",
         )
-
-    _, _, extracted_text = extract_contract_paragraphs(
-        raw_text=raw_text_field or None,
-        file_bytes=file_bytes,
-        filename=filename,
-    )
-    if not extracted_text.strip():
-        raise HTTPException(status_code=422, detail="Uploaded document contained no readable text.")
 
     doc_id = fields.get("document_id") or filename or f"UPLOAD-{uuid.uuid4().hex[:6]}"
     date_str = fields.get("as_of_date") or fields.get("reference_date")
@@ -619,6 +643,45 @@ async def upload_compliance_contract(request: Request) -> ContractAuditResponse:
     persona = OutputPersona(fields.get("persona") or OutputPersona.PRACTITIONER.value)
     lang = fields.get("language") or "bilingual"
 
+    try:
+        sec_report = scan_document_security(
+            document_id=doc_id,
+            raw_text=raw_text_field or None,
+            file_bytes=file_bytes,
+            filename=filename,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    extracted_text = sec_report.sanitized_text
+    if not extracted_text.strip():
+        if sec_report.findings:
+            return ContractAuditResponse(
+                document_id=doc_id,
+                reference_date=effective_date,
+                overall_risk=sec_report.risk_level,
+                findings=[],
+                active_statutes=[],
+                telemetry=sec_report.telemetry,
+                is_abstained=True,
+                abstention_reason="Uploaded document contained only quarantined adversarial payloads.",
+                persona=persona,
+                territorial_scope=scope,
+                regimes=regimes or ["ACT_709"],
+                language=_normalize_lang_literal(lang),
+                executive_summary=(
+                    f"SECURITY FIREWALL ABSTAINED: Blocked {sec_report.blocked_injection_count} "
+                    "adversarial payload(s) with zero benign clauses remaining."
+                ),
+                pii_scrub=scrub_malaysian_pii(""),
+                security_findings=sec_report.findings,
+                security_report=sec_report,
+                disclaimer=DEFAULT_LEGAL_DISCLAIMER,
+            )
+        raise HTTPException(
+            status_code=422, detail="Uploaded document contained no readable text."
+        )
+
     payload = ComplianceCheckRequest(
         document_id=doc_id,
         raw_text=extracted_text,
@@ -629,7 +692,13 @@ async def upload_compliance_contract(request: Request) -> ContractAuditResponse:
         persona=persona,
         language=_normalize_lang_literal(lang),
     )
-    return await check_compliance(payload, use_cache=False)
+    resp = await check_compliance(payload, use_cache=False)
+    return resp.model_copy(
+        update={
+            "security_report": sec_report,
+            "security_findings": sec_report.findings or resp.security_findings,
+        }
+    )
 
 
 @router.post("/compliance/export-docx")
@@ -945,6 +1014,116 @@ async def api_v1_mcp_call(payload: MCPToolCallRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/security/scan", response_model=DocumentSecurityReport)
+async def api_v1_security_scan(request: Request) -> DocumentSecurityReport:
+    """
+    Zero-token Adversarial Document Sanitizer & Indirect Prompt Injection (IPI) Firewall.
+    Accepts either JSON (`SecurityScanRequest`) or multipart `.docx`/`.pdf`/`.txt` upload.
+    """
+    content_type = request.headers.get("content-type", "").lower()
+    if "multipart/form-data" in content_type:
+        fields, file_bytes, filename = await _parse_multipart_upload(request)
+        raw_text_val = fields.get("raw_text") or None
+        if raw_text_val is None and file_bytes is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Provide either multipart 'file' (.docx/.pdf/.txt) or 'raw_text'.",
+            )
+        doc_id = fields.get("document_id") or filename or "SEC-SCAN-001"
+        try:
+            return scan_document_security(
+                document_id=doc_id,
+                raw_text=raw_text_val,
+                file_bytes=file_bytes,
+                filename=filename,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        raw_body = await request.json()
+        parsed_req = SecurityScanRequest(**raw_body)
+    except (json.JSONDecodeError, TypeError, ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid request body: {exc}") from exc
+
+    return scan_document_security(
+        document_id=parsed_req.document_id,
+        raw_text=parsed_req.raw_text,
+    )
+
+
+@router.post(
+    "/api/v1/portfolio/blast-radius", response_model=PortfolioBlastRadiusResponse
+)
+async def api_v1_portfolio_blast_radius(
+    payload: PortfolioBlastRadiusRequest,
+) -> PortfolioBlastRadiusResponse:
+    """
+    Zero-token Batch Gazette Blast-Radius Scanner evaluating up to 50 contracts across
+    bi-temporal statutory commencements and East/West Malaysian territorial bounds.
+    """
+    try:
+        return scan_portfolio_blast_radius(payload, store=_DEFAULT_TEMPORAL_STORE)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/api/v1/attestation/{manifest_id}", response_model=AttestationLedgerRecord)
+async def api_v1_get_attestation(manifest_id: str) -> AttestationLedgerRecord:
+    """Retrieves an immutable hash-chained ComplianceAttestationManifest record."""
+    rec = default_attestation_ledger.get(manifest_id)
+    if rec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Attestation manifest '{manifest_id}' not found in ledger.",
+        )
+    return rec
+
+
+@router.post("/api/v1/attestation/verify", response_model=AttestationVerifyResponse)
+async def api_v1_verify_attestation(
+    payload: AttestationVerifyRequest,
+) -> AttestationVerifyResponse:
+    """
+    Cryptographically verifies a contract's SHA-256 digest, `as_of_date` snapshot,
+    SourceSpan citations, and append-only SQLite WAL hash chain.
+    """
+    return default_attestation_ledger.verify(
+        manifest_id=payload.manifest_id,
+        raw_text=payload.raw_text,
+        expected_doc_sha256=payload.expected_doc_sha256,
+        manifest=payload.manifest,
+    )
+
+
+@router.post("/mcp")
+async def mcp_jsonrpc_http(request: Request) -> Response:
+    """Native Streamable HTTP JSON-RPC 2.0 MCP transport endpoint."""
+    raw_bytes = await request.body()
+    try:
+        body = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        err_payload = {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32700, "message": f"Parse error: {exc}"},
+        }
+        return Response(
+            content=json.dumps(err_payload),
+            status_code=200,
+            media_type="application/json",
+        )
+
+    rpc_response = await handle_jsonrpc_message(body)
+    if rpc_response is None:
+        return Response(status_code=204)
+    return Response(
+        content=json.dumps(rpc_response, ensure_ascii=False),
+        status_code=200,
+        media_type="application/json",
+    )
 
 
 @router.get("/graph/nodes", response_model=GraphTopologyResponse)
@@ -1279,6 +1458,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <tr>
             <th>Span ID</th>
             <th>Document</th>
+            <th>Model Tier</th>
             <th>Ref Date</th>
             <th>Tokens</th>
             <th>USD</th>
@@ -1315,6 +1495,43 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div id="timeTravelRedlineSummary" class="diff-summary">Select a provision and date window to inspect AMENDED_BY / REPEALED_BY clause diffs.</div>
     <div id="timeTravelRedlineDiffBox"></div>
+  </section>
+
+  <section class="panel" id="portfolioBlastRadiusPanel" style="margin-top:16px;">
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;">
+      <h2 style="margin-bottom:0;">Portfolio Gazette Blast-Radius Scanner (up to 50 Contracts &bull; 5-Territory Deontic Solver)</h2>
+      <span class="diff-badge" style="color:#38bdf8;border-color:#38bdf8;">$0.00 USD / RM 0.00 MYR</span>
+    </div>
+    <div class="diff-controls">
+      <label for="portfolioFromDate" style="font-size:0.8rem;color:var(--muted)">From:</label>
+      <input type="date" id="portfolioFromDate" value="2024-06-15" />
+      <label for="portfolioToDate" style="font-size:0.8rem;color:var(--muted)">To:</label>
+      <input type="date" id="portfolioToDate" value="2026-03-15" />
+      <label for="portfolioRegimesSelect" style="font-size:0.8rem;color:var(--muted)">Regimes:</label>
+      <select id="portfolioRegimesSelect">
+        <option value="ACT_709,ACT_854">Act 709 + Act 854 (P.U.(A) 220/2024)</option>
+        <option value="ACT_709,ACT_854,BNM_RMIT">Act 709 + Act 854 + BNM RMiT (1h)</option>
+        <option value="ACT_709,ACT_265,SABAH_CAP67,SARAWAK_CAP76,ACT_704,ACT_136">5-Territory (Act 265 / Cap.67 / Cap.76 / Act 704 / Act 136)</option>
+      </select>
+      <button id="runPortfolioBlastRadiusBtn" onclick="runPortfolioBlastRadius()">Scan Portfolio Blast-Radius</button>
+    </div>
+    <div id="portfolioBlastSummary" class="diff-summary">Click "Scan Portfolio Blast-Radius" to rank contracts regressed by intervening Malaysian statutory &amp; P.U. gazette commencements.</div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Contract</th>
+            <th>Territory</th>
+            <th>Risk Shift</th>
+            <th>Regressed</th>
+            <th>Broken Rules</th>
+            <th>Strictest Bound</th>
+          </tr>
+        </thead>
+        <tbody id="portfolioBlastTableBody"></tbody>
+      </table>
+    </div>
   </section>
 
   <script>
@@ -1473,10 +1690,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       tbody.innerHTML = '';
       metricsRes.spans.forEach(s => {
         const tr = document.createElement('tr');
+        const modelTier = s.model_tier || (s.telemetry && s.telemetry.model_name) || '-';
         tr.innerHTML = `
-          <td>${s.span_id}</td>
-          <td>${s.document_id}</td>
-          <td>${s.reference_date || '-'}</td>
+          <td>${escapeHtmlDash(s.span_id)}</td>
+          <td>${escapeHtmlDash(s.document_id)}</td>
+          <td>${escapeHtmlDash(modelTier)}</td>
+          <td>${escapeHtmlDash(s.reference_date || '-')}</td>
           <td>${s.telemetry.total_tokens}</td>
           <td>$${s.telemetry.estimated_cost_usd.toFixed(6)}</td>
           <td>${s.telemetry.latency_ms} ms</td>
@@ -1571,7 +1790,89 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
-    refreshAll(false).then(() => runTimeTravelDiff());
+    async function runPortfolioBlastRadius() {
+      const fromD = document.getElementById('portfolioFromDate').value;
+      const toD = document.getElementById('portfolioToDate').value;
+      const regimesRaw = document.getElementById('portfolioRegimesSelect').value;
+      const regimes = regimesRaw.split(',').map(s => s.trim()).filter(Boolean);
+      const sumBox = document.getElementById('portfolioBlastSummary');
+      const tbody = document.getElementById('portfolioBlastTableBody');
+      if (!fromD || !toD) return;
+
+      const sampleContracts = [
+        {
+          contract_id: 'PORT-PEN-OK-01',
+          title: 'Peninsular 4h Fast Incident MSA',
+          territorial_scope: 'Peninsular Malaysia',
+          text: 'Section 6: Personal data is processed strictly with prior consent. Section 8: No disclosure without consent. Section 9 Security Principle: Encryption safeguards active. Section 12A: DPO appointed. Section 12B: Breach notice within 4 hours.'
+        },
+        {
+          contract_id: 'PORT-SABAH-48H-02',
+          title: 'Sabah Vendor 48h Breach SLA',
+          territorial_scope: 'Sabah',
+          text: 'Section 9 Security Principle: Practical encryption safeguards apply. Section 12B: Data breach notification within 48 hours of discovery.'
+        },
+        {
+          contract_id: 'PORT-LEGACY-WAIVER-03',
+          title: 'Legacy Unlimited Liability Waiver (30d)',
+          territorial_scope: 'All Malaysia',
+          text: 'Vendor bears zero statutory liability for security failures, notifies within 30 days, may disclose personal data without consent, and will not appoint a DPO.'
+        }
+      ];
+
+      try {
+        const res = await fetch('/api/v1/portfolio/blast-radius', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from_date: fromD,
+            to_date: toD,
+            regimes: regimes,
+            contracts: sampleContracts
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sumBox.textContent = data.detail || 'Error running portfolio blast-radius scan.';
+          tbody.innerHTML = '';
+          return;
+        }
+        const gazStr = (data.newly_commenced_gazettes || []).join(', ') || 'None';
+        sumBox.innerHTML = `
+          <div>
+            <strong style="color:var(--accent);">Scanned ${data.total_contracts_scanned} Contracts</strong> &bull;
+            Impacted: <span style="color:var(--amber);font-weight:700;">${data.impacted_contracts_count}</span> &bull;
+            Newly Non-Compliant: <span style="color:var(--red);font-weight:700;">${data.newly_non_compliant_count}</span>
+          </div>
+          <div style="color:var(--muted);">
+            Gazettes: <span style="color:#a5f3fc;">${escapeHtmlDash(gazStr)}</span> &bull;
+            Tokens: <span style="color:#22c55e;">${data.telemetry ? data.telemetry.total_tokens : 0} ($0.000000)</span>
+          </div>
+        `;
+        tbody.innerHTML = '';
+        (data.ranked_impacts || []).forEach(item => {
+          const bounds = item.strictest_deontic_bounds || {};
+          const boundDesc = bounds.incident_notice_max_hours
+            ? `notice <= ${bounds.incident_notice_max_hours.strictest_value}h (${bounds.incident_notice_max_hours.dominating_regime})`
+            : (Object.keys(bounds)[0] ? `${Object.keys(bounds)[0]} ${bounds[Object.keys(bounds)[0]].operator} ${bounds[Object.keys(bounds)[0]].strictest_value}` : '-');
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>#${item.rank} (${item.impact_score})</td>
+            <td><strong>${escapeHtmlDash(item.contract_id || item.document_id)}</strong><br/><span style="color:var(--muted);font-size:0.72rem;">${escapeHtmlDash(item.title || '')}</span></td>
+            <td>${escapeHtmlDash(item.territorial_scope)}</td>
+            <td>${escapeHtmlDash(item.from_overall_risk)} &rarr; <strong>${escapeHtmlDash(item.to_overall_risk)}</strong></td>
+            <td style="color:${item.became_non_compliant ? '#ef4444' : '#22c55e'};font-weight:700;">${item.became_non_compliant ? 'YES' : 'NO'}</td>
+            <td>${escapeHtmlDash((item.broken_rule_ids || []).join(', ') || '-')}</td>
+            <td style="font-size:0.74rem;color:#a5f3fc;">${escapeHtmlDash(boundDesc)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        sumBox.textContent = `Portfolio scan error: ${err}`;
+      }
+    }
+
+    refreshAll(false).then(() => { runTimeTravelDiff(); runPortfolioBlastRadius(); });
   </script>
 </body>
 </html>
@@ -1770,6 +2071,9 @@ DEMO_HTML = """<!DOCTYPE html>
           <button id="downloadRedlineDocxBtn" onclick="downloadRedlineDocx()" class="py-2.5 px-4 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs shadow transition flex items-center justify-center">
             <span>Download Native Track-Changes .docx</span>
           </button>
+          <button id="runDemoPortfolioBlastBtn" onclick="runDemoPortfolioBlast()" class="sm:col-span-2 py-2.5 px-4 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs shadow transition flex items-center justify-center">
+            <span>Quick Portfolio Gazette Blast-Radius Scan (2024 &rarr; 2026 &bull; $0.00)</span>
+          </button>
         </div>
       </div>
 
@@ -1922,6 +2226,16 @@ DEMO_HTML = """<!DOCTYPE html>
           <div id="piiScrubStatus" class="text-xs text-slate-300 font-mono">0 redactions &bull; Ready to mask NRIC, Passport, Phone, Email &amp; SSM before LLM/Embedding calls.</div>
         </div>
         <div id="piiPlaceholderBadges" class="flex flex-wrap gap-1.5"></div>
+      </div>
+
+      <!-- Portfolio Gazette Blast-Radius Quick Result Card -->
+      <div id="demoPortfolioBlastCard" class="hidden bg-slate-900 border border-cyan-500/40 rounded-xl p-4 shadow-lg space-y-2.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-xs font-bold uppercase tracking-wider text-cyan-300 font-mono">Portfolio Gazette Blast-Radius Quick Scan</span>
+          <a href="/dashboard#portfolioBlastRadiusPanel" class="text-[11px] font-mono text-cyan-300 hover:underline">Open Full Console (/dashboard) &rarr;</a>
+        </div>
+        <div id="demoPortfolioBlastSummary" class="text-xs text-slate-200 font-mono"></div>
+        <div id="demoPortfolioBlastList" class="space-y-1.5 text-xs"></div>
       </div>
 
       <!-- Shadow Override Trap & Narrow Definition Trap Warning Banner -->
@@ -2708,6 +3022,60 @@ DEMO_HTML = """<!DOCTYPE html>
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<span>Act 709 Scan + PII Scrub</span>';
+      }
+    }
+
+    async function runDemoPortfolioBlast() {
+      const btn = document.getElementById('runDemoPortfolioBlastBtn');
+      const card = document.getElementById('demoPortfolioBlastCard');
+      const sumEl = document.getElementById('demoPortfolioBlastSummary');
+      const listEl = document.getElementById('demoPortfolioBlastList');
+      btn.disabled = true;
+      btn.innerHTML = '<span>Scanning Portfolio...</span>';
+
+      const activeText = document.getElementById('rawTextInput').value.trim() || 'Section 9: Vendor bears zero statutory liability and notifies within 30 days.';
+      const activeId = document.getElementById('docIdInput').value.trim() || 'ACTIVE-CONTRACT';
+      const toDate = document.getElementById('refDateInput').value || '2026-03-15';
+      const fromDate = toDate > '2024-06-15' ? '2024-06-15' : '2020-01-01';
+
+      try {
+        const res = await fetch('/api/v1/portfolio/blast-radius', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from_date: fromDate,
+            to_date: toDate,
+            regimes: CURRENT_REGIMES.length ? CURRENT_REGIMES : ['ACT_709', 'ACT_854'],
+            default_territorial_scope: CURRENT_SCOPE,
+            persona: CURRENT_PERSONA,
+            contracts: [
+              { contract_id: activeId, title: 'Active Editor Contract', text: activeText, territorial_scope: CURRENT_SCOPE },
+              { contract_id: 'SABAH-VENDOR-48H', title: 'Sabah Vendor 48h Breach SLA', territorial_scope: 'Sabah', text: 'Section 9 Security Principle: Encryption safeguards apply. Section 12B: Data breach notification within 48 hours.' },
+              { contract_id: 'PENINSULAR-FAST-4H', title: 'Peninsular 4h Compliant SLA', territorial_scope: 'Peninsular Malaysia', text: 'Section 6: Consent obtained. Section 8: No disclosure without consent. Section 9: Encryption safeguards. Section 12A: DPO appointed. Section 12B: Breach notice within 4 hours.' }
+            ]
+          })
+        });
+        const data = await res.json();
+        card.classList.remove('hidden');
+        sumEl.textContent = `${data.total_contracts_scanned} scanned | ${data.impacted_contracts_count} impacted | ${data.newly_non_compliant_count} newly non-compliant | $0.00 USD`;
+        listEl.innerHTML = (data.ranked_impacts || []).map(item => `
+          <div class="p-2 rounded bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <span class="font-mono font-bold text-cyan-300">#${item.rank} ${escapeHtml(item.contract_id || item.document_id)}</span>
+              <span class="text-slate-400 ml-1">(${escapeHtml(item.territorial_scope)})</span>
+            </div>
+            <div class="font-mono text-[11px]">
+              ${escapeHtml(item.from_overall_risk)} &rarr; <span class="${item.became_non_compliant ? 'text-rose-300 font-bold' : 'text-emerald-300'}">${escapeHtml(item.to_overall_risk)}</span>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        card.classList.remove('hidden');
+        sumEl.textContent = `Portfolio blast-radius error: ${err}`;
+        listEl.innerHTML = '';
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Quick Portfolio Gazette Blast-Radius Scan (2024 &rarr; 2026 &bull; $0.00)</span>';
       }
     }
 

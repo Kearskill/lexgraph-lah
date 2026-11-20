@@ -77,6 +77,9 @@ BM_TO_EN_PHRASES: dict[str, list[str]] = {
     "teks sahih": ["authoritative text", "act 388", "section 63"],
     "labuan": ["labuan", "act 704", "labuan financial services"],
     "akta 704": ["act 704", "labuan financial services", "labuan"],
+    "akta perdagangan elektronik": ["electronic commerce act 2006", "act 658", "electronic message"],
+    "akta 658": ["act 658", "electronic commerce act 2006"],
+    "mesej elektronik": ["electronic message", "electronic consent", "act 658"],
 }
 
 EN_TO_BM_PHRASES: dict[str, list[str]] = {
@@ -142,6 +145,9 @@ EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "authoritative text": ["teks sahih", "akta 388"],
     "labuan": ["labuan", "akta 704", "perkhidmatan kewangan labuan"],
     "act 704": ["akta 704", "perkhidmatan kewangan labuan", "labuan"],
+    "electronic commerce act": ["akta perdagangan elektronik 2006", "akta 658", "mesej elektronik"],
+    "act 658": ["akta 658", "akta perdagangan elektronik 2006", "mesej elektronik"],
+    "electronic consent": ["persetujuan elektronik", "mesej elektronik", "akta 658"],
 }
 
 STATUTE_CROSSWALK_ALIASES: dict[str, tuple[str, ...]] = {
@@ -201,6 +207,12 @@ STATUTE_CROSSWALK_ALIASES: dict[str, tuple[str, ...]] = {
         "akta 704",
         "labuan financial services and securities act 2010",
         "akta perkhidmatan kewangan dan sekuriti labuan 2010",
+    ),
+    "act 658": (
+        "act 658",
+        "akta 658",
+        "electronic commerce act 2006",
+        "akta perdagangan elektronik 2006",
     ),
 }
 

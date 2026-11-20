@@ -11,17 +11,17 @@ from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
 @pytest.mark.asyncio
 async def test_benchmark_runner_mock_mode_and_markdown_table():
     """
-    Verifies the 20-case golden benchmark suite (v2) in mock mode produces 100% determinism
+    Verifies the 26-case golden benchmark suite (v3) in mock mode produces 100% determinism
     consistency, 100% verdict accuracy, 100% verbatim grounding, and renders a Markdown
     report with p50/p95 latency and USD/MYR cost metrics.
     """
     dataset = get_benchmark_dataset()
-    assert len(dataset) == 20
+    assert len(dataset) == 26
 
     summary = await run_benchmark_async(mode="mock", trials=2)
     assert summary.total_cases == len(dataset)
     assert summary.trials_per_case == 2
-    assert summary.total_runs == 40
+    assert summary.total_runs == 52
     assert summary.determinism_consistency_pct == 100.0
     assert summary.verdict_accuracy_pct == 100.0
     assert summary.verbatim_grounding_pct == 100.0
@@ -44,6 +44,12 @@ async def test_benchmark_runner_mock_mode_and_markdown_table():
     assert "BENCH-18-BITEMPORAL-PU-GAZETTE-TRANSITION" in report
     assert "BENCH-19-LINEAGE-DIFF-AND-DELTA-IMPACT" in report
     assert "BENCH-20-ACT388-BILINGUAL-DIVERGENCE" in report
+    assert "BENCH-21-OOXML-HIDDEN-CLAUSE-QUARANTINE" in report
+    assert "BENCH-22-BILINGUAL-IPI-NEUTRALIZATION" in report
+    assert "BENCH-23-SABAH-PENINSULAR-DEONTIC-DIVERGENCE" in report
+    assert "BENCH-24-SARAWAK-LABUAN-TERRITORIAL-ISOLATION" in report
+    assert "BENCH-25-PORTFOLIO-GAZETTE-BLAST-RADIUS" in report
+    assert "BENCH-26-ATTESTATION-LEDGER-AND-NEON-FINOPS" in report
 
 
 def test_finops_myr_usd_deterministic_rounding():

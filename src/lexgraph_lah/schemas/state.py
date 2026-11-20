@@ -29,6 +29,10 @@ class AgentState(TypedDict):
     is_grounded: bool
     retry_count: int
     attestation_manifest: NotRequired[dict[str, Any] | None]
+    security_report: NotRequired[dict[str, Any] | None]
+    security_findings: NotRequired[list[dict[str, Any]]]
+    selected_model: NotRequired[str | None]
+    model_routing_reason: NotRequired[str | None]
     trace_id: NotRequired[str | None]
     prompt_tokens: Annotated[int, operator.add]
     completion_tokens: Annotated[int, operator.add]

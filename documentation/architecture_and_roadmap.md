@@ -92,3 +92,26 @@ Extend `lexgraph-lah` with zero-token (`$0.00 USD / RM 0.00 MYR`) bi-temporal st
    - `/dashboard`: **Time-Travel Statutory Redline Explorer** with Cytoscape path highlighting and inline clause diff; `/demo`: Act 388 alignment/divergence badges inside the bilingual drawer adapting explanation density to the Practitioner/Rakyat persona toggle.
 4. **v2 Determinism & FinOps Benchmark (`evals/run_benchmark.py`):**
    - Expands coverage to **20 scenarios x 3 trials (60 runs)** including `0.78` abstention gate rejection (`BENCH-15`), 5-way territorial isolation including Labuan [Act 704] (`BENCH-16`), pre-flight PII scrubbing (`BENCH-17`), bi-temporal `P.U. (A) 220/2024` commencement transitions (`BENCH-18`), zero-token lineage diff & delta-audit (`BENCH-19`), and Act 388 divergence detection (`BENCH-20`).
+
+---
+
+## 6. Track E: Security Firewall, East Malaysia Deontic Bounds, Portfolio Blast-Radius, SQLite WAL Attestation, JSON-RPC 2.0 MCP & `gemini-4-neon` FinOps Routing
+
+### Goal
+Harden document ingestion against adversarial `.docx`/`.pdf` indirect prompt injections, activate Sabah/Sarawak/Act 658 territorial deontic algebra, scale bi-temporal impact analysis across contract portfolios, persist tamper-evident cryptographic attestations in SQLite WAL, expose native JSON-RPC 2.0 MCP transports (`POST /mcp` and `--stdio`), and introduce tiered `gemini-4-neon` / `gemini-4-hydrogen` FinOps complexity routing with v3 benchmark verification.
+
+### Architectural Design
+1. **Zero-Token Adversarial OOXML/PDF Security Firewall (`src/lexgraph_lah/security/doc_firewall.py`):**
+   - `scan_document_security` and `sanitize_docx_bytes` execute pre-AST sanitization across `.docx` OOXML parts (`<w:vanish/>`, `<w:webHidden/>`, `sz <= 2` half-pts, near-white `#F0F0F0`-`#FFFFFF` fonts, `word/vbaProject.bin`, `customXml`, suspicious `word/comments.xml`), `.pdf` streams (`3 Tr` invisible text rendering, micro/zero fonts, white fill colors, off-page `Tm`/`Td`), and EN/BM indirect prompt injection & statutory-spoofing overrides while preserving benign visible clauses and `<w:trackRevisions/>` exports intact.
+2. **5-Territory Deontic Bounds & Act 658 (`deontic_solver.py`, `temporal_store.py`):**
+   - Wires live `DeonticConstraint`s onto already-seeded nodes for Peninsular EA 1955 (`Act 265`, `45h`), Sabah Labour Ordinance (`Cap. 67`, `48h` + non-resident work permit), Sarawak Labour Ordinance (`Cap. 76`, `48h` + non-resident employment licence), Labuan FSA (`Act 704`), Contracts Act 1950 (`Act 136` s. 75 reasonable compensation cap), and Electronic Commerce Act 2006 [`Act 658` s. 7 EN+BM].
+3. **Portfolio Gazette Blast-Radius Scanner (`src/lexgraph_lah/graph/portfolio_scanner.py`):**
+   - `scan_portfolio_blast_radius` (`POST /api/v1/portfolio/blast-radius`, `/dashboard` panel, and `/demo` quick-trigger) evaluates up to 50 contracts across `from_date` -> `to_date` at `$0.00 USD / RM 0.00 MYR`, running pre-scan IPI defense, `evaluate_contract_delta_impact`, and territorial `DeonticEnvelopeResolver` bounds to produce deterministic severity rankings and PII-safe remediation summaries.
+4. **Tamper-Evident SQLite WAL Attestation Ledger (`src/lexgraph_lah/security/attestation_ledger.py`):**
+   - `AttestationLedger` (`:memory:` default or file-backed SQLite WAL) chains `ComplianceAttestationManifest` records and FinOps `TelemetrySummary` snapshots via SHA-256 `prev_chain_hash` -> `chain_hash` links, enabling cryptographic verification (`GET /api/v1/attestation/{manifest_id}`, `POST /api/v1/attestation/verify`) that detects single-byte document, manifest JSON, citation, snapshot, FinOps cost, or direct SQLite row tampering.
+5. **11-Tool MCP Registry & JSON-RPC 2.0 Server (`mcp/tools.py`, `mcp/jsonrpc.py`):**
+   - Adds `scan_document_security`, `scan_portfolio_blast_radius`, and `verify_compliance_attestation` (11 tools total) and exposes `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call` over `POST /mcp` and `python -m lexgraph_lah.mcp.jsonrpc --stdio`.
+6. **`gemini-4-neon` / `gemini-4-hydrogen` FinOps Tiering (`telemetry/cost_tracker.py`, `telemetry/tracer.py`, `agents/graph.py`):**
+   - Adds `MODEL_PRICING_CATALOG` (`gemini-4-neon` `$3.00 / $15.00 / $0.15` cached per 1M; `gemini-4-hydrogen` `$0.50 / $2.50 / $0.05` cached per 1M) and `select_model_tier`, escalating counterfactual retries, multi-regime runs, AST traps, and security-flagged payloads to `gemini-4-neon`, emitting `model_tier` on `ComplianceSpanRecord` and OTel spans while preserving backward-compatible `settings` defaults.
+7. **v3 Determinism Benchmark (`evals/run_benchmark.py`):**
+   - Expands to **26 scenarios x 3 trials (78 runs)** adding `BENCH-21` (OOXML Hidden Clause Quarantine), `BENCH-22` (Bilingual IPI Neutralization + 11-Tool JSON-RPC 2.0), `BENCH-23` (Sabah vs. Peninsular Territorial Deontic Bounds + Act 136/658), `BENCH-24` (Sarawak & Labuan Territorial Isolation), `BENCH-25` (Portfolio Gazette Blast-Radius Ranking), and `BENCH-26` (SQLite WAL Attestation Tamper Verification + `gemini-4-neon` FinOps Routing).

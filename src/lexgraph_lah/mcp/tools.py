@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import concurrent.futures
 from datetime import date
 from typing import Any
@@ -11,17 +12,23 @@ from lexgraph_lah.graph.diff_engine import (
     diff_statute_lineage,
     evaluate_contract_delta_impact,
 )
+from lexgraph_lah.graph.portfolio_scanner import scan_portfolio_blast_radius
 from lexgraph_lah.graph.temporal_store import get_default_temporal_store
 from lexgraph_lah.ingestion.contract_ast import build_contract_ast
 from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
 from lexgraph_lah.schemas.domain import (
+    ComplianceAttestationManifest,
     ContractDeltaAuditRequest,
     OutputPersona,
     PDPAComplianceScanRequest,
+    PortfolioBlastRadiusRequest,
+    PortfolioContractInput,
     RiskSeverity,
     TerritorialScope,
 )
 from lexgraph_lah.schemas.state import AgentState
+from lexgraph_lah.security.attestation_ledger import default_attestation_ledger
+from lexgraph_lah.security.doc_firewall import scan_document_security
 
 MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
@@ -80,7 +87,8 @@ MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Zero-token O(V + E) Deontic Conflict Solver that resolves the Strictest Composite "
             "Statutory Envelope across colliding Malaysian regimes (Act 709 PDPA, Act 854 Cyber Security Act "
-            "& P.U.(A) 220/2024, and BNM RMiT) as of a specific point-in-time date and territorial scope."
+            "& P.U.(A) 220/2024, BNM RMiT, Act 265, Sabah Cap. 67, Sarawak Cap. 76, Labuan Act 704, "
+            "Act 136, and Act 658) as of a specific point-in-time date and territorial scope."
         ),
         "inputSchema": {
             "type": "object",
@@ -196,6 +204,89 @@ MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "scan_document_security",
+        "description": (
+            "Zero-token Adversarial Document Sanitizer & Indirect Prompt Injection (IPI) Firewall. "
+            "Detects hidden OOXML runs (<w:vanish/>, tiny/white fonts, macros/customXml), hidden PDF "
+            "layers (3 Tr), and EN/BM prompt/statutory spoof overrides before ContractASTGraph ingestion."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "raw_text": {"type": "string"},
+                "docx_base64": {"type": "string"},
+                "pdf_base64": {"type": "string"},
+                "filename": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "scan_portfolio_blast_radius",
+        "description": (
+            "Zero-token Portfolio Gazette Blast-Radius Scanner evaluating up to 50 contracts between "
+            "from_date and to_date against intervening statutory amendments, P.U. gazette commencements, "
+            "and 5-territory deontic bounds with pre-flight PII scrubbing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_date": {"type": "string", "format": "date"},
+                "to_date": {"type": "string", "format": "date"},
+                "contracts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "contract_id": {"type": "string"},
+                            "document_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "text": {"type": "string"},
+                            "raw_text": {"type": "string"},
+                            "territorial_scope": {
+                                "type": "string",
+                                "enum": [s.value for s in TerritorialScope],
+                            },
+                            "regimes": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "regimes": {"type": "array", "items": {"type": "string"}},
+                "default_territorial_scope": {
+                    "type": "string",
+                    "enum": [s.value for s in TerritorialScope],
+                },
+                "persona": {
+                    "type": "string",
+                    "enum": [p.value for p in OutputPersona],
+                },
+            },
+            "required": ["from_date", "to_date", "contracts"],
+        },
+    },
+    {
+        "name": "verify_compliance_attestation",
+        "description": (
+            "Cryptographically verifies a ComplianceAttestationManifest and its append-only SQLite WAL "
+            "hash chain against the original contract SHA-256 digest, as_of_date snapshot, and "
+            "SourceSpan citation IDs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "manifest_id": {"type": "string"},
+                "raw_text": {"type": "string"},
+                "expected_doc_sha256": {"type": "string"},
+                "manifest": {"type": "object"},
+            },
+        },
+    },
 ]
 
 _SEVERITY_RANK: dict[RiskSeverity, int] = {
@@ -260,12 +351,28 @@ def _dispatch_sync_only(tool_name: str, arguments: dict[str, Any]) -> dict[str, 
         return envelope.model_dump(mode="json")
 
     if tool_name == "detect_contract_shadow_overrides":
+        doc_id = arguments.get("document_id", "MCP-AST-001")
+        raw_text = arguments["raw_text"]
+        sec_report = scan_document_security(
+            document_id=doc_id,
+            raw_text=raw_text,
+        )
+        clean_text = (
+            sec_report.sanitized_text
+            if sec_report.findings
+            else (sec_report.sanitized_text or raw_text)
+        )
         ast_graph, _ = build_contract_ast(
-            document_id=arguments.get("document_id", "MCP-AST-001"),
-            raw_text=arguments["raw_text"],
+            document_id=doc_id,
+            raw_text=clean_text,
             token_style="vault",
         )
-        return ast_graph.model_dump(mode="json")
+        payload = ast_graph.model_dump(mode="json")
+        payload["security_findings"] = [
+            f.model_dump(mode="json") for f in sec_report.findings
+        ]
+        payload["security_report"] = sec_report.model_dump(mode="json")
+        return payload
 
     if tool_name == "diff_statutory_versions":
         from_d = date.fromisoformat(arguments["from_date"])
@@ -316,6 +423,69 @@ def _dispatch_sync_only(tool_name: str, arguments: dict[str, Any]) -> dict[str, 
         )
         return report.model_dump(mode="json")
 
+    if tool_name == "scan_document_security":
+        doc_id = arguments.get("document_id", "MCP-SEC-001")
+        raw_text = arguments.get("raw_text")
+        filename = arguments.get("filename")
+        file_bytes: bytes | None = None
+        if arguments.get("docx_base64"):
+            file_bytes = base64.b64decode(arguments["docx_base64"])
+            filename = filename or "upload.docx"
+        elif arguments.get("pdf_base64"):
+            file_bytes = base64.b64decode(arguments["pdf_base64"])
+            filename = filename or "upload.pdf"
+
+        if raw_text is None and file_bytes is None:
+            raise ValueError(
+                "scan_document_security requires 'raw_text', 'docx_base64', or 'pdf_base64'."
+            )
+        sec_report = scan_document_security(
+            document_id=doc_id,
+            raw_text=raw_text,
+            file_bytes=file_bytes,
+            filename=filename,
+        )
+        return sec_report.model_dump(mode="json")
+
+    if tool_name == "scan_portfolio_blast_radius":
+        raw_contracts = arguments.get("contracts")
+        if not isinstance(raw_contracts, list) or not raw_contracts:
+            raise ValueError(
+                "scan_portfolio_blast_radius requires a non-empty 'contracts' list (max 50)."
+            )
+        req_blast = PortfolioBlastRadiusRequest(
+            from_date=date.fromisoformat(arguments["from_date"]),
+            to_date=date.fromisoformat(arguments["to_date"]),
+            contracts=[PortfolioContractInput(**item) for item in raw_contracts],
+            regimes=arguments.get("regimes"),
+            default_territorial_scope=TerritorialScope(
+                arguments.get(
+                    "default_territorial_scope", TerritorialScope.ALL_MALAYSIA.value
+                )
+            ),
+            persona=OutputPersona(
+                arguments.get("persona", OutputPersona.PRACTITIONER.value)
+            ),
+        )
+        return scan_portfolio_blast_radius(
+            req_blast, store=get_default_temporal_store()
+        ).model_dump(mode="json")
+
+    if tool_name == "verify_compliance_attestation":
+        manifest_arg = arguments.get("manifest")
+        manifest_obj = (
+            ComplianceAttestationManifest(**manifest_arg)
+            if isinstance(manifest_arg, dict)
+            else None
+        )
+        verify_res = default_attestation_ledger.verify(
+            manifest_id=arguments.get("manifest_id"),
+            raw_text=arguments.get("raw_text"),
+            expected_doc_sha256=arguments.get("expected_doc_sha256"),
+            manifest=manifest_obj,
+        )
+        return verify_res.model_dump(mode="json")
+
     return None
 
 
@@ -363,6 +533,12 @@ async def dispatch_mcp_tool_async(
             if clauses
             else RiskSeverity.LOW
         )
+        manifest_payload = final_state.get("attestation_manifest")
+        if isinstance(manifest_payload, dict):
+            manifest_obj = ComplianceAttestationManifest(**manifest_payload)
+            default_attestation_ledger.record(manifest_obj)
+            manifest_payload = manifest_obj.model_dump(mode="json")
+
         return {
             "document_id": initial_state["document_id"],
             "as_of_date": as_of.isoformat(),
@@ -374,7 +550,10 @@ async def dispatch_mcp_tool_async(
             "findings": [c.model_dump(mode="json") for c in clauses],
             "deontic_envelope": final_state.get("deontic_envelope"),
             "contract_ast": final_state.get("contract_ast"),
-            "attestation_manifest": final_state.get("attestation_manifest"),
+            "attestation_manifest": manifest_payload,
+            "security_findings": final_state.get("security_findings", []),
+            "security_report": final_state.get("security_report"),
+            "selected_model": final_state.get("selected_model"),
             "counterfactual_log": final_state.get("counterfactual_log", []),
         }
 

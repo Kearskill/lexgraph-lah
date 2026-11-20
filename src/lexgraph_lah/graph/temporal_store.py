@@ -2119,6 +2119,22 @@ def get_default_temporal_store() -> TemporalGraphStore:
             TerritorialScope.FEDERAL_TERRITORIES,
         ],
         gazette_ref="Act A1651 / P.U. (A) 397/2022",
+        regime_code="ACT_265",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="EA-1955-MAX-WEEKLY-HOURS",
+                regime_id="ACT_265",
+                modality="OBLIGATION",
+                metric_key="max_weekly_work_hours",
+                operator="<=",
+                threshold_value=45.0,
+                unit="hours",
+                territorial_scope=[
+                    TerritorialScope.PENINSULAR_MALAYSIA,
+                    TerritorialScope.FEDERAL_TERRITORIES,
+                ],
+            )
+        ],
     )
     ea_1955_bm = StatutoryNode(
         node_id="EA-1955-SEC-60A-V1-BM",
@@ -2138,6 +2154,7 @@ def get_default_temporal_store() -> TemporalGraphStore:
             TerritorialScope.FEDERAL_TERRITORIES,
         ],
         gazette_ref="Akta A1651 / P.U. (A) 397/2022",
+        regime_code="ACT_265",
     )
     _add_bilingual_pair(store, ea_1955_en, ea_1955_bm, authoritative="bm")
 
@@ -2149,13 +2166,37 @@ def get_default_temporal_store() -> TemporalGraphStore:
         version=1,
         language="en",
         text=(
-            "Section 104 (Hours of Work & Overtime - Sabah): Governs working hours, overtime rates, "
-            "and rest day entitlements exclusively for employees working in the State of Sabah."
+            "Section 104 (Hours of Work & Overtime - Sabah): Governs working hours (48 working hours "
+            "weekly ceiling unless locally harmonized), overtime rates, rest day entitlements, and "
+            "non-resident work pass obligations exclusively for employees working in the State of Sabah."
         ),
         valid_from=date(2005, 10, 1),
         authority_tier=AuthorityTier.TIER_3_ORDINANCE,
         territorial_scope=[TerritorialScope.SABAH],
         gazette_ref="Sabah Cap. 67",
+        regime_code="SABAH_CAP67",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="SABAH-CAP67-MAX-WEEKLY-HOURS",
+                regime_id="SABAH_CAP67",
+                modality="OBLIGATION",
+                metric_key="max_weekly_work_hours",
+                operator="<=",
+                threshold_value=48.0,
+                unit="hours",
+                territorial_scope=[TerritorialScope.SABAH],
+            ),
+            DeonticConstraint(
+                constraint_id="SABAH-CAP67-NON-RESIDENT-PERMIT",
+                regime_id="SABAH_CAP67",
+                modality="OBLIGATION",
+                metric_key="sabah_non_resident_work_permit",
+                operator="==",
+                threshold_value=True,
+                unit="",
+                territorial_scope=[TerritorialScope.SABAH],
+            ),
+        ],
     )
     sabah_ord_bm = StatutoryNode(
         node_id="SABAH-CAP67-SEC-104-V1-BM",
@@ -2165,13 +2206,15 @@ def get_default_temporal_store() -> TemporalGraphStore:
         version=1,
         language="bm",
         text=(
-            "Seksyen 104 (Waktu Kerja & Kerja Lebih Masa - Sabah): Mengawal selia waktu kerja dan kadar "
-            "kerja lebih masa khusus bagi pekerja di Negeri Sabah."
+            "Seksyen 104 (Waktu Kerja & Kerja Lebih Masa - Sabah): Mengawal selia waktu kerja (had "
+            "48 jam seminggu), kadar kerja lebih masa, dan permit kerja bukan pemastautin khusus bagi "
+            "pekerja di Negeri Sabah."
         ),
         valid_from=date(2005, 10, 1),
         authority_tier=AuthorityTier.TIER_3_ORDINANCE,
         territorial_scope=[TerritorialScope.SABAH],
         gazette_ref="Sabah Cap. 67",
+        regime_code="SABAH_CAP67",
     )
     _add_bilingual_pair(store, sabah_ord_en, sabah_ord_bm, authoritative="en")
 
@@ -2183,13 +2226,37 @@ def get_default_temporal_store() -> TemporalGraphStore:
         version=1,
         language="en",
         text=(
-            "Section 105 (Hours of Work & Overtime - Sarawak): Governs working hours, overtime rates, "
-            "and rest day entitlements exclusively for employees working in the State of Sarawak."
+            "Section 105 (Hours of Work & Overtime - Sarawak): Governs working hours (48 working hours "
+            "weekly ceiling), overtime rates, rest day entitlements, and Sarawak non-resident employment "
+            "licence requirements exclusively for employees working in the State of Sarawak."
         ),
         valid_from=date(2005, 10, 1),
         authority_tier=AuthorityTier.TIER_3_ORDINANCE,
         territorial_scope=[TerritorialScope.SARAWAK],
         gazette_ref="Sarawak Cap. 76",
+        regime_code="SARAWAK_CAP76",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="SARAWAK-CAP76-MAX-WEEKLY-HOURS",
+                regime_id="SARAWAK_CAP76",
+                modality="OBLIGATION",
+                metric_key="max_weekly_work_hours",
+                operator="<=",
+                threshold_value=48.0,
+                unit="hours",
+                territorial_scope=[TerritorialScope.SARAWAK],
+            ),
+            DeonticConstraint(
+                constraint_id="SARAWAK-CAP76-NON-RESIDENT-LICENCE",
+                regime_id="SARAWAK_CAP76",
+                modality="OBLIGATION",
+                metric_key="sarawak_non_resident_licence",
+                operator="==",
+                threshold_value=True,
+                unit="",
+                territorial_scope=[TerritorialScope.SARAWAK],
+            ),
+        ],
     )
     sarawak_ord_bm = StatutoryNode(
         node_id="SARAWAK-CAP76-SEC-105-V1-BM",
@@ -2199,13 +2266,15 @@ def get_default_temporal_store() -> TemporalGraphStore:
         version=1,
         language="bm",
         text=(
-            "Seksyen 105 (Waktu Kerja & Kerja Lebih Masa - Sarawak): Mengawal selia waktu kerja dan kadar "
-            "kerja lebih masa khusus bagi pekerja di Negeri Sarawak."
+            "Seksyen 105 (Waktu Kerja & Kerja Lebih Masa - Sarawak): Mengawal selia waktu kerja (had "
+            "48 jam seminggu), kadar kerja lebih masa, dan lesen penggajian bukan pemastautin khusus "
+            "bagi pekerja di Negeri Sarawak."
         ),
         valid_from=date(2005, 10, 1),
         authority_tier=AuthorityTier.TIER_3_ORDINANCE,
         territorial_scope=[TerritorialScope.SARAWAK],
         gazette_ref="Sarawak Cap. 76",
+        regime_code="SARAWAK_CAP76",
     )
     _add_bilingual_pair(store, sarawak_ord_en, sarawak_ord_bm, authoritative="en")
 
@@ -2227,6 +2296,18 @@ def get_default_temporal_store() -> TemporalGraphStore:
         territorial_scope=[TerritorialScope.LABUAN],
         gazette_ref="Act 704",
         regime_code="ACT_704",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="LABUAN-FSA-LICENSE",
+                regime_id="ACT_704",
+                modality="OBLIGATION",
+                metric_key="labuan_lfsa_license_required",
+                operator="==",
+                threshold_value=True,
+                unit="",
+                territorial_scope=[TerritorialScope.LABUAN],
+            )
+        ],
     )
     labuan_bm = StatutoryNode(
         node_id="LABUAN-FSA-SEC-10-V1-BM",
@@ -2247,6 +2328,69 @@ def get_default_temporal_store() -> TemporalGraphStore:
         regime_code="ACT_704",
     )
     _add_bilingual_pair(store, labuan_en, labuan_bm, authoritative="en")
+
+    # Electronic Commerce Act 2006 [Act 658] (Federal / All Malaysia)
+    eca_658_en = StatutoryNode(
+        node_id="ACT-658-SEC-7-V1",
+        act_name="Electronic Commerce Act 2006",
+        act_number="Act 658",
+        section_code="SEC-7",
+        version=1,
+        language="en",
+        text=(
+            "Section 7 (Formation and Validity of Electronic Contracts): In the formation of a contract, "
+            "communication of proposals, acceptance, and consent may be expressed by an electronic message "
+            "and shall not be denied legal effect, validity or enforceability provided electronic consent "
+            "is attributable and retrievable under the Electronic Commerce Act 2006 [Act 658]."
+        ),
+        valid_from=date(2006, 10, 19),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 658 / P.U. (B) 280/2006",
+        regime_code="ACT_658",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="ACT-658-ELEC-CONTRACT-VALID",
+                regime_id="ACT_658",
+                modality="PERMISSION",
+                metric_key="electronic_contract_formation_valid",
+                operator="==",
+                threshold_value=True,
+                unit="",
+                territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+            ),
+            DeonticConstraint(
+                constraint_id="ACT-658-ELEC-ATTRIBUTION",
+                regime_id="ACT_658",
+                modality="OBLIGATION",
+                metric_key="electronic_consent_attribution_required",
+                operator="==",
+                threshold_value=True,
+                unit="",
+                territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+            ),
+        ],
+    )
+    eca_658_bm = StatutoryNode(
+        node_id="ACT-658-SEC-7-V1-BM",
+        act_name="Akta Perdagangan Elektronik 2006",
+        act_number="Act 658",
+        section_code="SEC-7",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 7 (Pembentukan dan Kesahan Kontrak Elektronik): Dalam pembentukan sesuatu kontrak, "
+            "komunikasi cadangan, penerimaan dan persetujuan boleh dinyatakan melalui mesej elektronik "
+            "dan tidak boleh dinafikan kesan undang-undang tertakluk kepada kebolehjejakan persetujuan "
+            "di bawah Akta Perdagangan Elektronik 2006 [Akta 658]."
+        ),
+        valid_from=date(2006, 10, 19),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 658 / P.U. (B) 280/2006",
+        regime_code="ACT_658",
+    )
+    _add_bilingual_pair(store, eca_658_en, eca_658_bm, authoritative="bm")
 
     # Interpretation Acts 1948 and 1967 [Act 388] s. 63 (Authoritative Bilingual Text)
     act388_en = StatutoryNode(
@@ -2359,6 +2503,23 @@ def get_default_temporal_store() -> TemporalGraphStore:
         authority_tier=AuthorityTier.TIER_2_ACT_OF_PARLIAMENT,
         territorial_scope=[TerritorialScope.ALL_MALAYSIA],
         gazette_ref="Act 136 (Revised 1974)",
+        regime_code="ACT_136",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="ACT-136-S75-REASONABLE-COMPENSATION",
+                regime_id="ACT_136",
+                modality="OBLIGATION",
+                metric_key="penalty_clause_reasonable_compensation_cap",
+                operator="==",
+                threshold_value=True,
+                unit="",
+                territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+                description=(
+                    "Under Contracts Act 1950 [Act 136] s. 75, stipulated breach penalties are "
+                    "capped at reasonable compensation not exceeding the named sum."
+                ),
+            )
+        ],
     )
     ca1950_s75_bm = StatutoryNode(
         node_id="ACT-136-SEC-75-V1-BM",
@@ -2376,6 +2537,7 @@ def get_default_temporal_store() -> TemporalGraphStore:
         authority_tier=AuthorityTier.TIER_2_ACT_OF_PARLIAMENT,
         territorial_scope=[TerritorialScope.ALL_MALAYSIA],
         gazette_ref="Akta 136 (Disemak 1974)",
+        regime_code="ACT_136",
     )
     _add_bilingual_pair(store, ca1950_s75_en, ca1950_s75_bm, authoritative="en")
 

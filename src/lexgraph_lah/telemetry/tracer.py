@@ -15,6 +15,8 @@ class ComplianceSpanRecord(BaseModel):
     document_id: str
     reference_date: str | None = None
     active_statute_count: int = 0
+    model_tier: str | None = None
+    model_routing_reason: str | None = None
     telemetry: TelemetrySummary
     timestamp_epoch: float
 
@@ -49,6 +51,22 @@ class TelemetryRegistry:
 
     def record_span(self, record: ComplianceSpanRecord) -> None:
         self._records.append(record)
+        try:
+            from opentelemetry import trace as otel_trace
+
+            span = otel_trace.get_current_span()
+            if span is not None and span.is_recording():
+                model_tier = record.model_tier or record.telemetry.model_name
+                if model_tier:
+                    span.set_attribute("lexgraph.model_tier", model_tier)
+                if record.model_routing_reason:
+                    span.set_attribute(
+                        "lexgraph.model_routing_reason", record.model_routing_reason
+                    )
+                span.set_attribute("lexgraph.span_id", record.span_id)
+                span.set_attribute("lexgraph.document_id", record.document_id)
+        except (ImportError, RuntimeError, AttributeError):
+            pass
 
     def list_spans(self) -> list[ComplianceSpanRecord]:
         return list(self._records)
