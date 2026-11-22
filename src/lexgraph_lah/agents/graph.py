@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import re
@@ -5,9 +6,11 @@ import uuid
 from datetime import date
 from typing import Any, Literal
 
+import httpx
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
+from pydantic import ValidationError
 
 from lexgraph_lah.config import settings
 from lexgraph_lah.graph.deontic_solver import (
@@ -39,6 +42,7 @@ from lexgraph_lah.schemas.state import AgentState
 from lexgraph_lah.security.doc_firewall import scan_document_security
 from lexgraph_lah.telemetry.cost_tracker import (
     compute_telemetry_summary,
+    resolve_provider_model_id,
     select_model_tier,
 )
 
@@ -59,7 +63,13 @@ _LEGAL_DOMAIN_ANCHOR_RE = re.compile(
     r"sabah|sarawak|labuan|cap\.?\s*67|cap\.?\s*76|act\s+265|akta\s+265|"
     r"act\s+658|akta\s+658|electronic\s+commerce|perdagangan\s+elektronik|"
     r"working\s+hours|waktu\s+kerja|overtime|kerja\s+lebih\s+masa|"
-    r"non-resident|employment\s+act)\b",
+    r"non-resident|employment\s+act|"
+    r"act\s+864|akta\s+864|data\s+sharing|perkongsian\s+data|public\s+sector\s+data|"
+    r"act\s+866|akta\s+866|online\s+safety|harmful\s+content|safety\s+plan|mykad\s+age|"
+    r"act\s+873|akta\s+873|consumer\s+credit|bnpl|rule[\s-]+of[\s-]+78|peraturan\s+78|skp|"
+    r"act\s+562|akta\s+562|digital\s+signature|act\s+563|akta\s+563|computer\s+crimes|"
+    r"mssp|soc\s+monitoring|penetration\s+testing|p\.u\.\s*\(a\)\s*221/2024|"
+    r"biometric|data\s+portability|breach\s+register|affected\s+data\s+subject)\b",
     re.IGNORECASE,
 )
 
@@ -565,6 +575,182 @@ def _offline_deterministic_assess(
                     )
                 )
                 covered_clause_ids.add(cnode.clause_id)
+                continue
+
+            # Phase 1: Additional 2025-2026 Statutory Envelope Checks (Act 854 P.U.(A) 221, Act 864, Act 873, Act 866, PDPA Phase 3)
+            low_c = cnode.text.lower()
+            if (
+                envelope is not None
+                and "mssp_soc_pentest_nacsa_license_required"
+                in envelope.resolved_bounds
+                and any(
+                    kw in low_c
+                    for kw in (
+                        "unlicensed",
+                        "without nacsa license",
+                        "without nacsa licence",
+                        "no nacsa licence",
+                        "tanpa lesen nacsa",
+                    )
+                )
+                and any(
+                    kw in low_c
+                    for kw in (
+                        "soc",
+                        "penetration test",
+                        "pentest",
+                        "mssp",
+                        "managed security",
+                    )
+                )
+            ):
+                b = envelope.resolved_bounds["mssp_soc_pentest_nacsa_license_required"]
+                v_ids = [b.dominating_node_id]
+                clauses.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="MSSP NACSA Licensing Breach",
+                        exact_quote=cnode.text,
+                        severity=RiskSeverity.HIGH,
+                        rationale=(
+                            "Vendor provides managed SOC monitoring or penetration testing without a mandatory "
+                            "NACSA licence under Cyber Security Act 2024 s. 27 & P.U. (A) 221/2024."
+                        ),
+                        recommended_redline=(
+                            "Vendor shall maintain a valid NACSA Cyber Security Service Provider Licence under "
+                            "P.U. (A) 221/2024 throughout the term for all managed SOC and penetration testing services."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids_for(v_ids),
+                    )
+                )
+                covered_clause_ids.add(cnode.clause_id)
+                continue
+
+            if (
+                envelope is not None
+                and "public_sector_third_party_data_protection"
+                in envelope.resolved_bounds
+                and any(
+                    kw in low_c
+                    for kw in (
+                        "public sector",
+                        "public-sector",
+                        "government",
+                        "shared data",
+                        "data migration",
+                        "analytics",
+                    )
+                )
+                and any(
+                    kw in low_c
+                    for kw in (
+                        "no statutory duty",
+                        "disclaims",
+                        "waives",
+                        "exempt from act 864",
+                        "not bound",
+                    )
+                )
+            ):
+                b = envelope.resolved_bounds[
+                    "public_sector_third_party_data_protection"
+                ]
+                v_ids = [b.dominating_node_id]
+                clauses.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Public-Sector Shared Data Vendor Liability",
+                        exact_quote=cnode.text,
+                        severity=RiskSeverity.CRITICAL,
+                        rationale=(
+                            "Under Data Sharing Act 2025 [Act 864] s. 17(1), statutory shared-data protection "
+                            "obligations extend directly to third-party vendors performing migration, integration, or analytics."
+                        ),
+                        recommended_redline=(
+                            "Contractor acknowledges and assumes direct statutory duties under Section 17(1) of "
+                            "the Data Sharing Act 2025 [Act 864] to protect all public-sector shared data."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids_for(v_ids),
+                    )
+                )
+                covered_clause_ids.add(cnode.clause_id)
+                continue
+
+            if (
+                envelope is not None
+                and "rule_of_78_interest_prohibition" in envelope.resolved_bounds
+                and any(
+                    kw in low_c
+                    for kw in (
+                        "rule of 78",
+                        "rule-of-78",
+                        "flat-rate interest",
+                        "flat rate interest",
+                        "peraturan 78",
+                    )
+                )
+            ):
+                b = envelope.resolved_bounds["rule_of_78_interest_prohibition"]
+                v_ids = [b.dominating_node_id]
+                clauses.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Prohibited Consumer Credit Interest Clause",
+                        exact_quote=cnode.text,
+                        severity=RiskSeverity.HIGH,
+                        rationale=(
+                            "Rule-of-78 / flat-rate interest calculation clauses are prohibited under Consumer Credit "
+                            "Act 2025 [Act 873] s. 35."
+                        ),
+                        recommended_redline=(
+                            "Finance charges shall be calculated strictly on a reducing-balance basis in compliance "
+                            "with Consumer Credit Act 2025 [Act 873] and SKP licensing requirements."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids_for(v_ids),
+                    )
+                )
+                covered_clause_ids.add(cnode.clause_id)
+                continue
+
+            if (
+                envelope is not None
+                and "data_subject_breach_notice_max_days" in envelope.resolved_bounds
+                and (
+                    "need not notify affected data subjects" in low_c
+                    or "no notice to affected data subjects" in low_c
+                    or bool(
+                        re.search(
+                            r"(?:data\s+subject|affected\s+individuals?|subjek\s+data)[^.;\n]{0,80}?(?:[89]|\d{2,})\s*(?:days?|hari)",
+                            low_c,
+                        )
+                    )
+                )
+            ):
+                b = envelope.resolved_bounds["data_subject_breach_notice_max_days"]
+                v_ids = [b.dominating_node_id]
+                clauses.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Dual-Recipient Data Breach Notification",
+                        exact_quote=cnode.text,
+                        severity=RiskSeverity.HIGH,
+                        rationale=(
+                            "PDPA Phase 3 (2025-06-01) mandates notifying the Commissioner within 72 hours AND "
+                            "notifying affected data subjects within 7 days where significant harm occurs."
+                        ),
+                        recommended_redline=(
+                            "Data User shall notify the Commissioner within 72 hours and notify affected data "
+                            "subjects within 7 days of initial Commissioner notice, keeping a breach register for 2 years."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids_for(v_ids),
+                        proposed_notice_hours=min(proposed_h, 72.0),
+                    )
+                )
+                covered_clause_ids.add(cnode.clause_id)
 
     # 3. Fallback when no specific rule fired
     if not clauses:
@@ -637,11 +823,94 @@ def _offline_deterministic_assess(
 
 
 def get_llm(model_name: str | None = None):
+    resolved_model = resolve_provider_model_id(model_name or settings.model_name)
     return ChatGoogleGenerativeAI(
-        model=model_name or settings.model_name,
+        model=resolved_model,
         google_api_key=settings.gemini_api_key,
         temperature=0.0,
     )
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError, httpx.HTTPError)):
+        return True
+    msg = str(exc).lower()
+    return any(
+        tok in msg
+        for tok in (
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "rate limit",
+            "resource exhausted",
+            "temporarily unavailable",
+            "service unavailable",
+            "timeout",
+        )
+    )
+
+
+async def _invoke_structured_llm_with_backoff(
+    structured_llm: Any,
+    messages: list[Any],
+    *,
+    max_retries: int | None = None,
+    base_delay: float | None = None,
+) -> dict[str, Any]:
+    retries = max(
+        0, int(max_retries if max_retries is not None else settings.llm_max_retries)
+    )
+    base = max(
+        0.0,
+        float(
+            base_delay if base_delay is not None else settings.llm_backoff_base_seconds
+        ),
+    )
+
+    last_exc: Exception | None = None
+    raw_result: Any = None
+    for attempt in range(retries + 1):
+        try:
+            raw_result = await structured_llm.ainvoke(messages)
+            break
+        except (
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            httpx.HTTPError,
+            RuntimeError,
+        ) as exc:
+            last_exc = exc
+            if attempt >= retries or not _is_transient_llm_error(exc):
+                raise
+            await asyncio.sleep(base * (2**attempt))
+
+    if raw_result is None and last_exc is not None:
+        raise last_exc
+
+    if isinstance(raw_result, ClauseExtractionList):
+        return {"parsed": raw_result, "raw": None}
+    if not isinstance(raw_result, dict):
+        raise TypeError(
+            f"Unexpected structured LLM response type: {type(raw_result).__name__}."
+        )
+
+    parsed_obj = raw_result.get("parsed")
+    if parsed_obj is None:
+        err = raw_result.get("parsing_error")
+        raise ValueError(
+            f"Structured LLM failed ClauseExtractionList validation: {err or 'parsed is None'}"
+        )
+    if not isinstance(parsed_obj, ClauseExtractionList):
+        try:
+            parsed_obj = ClauseExtractionList.model_validate(parsed_obj)
+        except ValidationError as exc:
+            raise ValueError(
+                f"Structured LLM failed ClauseExtractionList schema validation: {exc}"
+            ) from exc
+    return {**raw_result, "parsed": parsed_obj}
 
 
 async def contract_ast_ingestor_node(state: AgentState) -> dict[str, Any]:
@@ -909,11 +1178,12 @@ async def cross_clause_risk_assessor_node(state: AgentState) -> dict[str, Any]:
     if state.get("auditor_feedback"):
         system_prompt += f"\n\nPREVIOUS AUDIT FAILED: {state['auditor_feedback']}"
 
-    result = await structured_llm.ainvoke(
+    result = await _invoke_structured_llm_with_backoff(
+        structured_llm,
         [
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"CONTRACT TEXT:\n{safe_text}"),
-        ]
+        ],
     )
 
     parsed: ClauseExtractionList = result["parsed"]
@@ -1014,9 +1284,11 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
 
     failures: list[str] = []
     updated_clauses: list[ClauseAudit] = []
+    hallucination_reject_count = 0
 
     for clause in state["extracted_clauses"]:
         clause_ok = True
+        clause_hallucinated = False
 
         # (a) Verbatim SourceSpan Invariant
         if not clause.exact_quote or not any(
@@ -1026,6 +1298,7 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
                 f"[Invariant-A Verbatim Quote] {clause.clause_id}: exact_quote is not a verbatim substring."
             )
             clause_ok = False
+            clause_hallucinated = True
 
         if clause.overriding_clause_quote and not any(
             clause.overriding_clause_quote in surf for surf in valid_text_surfaces
@@ -1034,6 +1307,7 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
                 f"[Invariant-A Override Quote] {clause.clause_id}: overriding_clause_quote is not verbatim."
             )
             clause_ok = False
+            clause_hallucinated = True
 
         # (b) Active Lineage Provenance Invariant (0% temporal contamination)
         if active_statute_ids and clause.violated_statute_ids:
@@ -1048,6 +1322,10 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
                     "are NOT active on reference_date."
                 )
                 clause_ok = False
+                clause_hallucinated = True
+
+        if clause_hallucinated:
+            hallucination_reject_count += 1
 
         # (d) Non-Trivial Mutation Invariant
         red_clean = clause.recommended_redline.strip()
@@ -1145,6 +1423,7 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
             "auditor_feedback": " | ".join(failures),
             "counterfactual_log": existing_log,
             "retry_count": attempt_num,
+            "hallucination_rejections": hallucination_reject_count,
             "prompt_tokens": 0,
             "completion_tokens": 0,
         }
@@ -1154,6 +1433,7 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
         "is_grounded": True,
         "auditor_feedback": "All 4 counterfactual & verbatim invariants verified.",
         "counterfactual_log": existing_log,
+        "hallucination_rejections": hallucination_reject_count,
         "prompt_tokens": 0,
         "completion_tokens": 0,
     }

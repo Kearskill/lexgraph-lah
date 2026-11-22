@@ -1,9 +1,15 @@
+import base64
+import importlib
+import json
+import urllib.error
+import urllib.request
 import uuid
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from lexgraph_lah.config import settings
 from lexgraph_lah.graph.bilingual_critic import (
     audit_bilingual_divergence,
     audit_bilingual_pair,
@@ -242,6 +248,166 @@ def build_point_in_time_cypher(
     return CypherQueryBundle(query=query, params=params)
 
 
+def build_upsert_edge_cypher(edge: StatutoryEdge) -> CypherQueryBundle:
+    """Generates a parameterized Cypher query to merge a typed StatutoryEdge between nodes."""
+    rel_type = edge.edge_type.value
+    if not rel_type.replace("_", "").isalnum():
+        raise ValueError(f"Invalid Cypher relationship type: {rel_type}")
+    query = (
+        "MATCH (src:StatutoryNode {node_id: $source_id})\n"
+        "MATCH (dst:StatutoryNode {node_id: $target_id})\n"
+        f"MERGE (src)-[r:{rel_type}]->(dst)\n"
+        "SET r.effective_date = date($effective_date),\n"
+        "    r.gazette_ref = $gazette_ref\n"
+        "RETURN src.node_id AS source_id, dst.node_id AS target_id"
+    )
+    return CypherQueryBundle(
+        query=query,
+        params={
+            "source_id": edge.source_id,
+            "target_id": edge.target_id,
+            "effective_date": edge.effective_date.isoformat(),
+            "gazette_ref": edge.gazette_ref,
+        },
+    )
+
+
+@runtime_checkable
+class GraphBackend(Protocol):
+    """Persistence backend contract for TemporalGraphStore."""
+
+    def execute_cypher(self, bundle: CypherQueryBundle) -> list[dict[str, Any]]: ...
+
+    def health_check(self) -> bool: ...
+
+    def close(self) -> None: ...
+
+
+class InMemoryGraphBackend:
+    """Zero-dependency in-memory default backend (`GRAPH_BACKEND=memory`)."""
+
+    def execute_cypher(self, bundle: CypherQueryBundle) -> list[dict[str, Any]]:
+        return []
+
+    def health_check(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        return None
+
+
+class Neo4jGraphBackend:
+    """
+    Persistent Neo4j 5 backend (`GRAPH_BACKEND=neo4j`) executing parameterized Cypher
+    via the official Bolt `neo4j` driver when installed or Neo4j 5 Transactional HTTP API.
+    """
+
+    def __init__(
+        self,
+        uri: str | None = None,
+        http_url: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+        database: str | None = None,
+        *,
+        driver: Any | None = None,
+        executor: Any | None = None,
+    ) -> None:
+        self.uri = uri or settings.neo4j_uri
+        self.http_url = (http_url or settings.neo4j_http_url).rstrip("/")
+        self.user = user or settings.neo4j_user
+        self.password = password or settings.neo4j_password
+        self.database = database or settings.neo4j_database
+        self._driver = driver
+        self._executor = executor
+        self._executed_bundles: list[CypherQueryBundle] = []
+
+        if self._driver is None and self._executor is None:
+            try:
+                neo4j_mod = importlib.import_module("neo4j")
+                graph_db = getattr(neo4j_mod, "GraphDatabase", None)
+                if graph_db is not None:
+                    self._driver = graph_db.driver(
+                        self.uri, auth=(self.user, self.password)
+                    )
+            except ImportError:
+                self._driver = None
+
+    @property
+    def executed_bundles(self) -> list[CypherQueryBundle]:
+        return list(self._executed_bundles)
+
+    def _execute_http_cypher(self, bundle: CypherQueryBundle) -> list[dict[str, Any]]:
+        endpoint = f"{self.http_url}/db/{self.database}/tx/commit"
+        payload = json.dumps(
+            {"statements": [{"statement": bundle.query, "parameters": bundle.params}]}
+        ).encode()
+        creds = base64.b64encode(f"{self.user}:{self.password}".encode()).decode(
+            "ascii"
+        )
+        req = urllib.request.Request(
+            endpoint,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Basic {creds}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw_body = resp.read().decode("utf-8")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"Neo4j HTTP Cypher execution failed: {exc}") from exc
+
+        parsed = json.loads(raw_body)
+        errors = parsed.get("errors") or []
+        if errors:
+            raise RuntimeError(f"Neo4j Cypher error: {errors}")
+
+        rows: list[dict[str, Any]] = []
+        for res in parsed.get("results") or []:
+            cols = res.get("columns") or []
+            for item in res.get("data") or []:
+                row_vals = item.get("row") or []
+                rows.append(dict(zip(cols, row_vals, strict=False)))
+        return rows
+
+    def execute_cypher(self, bundle: CypherQueryBundle) -> list[dict[str, Any]]:
+        self._executed_bundles.append(bundle)
+        if self._executor is not None:
+            out = self._executor(bundle.query, bundle.params)
+            return list(out) if out is not None else []
+        if self._driver is not None:
+            with self._driver.session(database=self.database) as session:
+                result = session.run(bundle.query, bundle.params)
+                return [dict(rec) for rec in result]
+        return self._execute_http_cypher(bundle)
+
+    def ensure_constraints(self) -> None:
+        self.execute_cypher(
+            CypherQueryBundle(
+                query=(
+                    "CREATE CONSTRAINT statutory_node_id_unique IF NOT EXISTS "
+                    "FOR (n:StatutoryNode) REQUIRE n.node_id IS UNIQUE"
+                ),
+                params={},
+            )
+        )
+
+    def health_check(self) -> bool:
+        try:
+            self.execute_cypher(CypherQueryBundle(query="RETURN 1 AS ok", params={}))
+            return True
+        except RuntimeError:
+            return False
+
+    def close(self) -> None:
+        if self._driver is not None and hasattr(self._driver, "close"):
+            self._driver.close()
+
+
 class TemporalGraphStore:
     """
     Bi-temporal, bilingual, hierarchy-aware Malaysian legal knowledge graph store
@@ -249,9 +415,14 @@ class TemporalGraphStore:
     SourceSpan provenance, BM/EN crosswalk, Gazette versioning, and judicial treatment.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, backend: GraphBackend | None = None) -> None:
         self._nodes: dict[str, StatutoryNode] = {}
         self._edges: list[StatutoryEdge] = []
+        self._backend: GraphBackend = backend or InMemoryGraphBackend()
+
+    @property
+    def backend(self) -> GraphBackend:
+        return self._backend
 
     @property
     def nodes(self) -> dict[str, StatutoryNode]:
@@ -348,7 +519,10 @@ class TemporalGraphStore:
                     )
                 )
 
-        return build_upsert_amendment_cypher(node, predecessor_node_id=amends_node_id)
+        bundle = build_upsert_amendment_cypher(node, predecessor_node_id=amends_node_id)
+        if not isinstance(self._backend, InMemoryGraphBackend):
+            self._backend.execute_cypher(bundle)
+        return bundle
 
     def repeal_node(
         self,
@@ -397,13 +571,47 @@ class TemporalGraphStore:
                 gazette_ref=gazette_ref,
             )
         )
-        return build_repeal_cypher(
+        bundle = build_repeal_cypher(
             target_node_id, repealing_node_id, effective_date, gazette_ref=gazette_ref
         )
+        if not isinstance(self._backend, InMemoryGraphBackend):
+            self._backend.execute_cypher(bundle)
+        return bundle
 
     def add_edge(self, edge: StatutoryEdge) -> None:
         if edge not in self._edges:
             self._edges.append(edge)
+            if not isinstance(self._backend, InMemoryGraphBackend):
+                self._backend.execute_cypher(build_upsert_edge_cypher(edge))
+
+    def sync_to_backend(self) -> int:
+        """Persists all in-memory StatutoryNodes and StatutoryEdges to the configured backend."""
+        if isinstance(self._backend, InMemoryGraphBackend):
+            return 0
+        count = 0
+        for node in self._nodes.values():
+            self._backend.execute_cypher(build_upsert_amendment_cypher(node))
+            count += 1
+        for edge in self._edges:
+            self._backend.execute_cypher(build_upsert_edge_cypher(edge))
+            count += 1
+        return count
+
+    def query_point_in_time_from_backend(
+        self,
+        as_of_date: date,
+        act_name: str | None = None,
+        max_citation_hops: int = 2,
+        territorial_scope: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Executes the parameterized point-in-time Cypher query against the backend."""
+        bundle = build_point_in_time_cypher(
+            as_of_date=as_of_date,
+            act_name=act_name,
+            max_citation_hops=max_citation_hops,
+            territorial_scope=territorial_scope,
+        )
+        return self._backend.execute_cypher(bundle)
 
     def add_citation(
         self,
@@ -1620,19 +1828,54 @@ def _add_bilingual_pair(
     )
 
 
+def create_temporal_store(
+    backend_mode: str | None = None,
+    *,
+    backend: GraphBackend | None = None,
+    seed_defaults: bool = True,
+) -> TemporalGraphStore:
+    """
+    Factory creating a `TemporalGraphStore` backed by either the fast in-memory store
+    (`GRAPH_BACKEND=memory`, default) or persistent `Neo4jGraphBackend` (`GRAPH_BACKEND=neo4j`).
+    """
+    mode = (backend_mode or settings.graph_backend or "memory").strip().lower()
+    if backend is not None:
+        active_backend = backend
+    elif mode == "neo4j":
+        active_backend = Neo4jGraphBackend()
+    else:
+        active_backend = InMemoryGraphBackend()
+
+    if seed_defaults:
+        store = _seed_default_corpus(TemporalGraphStore(backend=InMemoryGraphBackend()))
+        store._backend = active_backend
+        if not isinstance(active_backend, InMemoryGraphBackend):
+            store.sync_to_backend()
+        return store
+    return TemporalGraphStore(backend=active_backend)
+
+
 def get_default_temporal_store() -> TemporalGraphStore:
     """
     Returns a pre-populated Malaysian Legal Knowledge Graph containing:
     - Tier 1: Federal Constitution (Art 8)
-    - Tier 2: PDPA 2010 [Act 709] (2010 baseline vs 2024 Amendment [Act A1727]),
-              Employment Act 1955 [Act 265] (Peninsular & FT)
-    - Tier 3: Sabah Labour Ordinance [Cap. 67], Sarawak Labour Ordinance [Cap. 76]
-    - Tier 4: P.U. (A) 342/2024 & P.U. (B) 512/2024 Subsidiary Gazettes
-    - Tier 5: JPDP Circular / Guideline 01/2025
+    - Tier 2: PDPA 2010 [Act 709] (2010 baseline vs 2024 Amendment [Act A1727] Phases 1-3),
+              Cyber Security Act 2024 [Act 854], Data Sharing Act 2025 [Act 864],
+              Online Safety Act 2025 [Act 866], Consumer Credit Act 2025 [Act 873],
+              Employment Act 1955 [Act 265], Act 562, Act 563, Act 658, Act 136, Act 388, Act 574
+    - Tier 3: Sabah Labour Ordinance [Cap. 67], Sarawak Labour Ordinance [Cap. 76],
+              P.U. (A) 219-222/2024, P.U. (A) 47/2025, P.U. (A) 342/2024, P.U. (B) 512 & 522/2024, BNM RMiT
+    - Tier 4-7: Federal/COA/HC precedents & PDPD Guidelines 01/2025, 02/2025, 03/2025
     with full Act -> Part -> Section -> Subsection -> SourceSpan hierarchy and
     synchronized EN <-> BM translations.
     """
-    store = TemporalGraphStore()
+    if (settings.graph_backend or "memory").strip().lower() == "neo4j":
+        return create_temporal_store(backend_mode="neo4j", seed_defaults=True)
+    return _seed_default_corpus(TemporalGraphStore(backend=InMemoryGraphBackend()))
+
+
+def _seed_default_corpus(store: TemporalGraphStore) -> TemporalGraphStore:
+    """Populates `store` with the curated Malaysian statutory and judicial corpus."""
 
     # =========================================================================
     # Hierarchy Containers for Act 709 (PDPA 2010)
@@ -1850,6 +2093,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
                 operator="<=",
                 threshold_value=72.0,
                 unit="hours",
+                recipient="PDPA_COMMISSIONER",
+                notice_stage="INITIAL_NOTICE",
                 description="Mandatory breach notification to the Commissioner within 72 hours under s. 12B [Act A1727].",
             ),
         ],
@@ -2116,6 +2361,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
                 operator="<=",
                 threshold_value=72.0,
                 unit="hours",
+                recipient="PDPA_COMMISSIONER",
+                notice_stage="INITIAL_NOTICE",
                 description="Notify Commissioner within 72 hours under Act 709 s. 12B [Act A1727].",
             ),
         ],
@@ -2535,6 +2782,7 @@ def get_default_temporal_store() -> TemporalGraphStore:
         authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
         territorial_scope=[TerritorialScope.ALL_MALAYSIA],
         gazette_ref="P.U. (A) 342/2024",
+        gazette_date=date(2024, 12, 24),
         regime_code="ACT_709",
         deontic_constraints=[
             DeonticConstraint(
@@ -2545,6 +2793,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
                 operator="<=",
                 threshold_value=72.0,
                 unit="hours",
+                recipient="PDPA_COMMISSIONER",
+                notice_stage="INITIAL_NOTICE",
                 description="Electronic personal data breach notification within 72 hours under P.U. (A) 342/2024 Reg 3.",
             ),
         ],
@@ -2995,6 +3245,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
                 operator="<=",
                 threshold_value=6.0,
                 unit="hours",
+                recipient="NACSA",
+                notice_stage="INITIAL_NOTICE",
                 description="Immediate notice and initial particulars within 6 hours under Act 854 s. 23 & P.U. (A) 220/2024.",
             ),
             DeonticConstraint(
@@ -3005,6 +3257,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
                 operator="<=",
                 threshold_value=14.0,
                 unit="days",
+                recipient="NACSA",
+                notice_stage="FULL_REPORT",
                 description="Full cyber security incident report within 14 days under Act 854 s. 23 & P.U. (A) 220/2024.",
             ),
         ],
@@ -3047,6 +3301,7 @@ def get_default_temporal_store() -> TemporalGraphStore:
         authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
         territorial_scope=[TerritorialScope.ALL_MALAYSIA],
         gazette_ref="P.U. (A) 220/2024",
+        gazette_date=date(2024, 8, 22),
         regime_code="ACT_854",
         deontic_constraints=[
             DeonticConstraint(
@@ -3057,6 +3312,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
                 operator="<=",
                 threshold_value=6.0,
                 unit="hours",
+                recipient="NACSA",
+                notice_stage="INITIAL_NOTICE",
                 description="P.U. (A) 220/2024 Reg 4 requires 6-hour initial NCII incident particulars.",
             ),
             DeonticConstraint(
@@ -3067,6 +3324,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
                 operator="<=",
                 threshold_value=14.0,
                 unit="days",
+                recipient="NACSA",
+                notice_stage="FULL_REPORT",
                 description="P.U. (A) 220/2024 Reg 4 requires 14-day full cyber incident report.",
             ),
         ],
@@ -3120,6 +3379,8 @@ def get_default_temporal_store() -> TemporalGraphStore:
                 operator="<=",
                 threshold_value=1.0,
                 unit="hours",
+                recipient="BNM_SUPERVISOR",
+                notice_stage="INITIAL_NOTICE",
                 description="BNM RMiT mandates critical technology incident escalation within 1 hour of detection.",
             ),
             DeonticConstraint(
@@ -3206,6 +3467,1395 @@ def get_default_temporal_store() -> TemporalGraphStore:
         "CSA-2024-SEC-23-V1",
         effective_date=date(2024, 8, 26),
         gazette_ref="Act 854",
+    )
+
+    # =========================================================================
+    # Phase 1A: Cyber Security Act 2024 [Act 854] Full Subsidiary Suite (2024-2025)
+    # =========================================================================
+    pua_219_en = StatutoryNode(
+        node_id="PUA-219-2024-REG-3",
+        act_name="Cyber Security (Risk Assessment and Audit) Regulations 2024",
+        act_number="P.U. (A) 219/2024",
+        section_code="REG-3",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Regulations 3 & 4 [P.U. (A) 219/2024]: An NCII entity shall carry out a cyber security "
+            "risk assessment at least once a year (12 months) and cause an independent cyber security "
+            "audit to be conducted by an approved auditor at least once every two years (2 years)."
+        ),
+        valid_from=date(2024, 8, 26),
+        gazette_date=date(2024, 8, 22),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 219/2024",
+        regime_code="ACT_854",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-PUA219-RISK-ASSESSMENT-12M",
+                regime_id="ACT_854",
+                modality="OBLIGATION",
+                metric_key="ncii_risk_assessment_max_interval_months",
+                operator="<=",
+                threshold_value=12.0,
+                unit="months",
+                description="Mandatory NCII cyber security risk assessment at least once a year under P.U. (A) 219/2024.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-PUA219-AUDIT-2Y",
+                regime_id="ACT_854",
+                modality="OBLIGATION",
+                metric_key="ncii_independent_audit_max_interval_years",
+                operator="<=",
+                threshold_value=2.0,
+                unit="years",
+                description="Mandatory independent NCII cyber security audit at least once every 2 years under P.U. (A) 219/2024.",
+            ),
+        ],
+    )
+    pua_219_bm = StatutoryNode(
+        node_id="PUA-219-2024-REG-3-BM",
+        act_name="Peraturan-Peraturan Keselamatan Siber (Penilaian Risiko dan Audit) 2024",
+        act_number="P.U. (A) 219/2024",
+        section_code="REG-3",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Peraturan 3 & 4 [P.U. (A) 219/2024]: Entiti NCII hendaklah menjalankan penilaian risiko "
+            "keselamatan siber sekurang-kurangnya sekali setahun (12 bulan) dan audit bebas sekali setiap 2 tahun."
+        ),
+        valid_from=date(2024, 8, 26),
+        gazette_date=date(2024, 8, 22),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 219/2024",
+        regime_code="ACT_854",
+        deontic_constraints=pua_219_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pua_219_en, pua_219_bm, authoritative="bm")
+
+    csa_s27_en = StatutoryNode(
+        node_id="CSA-2024-SEC-27-V1",
+        act_name="Cyber Security Act 2024",
+        act_number="Act 854",
+        section_code="SEC-27",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 27 (Licensing of Cyber Security Service Providers - Act 854): No person shall "
+            "provide managed security operations centre monitoring or penetration testing services "
+            "unless licensed by the Chief Executive (NACSA)."
+        ),
+        valid_from=date(2024, 8, 26),
+        gazette_date=date(2024, 6, 26),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 854 / P.U. (B) 338/2024",
+        regime_code="ACT_854",
+    )
+    csa_s27_bm = StatutoryNode(
+        node_id="CSA-2024-SEC-27-V1-BM",
+        act_name="Akta Keselamatan Siber 2024",
+        act_number="Act 854",
+        section_code="SEC-27",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 27 (Pelesenan Pemberi Perkhidmatan Keselamatan Siber - Akta 854): Tiada seorang "
+            "pun boleh menyediakan perkhidmatan pemantauan pusat operasi keselamatan terurus atau ujian "
+            "penembusan melainkan dilesenkan oleh NACSA."
+        ),
+        valid_from=date(2024, 8, 26),
+        gazette_date=date(2024, 6, 26),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 854 / P.U. (B) 338/2024",
+        regime_code="ACT_854",
+    )
+    _add_bilingual_pair(store, csa_s27_en, csa_s27_bm, authoritative="bm")
+
+    pua_221_en = StatutoryNode(
+        node_id="PUA-221-2024-REG-3",
+        act_name="Cyber Security (Licensing of Cyber Security Service Provider) Regulations 2024",
+        act_number="P.U. (A) 221/2024",
+        section_code="REG-3",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Regulations 2 & 3 [P.U. (A) 221/2024]: Providers of managed security operations centre "
+            "(SOC) monitoring services and penetration testing services MUST hold a valid NACSA "
+            "cyber security service provider licence."
+        ),
+        valid_from=date(2024, 8, 26),
+        gazette_date=date(2024, 8, 22),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 221/2024",
+        regime_code="ACT_854",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-PUA221-MSSP-LICENSE",
+                regime_id="ACT_854",
+                modality="OBLIGATION",
+                metric_key="mssp_soc_pentest_nacsa_license_required",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory NACSA licence for managed SOC monitoring and penetration testing vendors under P.U. (A) 221/2024.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-PUA221-UNLICENSED-PROHIBITION",
+                regime_id="ACT_854",
+                modality="PROHIBITION",
+                metric_key="unlicensed_mssp_service_prohibition",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="unlicensed_mssp_or_pentest_vendor",
+                description="Contracts engaging unlicensed MSSP SOC monitoring or penetration testing vendors contravene P.U. (A) 221/2024.",
+            ),
+        ],
+    )
+    pua_221_bm = StatutoryNode(
+        node_id="PUA-221-2024-REG-3-BM",
+        act_name="Peraturan-Peraturan Keselamatan Siber (Pelesenan Pemberi Perkhidmatan Keselamatan Siber) 2024",
+        act_number="P.U. (A) 221/2024",
+        section_code="REG-3",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Peraturan 2 & 3 [P.U. (A) 221/2024]: Pemberi perkhidmatan pemantauan pusat operasi "
+            "keselamatan terurus (SOC) dan perkhidmatan ujian penembusan WAJIB memegang lesen sah "
+            "daripada Ketua Eksekutif NACSA."
+        ),
+        valid_from=date(2024, 8, 26),
+        gazette_date=date(2024, 8, 22),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 221/2024",
+        regime_code="ACT_854",
+        deontic_constraints=pua_221_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pua_221_en, pua_221_bm, authoritative="bm")
+
+    pua_222_en = StatutoryNode(
+        node_id="PUA-222-2024-REG-2",
+        act_name="Cyber Security (Compounding of Offences) Regulations 2024",
+        act_number="P.U. (A) 222/2024",
+        section_code="REG-2",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Regulations 2 & 3 [P.U. (A) 222/2024]: Prescribes compoundable offences under Act 854 "
+            "and permits compounding up to 50% of the maximum statutory fine with written consent of "
+            "the Public Prosecutor."
+        ),
+        valid_from=date(2024, 8, 26),
+        gazette_date=date(2024, 8, 22),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 222/2024",
+        regime_code="ACT_854",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-PUA222-COMPOUND-50PCT",
+                regime_id="ACT_854",
+                modality="PERMISSION",
+                metric_key="csa_offence_compounding_max_fine_pct",
+                operator="<=",
+                threshold_value=50.0,
+                unit="percent",
+                description="Compoundable Act 854 offences may be compounded up to 50% of max fine under P.U. (A) 222/2024.",
+            )
+        ],
+    )
+    pua_222_bm = StatutoryNode(
+        node_id="PUA-222-2024-REG-2-BM",
+        act_name="Peraturan-Peraturan Keselamatan Siber (Pengkompaunan Kesalahan) 2024",
+        act_number="P.U. (A) 222/2024",
+        section_code="REG-2",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Peraturan 2 & 3 [P.U. (A) 222/2024]: Menetapkan kesalahan boleh kompaun di bawah Akta 854 "
+            "dengan kadar kompaun tidak melebihi 50% daripada denda maksimum dengan izin Pendakwa Raya."
+        ),
+        valid_from=date(2024, 8, 26),
+        gazette_date=date(2024, 8, 22),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 222/2024",
+        regime_code="ACT_854",
+        deontic_constraints=pua_222_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pua_222_en, pua_222_bm, authoritative="bm")
+
+    pua_47_2025_carveout = {
+        "instrument": "P.U. (A) 47/2025",
+        "title": "Cyber Security (Exemption) Order 2025",
+        "gazette_date": "2025-01-28",
+        "effective_from": "2025-02-01",
+        "parent_act": "Act 854",
+        "carve_out_type": "CONDITIONAL_SUBSIDIARY_EXEMPTION",
+        "covered_sections": ["SEC-27"],
+        "exempted_scope": (
+            "Specified internal in-house SOC operations, non-commercial research/testing, "
+            "and prescribed transitional MSSP licensing carve-outs subject to NACSA conditions."
+        ),
+    }
+    pua_47_en = StatutoryNode(
+        node_id="PUA-47-2025-EXEMPT",
+        act_name="Cyber Security (Exemption) Order 2025",
+        act_number="P.U. (A) 47/2025",
+        section_code="ORDER-2",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Cyber Security (Exemption) Order 2025 [P.U. (A) 47/2025] (effective 1 February 2025): "
+            "Grants targeted licensing exemptions and transitional carve-outs from Section 27 of Act 854 "
+            "for specified internal enterprise security operations and prescribed categories."
+        ),
+        valid_from=date(2025, 2, 1),
+        gazette_date=date(2025, 1, 28),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 47/2025",
+        regime_code="ACT_854",
+        carve_out_metadata=pua_47_2025_carveout,
+    )
+    pua_47_bm = StatutoryNode(
+        node_id="PUA-47-2025-EXEMPT-BM",
+        act_name="Perintah Keselamatan Siber (Pengecualian) 2025",
+        act_number="P.U. (A) 47/2025",
+        section_code="ORDER-2",
+        parent_node_id="CSA-2024-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Perintah Keselamatan Siber (Pengecualian) 2025 [P.U. (A) 47/2025] (berkuat kuasa 1 Februari 2025): "
+            "Memperuntukkan pengecualian bersyarat daripada kehendak pelesenan Seksyen 27 Akta 854 bagi "
+            "kategori operasi keselamatan dalaman dan peralihan yang ditetapkan."
+        ),
+        valid_from=date(2025, 2, 1),
+        gazette_date=date(2025, 1, 28),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (A) 47/2025",
+        regime_code="ACT_854",
+        carve_out_metadata=pua_47_2025_carveout,
+    )
+    _add_bilingual_pair(store, pua_47_en, pua_47_bm, authoritative="bm")
+
+    store.add_citation(
+        "CSA-2024-SEC-22-V1",
+        "PUA-219-2024-REG-3",
+        effective_date=date(2024, 8, 26),
+        gazette_ref="P.U. (A) 219/2024",
+    )
+    store.add_citation(
+        "CSA-2024-SEC-27-V1",
+        "PUA-221-2024-REG-3",
+        effective_date=date(2024, 8, 26),
+        gazette_ref="P.U. (A) 221/2024",
+    )
+    store.add_citation(
+        "CSA-2024-SEC-27-V1",
+        "PUA-47-2025-EXEMPT",
+        effective_date=date(2025, 2, 1),
+        gazette_ref="P.U. (A) 47/2025",
+    )
+
+    # =========================================================================
+    # Phase 1B: PDPA (Amendment) Act 2024 [Act A1727] 3-Phase Commencement
+    # (P.U. (B) 522/2024: 2025-01-01, 2025-04-01, 2025-06-01) & 2025 Guidelines
+    # =========================================================================
+    pub_522_p1 = StatutoryNode(
+        node_id="PUB-522-2024-P1",
+        act_name="Appointment of Date of Coming into Operation (Act A1727 Phase 1)",
+        act_number="P.U. (B) 522/2024",
+        section_code="PHASE-1",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "P.U. (B) 522/2024 Phase 1 (effective 1 January 2025): Brings into operation sections "
+            "7, 11, 13, and 14 of Act A1727 covering electronic service of notices and administrative continuity."
+        ),
+        valid_from=date(2025, 1, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (B) 522/2024",
+        regime_code="ACT_709",
+    )
+    store.upsert_node(pub_522_p1)
+
+    pub_522_p2 = StatutoryNode(
+        node_id="PUB-522-2024-P2",
+        act_name="Appointment of Date of Coming into Operation (Act A1727 Phase 2)",
+        act_number="P.U. (B) 522/2024",
+        section_code="PHASE-2",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "P.U. (B) 522/2024 Phase 2 (effective 1 April 2025): Brings into operation sections "
+            "2, 3, 4, 5, 8, 10, and 12 of Act A1727: direct Data Processor Security Principle liability "
+            "(up to RM 1,000,000 fine / 3 years imprisonment), biometric sensitive personal data, "
+            "Data Controller terminology, and replacement of s. 129 cross-border whitelist."
+        ),
+        valid_from=date(2025, 4, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (B) 522/2024",
+        regime_code="ACT_709",
+    )
+    store.upsert_node(pub_522_p2)
+
+    pdpa_sec9_p2_en = StatutoryNode(
+        node_id="PDPA-2010-SEC-9-P2-PROC",
+        act_name="Personal Data Protection Act 2010",
+        act_number="Act 709",
+        section_code="SEC-9(1A)-P2",
+        part_code="PART-II",
+        parent_node_id="PDPA-2010-PART-II",
+        version=1,
+        language="en",
+        text=(
+            "Section 9(1A) & (2) [Act A1727 Phase 2, effective 1 April 2025]: A data processor is "
+            "directly subject to the Security Principle and commits an offence punishable by a fine "
+            "not exceeding RM 1,000,000 or imprisonment up to 3 years or both."
+        ),
+        valid_from=date(2025, 4, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act A1727 / P.U. (B) 522/2024 (Phase 2)",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT709-P2-FINE-1M",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="processor_direct_liability_max_fine_myr",
+                operator=">=",
+                threshold_value=1_000_000.0,
+                unit="MYR",
+                description="Act A1727 Phase 2 (2025-04-01) statutory fine ceiling of RM 1,000,000 on data controllers and data processors.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT709-P2-JAIL-3Y",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="processor_direct_liability_max_imprisonment_years",
+                operator=">=",
+                threshold_value=3.0,
+                unit="years",
+                description="Act A1727 Phase 2 (2025-04-01) statutory imprisonment ceiling up to 3 years.",
+            ),
+        ],
+    )
+    pdpa_sec9_p2_bm = StatutoryNode(
+        node_id="PDPA-2010-SEC-9-P2-PROC-BM",
+        act_name="Akta Perlindungan Data Peribadi 2010",
+        act_number="Act 709",
+        section_code="SEC-9(1A)-P2",
+        part_code="PART-II",
+        parent_node_id="PDPA-2010-PART-II",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 9(1A) & (2) [Akta A1727 Fasa 2, berkuat kuasa 1 April 2025]: Pemproses data "
+            "terikat secara langsung di bawah Prinsip Keselamatan dengan denda sehingga RM 1,000,000 "
+            "atau penjara sehingga 3 tahun atau kedua-duanya."
+        ),
+        valid_from=date(2025, 4, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta A1727 / P.U. (B) 522/2024 (Fasa 2)",
+        regime_code="ACT_709",
+        deontic_constraints=pdpa_sec9_p2_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pdpa_sec9_p2_en, pdpa_sec9_p2_bm, authoritative="bm")
+
+    pdpa_bio_en = StatutoryNode(
+        node_id="PDPA-2010-SEC-4-BIOMETRIC-V1",
+        act_name="Personal Data Protection Act 2010",
+        act_number="Act 709",
+        section_code="SEC-4-BIOMETRIC",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 4 (Sensitive Personal Data - Biometric Data, Act A1727 Phase 2, eff. 2025-04-01): "
+            "Biometric data relating to physical, physiological, or behavioural characteristics allowing "
+            "unique identification is classified as sensitive personal data requiring explicit consent."
+        ),
+        valid_from=date(2025, 4, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act A1727 / P.U. (B) 522/2024 (Phase 2)",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT709-BIOMETRIC-CONSENT",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="biometric_sensitive_data_explicit_consent_required",
+                operator="==",
+                threshold_value=True,
+                description="Biometric data requires Section 40 sensitive personal data explicit consent from 2025-04-01.",
+            )
+        ],
+    )
+    pdpa_bio_bm = StatutoryNode(
+        node_id="PDPA-2010-SEC-4-BIOMETRIC-V1-BM",
+        act_name="Akta Perlindungan Data Peribadi 2010",
+        act_number="Act 709",
+        section_code="SEC-4-BIOMETRIC",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 4 (Data Peribadi Sensitif - Data Biometrik, Akta A1727 Fasa 2, berkuat kuasa 1 April 2025): "
+            "Data biometrik diklasifikasikan sebagai data peribadi sensitif yang memerlukan persetujuan nyata."
+        ),
+        valid_from=date(2025, 4, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta A1727 / P.U. (B) 522/2024 (Fasa 2)",
+        regime_code="ACT_709",
+        deontic_constraints=pdpa_bio_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pdpa_bio_en, pdpa_bio_bm, authoritative="bm")
+
+    pdpa_129_v1_en = StatutoryNode(
+        node_id="PDPA-2010-SEC-129-V1",
+        act_name="Personal Data Protection Act 2010",
+        act_number="Act 709",
+        section_code="SEC-129",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 129 (Transfer of Personal Data Outside Malaysia - 2010 Whitelist Regime): "
+            "A data user shall not transfer personal data outside Malaysia unless to a Ministerial "
+            "whitelisted jurisdiction or subject to statutory exceptions such as consent."
+        ),
+        valid_from=date(2013, 11, 15),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 709 (P.U. (B) 464/2013)",
+        regime_code="ACT_709",
+    )
+    pdpa_129_v1_bm = StatutoryNode(
+        node_id="PDPA-2010-SEC-129-V1-BM",
+        act_name="Akta Perlindungan Data Peribadi 2010",
+        act_number="Act 709",
+        section_code="SEC-129",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 129 (Pemindahan Data Peribadi ke Luar Malaysia - Rejim Senarai Putih 2010): "
+            "Pengguna data tidak boleh memindahkan data peribadi ke luar Malaysia kecuali ke tempat "
+            "yang dinyatakan oleh Menteri atau dengan persetujuan."
+        ),
+        valid_from=date(2013, 11, 15),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 709 (P.U. (B) 464/2013)",
+        regime_code="ACT_709",
+    )
+    _add_bilingual_pair(store, pdpa_129_v1_en, pdpa_129_v1_bm, authoritative="bm")
+
+    pdpa_129_v2_en = StatutoryNode(
+        node_id="PDPA-2010-SEC-129-V2",
+        act_name="Personal Data Protection Act 2010",
+        act_number="Act 709",
+        section_code="SEC-129",
+        parent_node_id="PDPA-2010-ACT",
+        version=2,
+        language="en",
+        text=(
+            "Section 129 (Cross-Border Personal Data Transfer - Act A1727 Phase 2, eff. 2025-04-01): "
+            "Replaces the Ministerial whitelist; a data controller may transfer personal data outside "
+            "Malaysia if the destination jurisdiction provides substantially similar laws or an adequate "
+            "level of protection, or with binding safeguards under CBPDT Guidelines No. 03/2025."
+        ),
+        valid_from=date(2025, 4, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act A1727 / P.U. (B) 522/2024 (Phase 2)",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT709-SEC129-ADEQUACY",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="cross_border_transfer_condition",
+                operator="==",
+                threshold_value="consent_or_adequacy_required",
+                description="Amended Section 129 (eff. 2025-04-01) requires substantially similar law, adequacy, or consent.",
+            )
+        ],
+    )
+    pdpa_129_v2_bm = StatutoryNode(
+        node_id="PDPA-2010-SEC-129-V2-BM",
+        act_name="Akta Perlindungan Data Peribadi 2010",
+        act_number="Act 709",
+        section_code="SEC-129",
+        parent_node_id="PDPA-2010-ACT",
+        version=2,
+        language="bm",
+        text=(
+            "Seksyen 129 (Pemindahan Data Rentas Sempadan - Akta A1727 Fasa 2, berkuat kuasa 1 April 2025): "
+            "Menggantikan senarai putih; pengawal data boleh memindahkan data ke luar Malaysia sekiranya "
+            "terdapat tahap perlindungan setara atau persetujuan di bawah Garis Panduan CBPDT Bil. 03/2025."
+        ),
+        valid_from=date(2025, 4, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta A1727 / P.U. (B) 522/2024 (Fasa 2)",
+        regime_code="ACT_709",
+        deontic_constraints=pdpa_129_v2_en.deontic_constraints,
+    )
+    _add_bilingual_pair(
+        store,
+        pdpa_129_v2_en,
+        pdpa_129_v2_bm,
+        authoritative="bm",
+        amends_en_id="PDPA-2010-SEC-129-V1",
+        amends_bm_id="PDPA-2010-SEC-129-V1-BM",
+    )
+
+    pdpd_cbpdt_en = StatutoryNode(
+        node_id="PDPD-CBPDT-2025-03",
+        act_name="PDPD Cross-Border Personal Data Transfer Guidelines No. 03/2025",
+        act_number="PDPD Guideline No. 03/2025",
+        section_code="GUIDELINE-03",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "CBPDT Guidelines No. 03/2025 (effective 29 April 2025): Prescribes Transfer Impact "
+            "Assessment (TIA), binding contractual clauses, and comparable-protection verification "
+            "for cross-border transfers under amended Section 129."
+        ),
+        valid_from=date(2025, 4, 29),
+        gazette_date=date(2025, 4, 29),
+        authority_tier=AuthorityTier.TIER_7_STATUTORY_TRIBUNAL,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="PDPD Guideline No. 03/2025",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-CBPDT-TIA-REQ",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="cbpdt_transfer_impact_assessment_required",
+                operator="==",
+                threshold_value=True,
+                description="Transfer Impact Assessment and comparable protection safeguards under CBPDT Guidelines No. 03/2025.",
+            )
+        ],
+    )
+    pdpd_cbpdt_bm = StatutoryNode(
+        node_id="PDPD-CBPDT-2025-03-BM",
+        act_name="Garis Panduan Pemindahan Data Peribadi Rentas Sempadan JPDP Bil. 03/2025",
+        act_number="PDPD Guideline No. 03/2025",
+        section_code="GUIDELINE-03",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Garis Panduan CBPDT Bil. 03/2025 (berkuat kuasa 29 April 2025): Menetapkan Penilaian Impak "
+            "Pemindahan (TIA) dan klausa kontrak mengikat bagi pemindahan rentas sempadan di bawah Seksyen 129."
+        ),
+        valid_from=date(2025, 4, 29),
+        gazette_date=date(2025, 4, 29),
+        authority_tier=AuthorityTier.TIER_7_STATUTORY_TRIBUNAL,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="PDPD Guideline No. 03/2025",
+        regime_code="ACT_709",
+        deontic_constraints=pdpd_cbpdt_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pdpd_cbpdt_en, pdpd_cbpdt_bm, authoritative="bm")
+
+    pub_522_p3 = StatutoryNode(
+        node_id="PUB-522-2024-P3",
+        act_name="Appointment of Date of Coming into Operation (Act A1727 Phase 3)",
+        act_number="P.U. (B) 522/2024",
+        section_code="PHASE-3",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "P.U. (B) 522/2024 Phase 3 (effective 1 June 2025): Brings into operation sections 6 and 9 "
+            "of Act A1727: mandatory Data Protection Officer (DPO) appointment, Data Portability right "
+            "(s. 43A), 72-hour Commissioner breach notification + within-7-days affected data-subject notice, "
+            "and 2-year data breach register retention."
+        ),
+        valid_from=date(2025, 6, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="P.U. (B) 522/2024",
+        regime_code="ACT_709",
+    )
+    store.upsert_node(pub_522_p3)
+
+    pdpa_43a_en = StatutoryNode(
+        node_id="PDPA-2010-SEC-43A-V1",
+        act_name="Personal Data Protection Act 2010",
+        act_number="Act 709",
+        section_code="SEC-43A",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 43A (Right to Data Portability - Act A1727 Phase 3, effective 1 June 2025): "
+            "A data subject may request the data controller to transmit personal data directly to "
+            "another data controller in a structured, commonly used, machine-readable format."
+        ),
+        valid_from=date(2025, 6, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act A1727 / P.U. (B) 522/2024 (Phase 3)",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT709-SEC43A-PORTABILITY",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="data_portability_right_enabled",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory data portability right under Act 709 s. 43A effective 2025-06-01.",
+            )
+        ],
+    )
+    pdpa_43a_bm = StatutoryNode(
+        node_id="PDPA-2010-SEC-43A-V1-BM",
+        act_name="Akta Perlindungan Data Peribadi 2010",
+        act_number="Act 709",
+        section_code="SEC-43A",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 43A (Hak kepada Kemudahalihan Data - Akta A1727 Fasa 3, berkuat kuasa 1 Jun 2025): "
+            "Subjek data berhak meminta pengawal data memindahkan data peribadinya terus kepada pengawal "
+            "data lain dalam format berstruktur dan boleh dibaca mesin."
+        ),
+        valid_from=date(2025, 6, 1),
+        gazette_date=date(2024, 12, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta A1727 / P.U. (B) 522/2024 (Fasa 3)",
+        regime_code="ACT_709",
+        deontic_constraints=pdpa_43a_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pdpa_43a_en, pdpa_43a_bm, authoritative="bm")
+
+    pdpd_dpo_en = StatutoryNode(
+        node_id="PDPD-DPO-2025-01",
+        act_name="PDPD Guideline on Appointment of Data Protection Officer No. 01/2025",
+        act_number="PDPD Guideline No. 01/2025",
+        section_code="GUIDELINE-01",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "PDPD Guideline No. 01/2025 (effective 1 June 2025): Mandates DPO appointment and competency "
+            "where processing exceeds 20,000 data subjects, 10,000 sensitive data subjects, or regular "
+            "systematic monitoring, with Commissioner registration within 21 days."
+        ),
+        valid_from=date(2025, 6, 1),
+        gazette_date=date(2025, 2, 25),
+        authority_tier=AuthorityTier.TIER_7_STATUTORY_TRIBUNAL,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="PDPD Guideline No. 01/2025",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-PDPD-DPO-COMPETENCY",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="dpo_appointment_and_competency_required",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory DPO appointment, competency, and 21-day Commissioner notification effective 2025-06-01.",
+            )
+        ],
+    )
+    pdpd_dpo_bm = StatutoryNode(
+        node_id="PDPD-DPO-2025-01-BM",
+        act_name="Garis Panduan Pelantikan Pegawai Perlindungan Data JPDP Bil. 01/2025",
+        act_number="PDPD Guideline No. 01/2025",
+        section_code="GUIDELINE-01",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Garis Panduan JPDP Bil. 01/2025 (berkuat kuasa 1 Jun 2025): Mewajibkan pelantikan dan "
+            "kompetensi PPD bagi pemprosesan melebihi 20,000 subjek data atau 10,000 data sensitif."
+        ),
+        valid_from=date(2025, 6, 1),
+        gazette_date=date(2025, 2, 25),
+        authority_tier=AuthorityTier.TIER_7_STATUTORY_TRIBUNAL,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="PDPD Guideline No. 01/2025",
+        regime_code="ACT_709",
+        deontic_constraints=pdpd_dpo_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pdpd_dpo_en, pdpd_dpo_bm, authoritative="bm")
+
+    pdpd_dbn_en = StatutoryNode(
+        node_id="PDPD-DBN-2025-02",
+        act_name="PDPD Guideline on Data Breach Notification No. 02/2025",
+        act_number="PDPD Guideline No. 02/2025",
+        section_code="GUIDELINE-02",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="en",
+        text=(
+            "PDPD Data Breach Notification Guideline No. 02/2025 (effective 1 June 2025): Requires "
+            "72-hour notification to the Commissioner, notification to affected data subjects within "
+            "7 days where significant harm is caused, and maintenance of a data breach register for at least 2 years."
+        ),
+        valid_from=date(2025, 6, 1),
+        gazette_date=date(2025, 2, 25),
+        authority_tier=AuthorityTier.TIER_7_STATUTORY_TRIBUNAL,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="PDPD Guideline No. 02/2025",
+        regime_code="ACT_709",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-PDPD-DBN-COMM-72H",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="incident_notice_max_hours",
+                operator="<=",
+                threshold_value=72.0,
+                unit="hours",
+                recipient="PDPA_COMMISSIONER",
+                notice_stage="INITIAL_NOTICE",
+                description="72-hour Commissioner data breach notification under s. 12B & Guideline No. 02/2025.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-PDPD-DBN-SUBJECT-7D",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="data_subject_breach_notice_max_days",
+                operator="<=",
+                threshold_value=7.0,
+                unit="days",
+                recipient="AFFECTED_DATA_SUBJECT",
+                notice_stage="DATA_SUBJECT_NOTICE",
+                description="Affected data subjects must be notified without unnecessary delay and within 7 days of initial Commissioner notice.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-PDPD-DBN-REGISTER-2Y",
+                regime_id="ACT_709",
+                modality="OBLIGATION",
+                metric_key="breach_register_min_retention_years",
+                operator=">=",
+                threshold_value=2.0,
+                unit="years",
+                description="Mandatory data breach register retention for at least 2 years under Guideline No. 02/2025.",
+            ),
+        ],
+    )
+    pdpd_dbn_bm = StatutoryNode(
+        node_id="PDPD-DBN-2025-02-BM",
+        act_name="Garis Panduan Pemberitahuan Pelanggaran Data Peribadi JPDP Bil. 02/2025",
+        act_number="PDPD Guideline No. 02/2025",
+        section_code="GUIDELINE-02",
+        parent_node_id="PDPA-2010-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Garis Panduan Pemberitahuan Pelanggaran Data Peribadi JPDP Bil. 02/2025 (berkuat kuasa 1 Jun 2025): "
+            "Mewajibkan notis kepada Pesuruhjaya dalam 72 jam, notis kepada subjek data terjejas dalam "
+            "tempoh 7 hari, dan penyimpanan daftar pelanggaran data sekurang-kurangnya 2 tahun."
+        ),
+        valid_from=date(2025, 6, 1),
+        gazette_date=date(2025, 2, 25),
+        authority_tier=AuthorityTier.TIER_7_STATUTORY_TRIBUNAL,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="PDPD Guideline No. 02/2025",
+        regime_code="ACT_709",
+        deontic_constraints=pdpd_dbn_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, pdpd_dbn_en, pdpd_dbn_bm, authoritative="bm")
+
+    store.add_citation(
+        "PDPA-2010-SEC-129-V2",
+        "PDPD-CBPDT-2025-03",
+        effective_date=date(2025, 4, 29),
+        gazette_ref="PDPD Guideline No. 03/2025",
+    )
+    store.add_citation(
+        "PDPA-2010-SEC-12A-V1",
+        "PDPD-DPO-2025-01",
+        effective_date=date(2025, 6, 1),
+        gazette_ref="PDPD Guideline No. 01/2025",
+    )
+    store.add_citation(
+        "PDPA-2010-SEC-12B-V1",
+        "PDPD-DBN-2025-02",
+        effective_date=date(2025, 6, 1),
+        gazette_ref="PDPD Guideline No. 02/2025",
+    )
+
+    # =========================================================================
+    # Phase 1C: 2025-2026 & Companion Malaysian Statutes
+    # (Act 864, Act 866, Act 873, Act 562, Act 563)
+    # =========================================================================
+    act864_act = StatutoryNode(
+        node_id="ACT-864-ACT",
+        act_name="Data Sharing Act 2025",
+        act_number="Act 864",
+        section_code="ACT-864",
+        hierarchy_level=HierarchyLevel.ACT,
+        text="Data Sharing Act 2025 [Act 864]: An Act to provide for the sharing of data among public sector agencies and protection of shared data.",
+        valid_from=date(2025, 4, 28),
+        gazette_date=date(2025, 2, 20),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 864",
+        regime_code="ACT_864",
+    )
+    store.upsert_node(act864_act)
+
+    act864_s12_en = StatutoryNode(
+        node_id="ACT-864-SEC-12-V1",
+        act_name="Data Sharing Act 2025",
+        act_number="Act 864",
+        section_code="SEC-12",
+        parent_node_id="ACT-864-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 12 (Inter-Agency Public-Sector Data Sharing Governance - Act 864, eff. 2025-04-28): "
+            "A public sector data recipient shall process shared data strictly for approved statutory "
+            "purposes and enforce security, retention, and access controls prescribed by the National Data Sharing Committee."
+        ),
+        valid_from=date(2025, 4, 28),
+        gazette_date=date(2025, 2, 20),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 864",
+        regime_code="ACT_864",
+    )
+    act864_s12_bm = StatutoryNode(
+        node_id="ACT-864-SEC-12-V1-BM",
+        act_name="Akta Perkongsian Data 2025",
+        act_number="Act 864",
+        section_code="SEC-12",
+        parent_node_id="ACT-864-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 12 (Tadbir Urus Perkongsian Data Sektor Awam - Akta 864, berkuat kuasa 28 April 2025): "
+            "Agensi penerima data sektor awam hendaklah menggunakan data yang dikongsi hanya bagi maksud "
+            "diluluskan dan mematuhi kawalan keselamatan."
+        ),
+        valid_from=date(2025, 4, 28),
+        gazette_date=date(2025, 2, 20),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 864",
+        regime_code="ACT_864",
+    )
+    _add_bilingual_pair(store, act864_s12_en, act864_s12_bm, authoritative="bm")
+
+    act864_s17_en = StatutoryNode(
+        node_id="ACT-864-SEC-17-V1",
+        act_name="Data Sharing Act 2025",
+        act_number="Act 864",
+        section_code="SEC-17(1)",
+        parent_node_id="ACT-864-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 17(1) (Duty of Third Party to Protect Shared Data - Act 864, eff. 2025-04-28): "
+            "Where a data recipient engages a third-party vendor or contractor for data migration, "
+            "integration, or analytics involving shared public-sector data, the statutory security, "
+            "confidentiality, and protection duties extend directly to that third-party vendor."
+        ),
+        valid_from=date(2025, 4, 28),
+        gazette_date=date(2025, 2, 20),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 864",
+        regime_code="ACT_864",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT864-S17-THIRD-PARTY",
+                regime_id="ACT_864",
+                modality="OBLIGATION",
+                metric_key="public_sector_third_party_data_protection",
+                operator="==",
+                threshold_value=True,
+                description="Act 864 s. 17(1) extends statutory shared-data protection duties to third-party public-sector vendors/contractors.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT864-S17-WAIVER",
+                regime_id="ACT_864",
+                modality="PROHIBITION",
+                metric_key="public_sector_vendor_statutory_waiver",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="third_party_shared_data_duty_waiver",
+                description="Third-party vendors performing public-sector data migration, integration, or analytics cannot disclaim Act 864 s. 17(1) duties.",
+            ),
+        ],
+    )
+    act864_s17_bm = StatutoryNode(
+        node_id="ACT-864-SEC-17-V1-BM",
+        act_name="Akta Perkongsian Data 2025",
+        act_number="Act 864",
+        section_code="SEC-17(1)",
+        parent_node_id="ACT-864-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 17(1) (Kewajipan Pihak Ketiga Melindungi Data Dikongsi - Akta 864, berkuat kuasa 28 April 2025): "
+            "Apabila penerima data melantik vendor atau kontraktor pihak ketiga bagi migrasi, integrasi, atau "
+            "analitik data sektor awam, kewajipan perlindungan berkanun terpakai secara langsung kepada pihak ketiga tersebut."
+        ),
+        valid_from=date(2025, 4, 28),
+        gazette_date=date(2025, 2, 20),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 864",
+        regime_code="ACT_864",
+        deontic_constraints=act864_s17_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act864_s17_en, act864_s17_bm, authoritative="bm")
+
+    # Online Safety Act 2025 [Act 866] (eff. 2026-01-01) + Codes (eff. 2026-06-01)
+    act866_act = StatutoryNode(
+        node_id="ACT-866-ACT",
+        act_name="Online Safety Act 2025",
+        act_number="Act 866",
+        section_code="ACT-866",
+        hierarchy_level=HierarchyLevel.ACT,
+        text="Online Safety Act 2025 [Act 866]: An Act to regulate harmful online content and enforce platform safety plans.",
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 19),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 866 / P.U. (B) 449/2025",
+        regime_code="ACT_866",
+    )
+    store.upsert_node(act866_act)
+
+    act866_s15_en = StatutoryNode(
+        node_id="ACT-866-SEC-15-V1",
+        act_name="Online Safety Act 2025",
+        act_number="Act 866",
+        section_code="SEC-15",
+        parent_node_id="ACT-866-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Sections 15-22 & 42 (Platform Harmful-Content Takedown, Safety Plan & RM 10M Penalty - "
+            "Act 866, effective 1 January 2026): Licensed application and content service providers shall "
+            "prepare an annual Online Safety Plan, mitigate and take down priority harmful content, report "
+            "harmful content incidents promptly to MCMC, and face financial penalties up to RM 10,000,000 for non-compliance."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 19),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 866 / P.U. (B) 449/2025",
+        regime_code="ACT_866",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT866-HARMFUL-CONTENT",
+                regime_id="ACT_866",
+                modality="OBLIGATION",
+                metric_key="online_safety_harmful_content_mitigation",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory platform harmful-content takedown and reporting duties under Act 866.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT866-SAFETY-PLAN",
+                regime_id="ACT_866",
+                modality="OBLIGATION",
+                metric_key="online_safety_plan_required",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory platform Online Safety Plan governance under Act 866.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT866-MAX-PENALTY-10M",
+                regime_id="ACT_866",
+                modality="OBLIGATION",
+                metric_key="online_safety_max_penalty_myr",
+                operator=">=",
+                threshold_value=10_000_000.0,
+                unit="MYR",
+                description="Maximum statutory penalty of RM 10,000,000 for platform non-compliance under Act 866.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT866-MCMC-REPORT-24H",
+                regime_id="ACT_866",
+                modality="OBLIGATION",
+                metric_key="online_safety_harmful_content_notice_hours",
+                operator="<=",
+                threshold_value=24.0,
+                unit="hours",
+                recipient="MCMC",
+                notice_stage="HARMFUL_CONTENT_REPORT",
+                description="Platform harmful-content reporting/takedown escalation to MCMC within 24 hours under Act 866.",
+            ),
+        ],
+    )
+    act866_s15_bm = StatutoryNode(
+        node_id="ACT-866-SEC-15-V1-BM",
+        act_name="Akta Keselamatan Dalam Talian 2025",
+        act_number="Act 866",
+        section_code="SEC-15",
+        parent_node_id="ACT-866-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 15-22 & 42 (Penurunan Kandungan Memudaratkan, Pelan Keselamatan & Penalti RM 10 Juta - "
+            "Akta 866, berkuat kuasa 1 Januari 2026): Pemberi perkhidmatan berlesen wajib menyediakan Pelan "
+            "Keselamatan Dalam Talian, menurunkan kandungan memudaratkan, dan tertakluk kepada penalti sehingga RM 10,000,000."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 19),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 866 / P.U. (B) 449/2025",
+        regime_code="ACT_866",
+        deontic_constraints=act866_s15_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act866_s15_en, act866_s15_bm, authoritative="bm")
+
+    act866_code_en = StatutoryNode(
+        node_id="ACT-866-CODE-2026-V1",
+        act_name="Online Safety (Risk Mitigation Code and Child Protection Code) 2026",
+        act_number="Act 866 Codes 2026",
+        section_code="CODE-RMCP",
+        parent_node_id="ACT-866-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Risk Mitigation Code & Child Protection Code [Act 866, effective 1 June 2026]: Platforms "
+            "shall enforce under-16 age verification using MyKad or passport checks and apply high-privacy "
+            "child protection defaults."
+        ),
+        valid_from=date(2026, 6, 1),
+        gazette_date=date(2026, 5, 15),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 866 Codes 2026",
+        regime_code="ACT_866",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT866-U16-AGE-VERIFY",
+                regime_id="ACT_866",
+                modality="OBLIGATION",
+                metric_key="online_safety_under_16_age_verification",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory under-16 MyKad/passport age-verification requirements effective 2026-06-01.",
+            )
+        ],
+    )
+    act866_code_bm = StatutoryNode(
+        node_id="ACT-866-CODE-2026-V1-BM",
+        act_name="Kod Mitigasi Risiko dan Kod Perlindungan Kanak-Kanak (Akta 866) 2026",
+        act_number="Act 866 Codes 2026",
+        section_code="CODE-RMCP",
+        parent_node_id="ACT-866-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Kod Mitigasi Risiko & Kod Perlindungan Kanak-Kanak [Akta 866, berkuat kuasa 1 Jun 2026]: "
+            "Platform wajib melaksanakan pengesahan umur bawah 16 tahun melalui MyKad atau pasport."
+        ),
+        valid_from=date(2026, 6, 1),
+        gazette_date=date(2026, 5, 15),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 866 Codes 2026",
+        regime_code="ACT_866",
+        deontic_constraints=act866_code_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act866_code_en, act866_code_bm, authoritative="bm")
+    store.add_citation(
+        "ACT-866-SEC-15-V1",
+        "ACT-866-CODE-2026-V1",
+        effective_date=date(2026, 6, 1),
+        gazette_ref="Act 866 Codes 2026",
+    )
+
+    # Consumer Credit Act 2025 [Act 873] (eff. 2026-03-01, SKP licensing 2026-06-01)
+    act873_act = StatutoryNode(
+        node_id="ACT-873-ACT",
+        act_name="Consumer Credit Act 2025",
+        act_number="Act 873",
+        section_code="ACT-873",
+        hierarchy_level=HierarchyLevel.ACT,
+        text="Consumer Credit Act 2025 [Act 873]: An Act to establish the Consumer Credit Commission (SKP) and regulate non-bank credit, BNPL, and debt collection.",
+        valid_from=date(2026, 3, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 873",
+        regime_code="ACT_873",
+    )
+    store.upsert_node(act873_act)
+
+    act873_s35_en = StatutoryNode(
+        node_id="ACT-873-SEC-35-V1",
+        act_name="Consumer Credit Act 2025",
+        act_number="Act 873",
+        section_code="SEC-35",
+        parent_node_id="ACT-873-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 35 (Prohibition of Rule-of-78 and Flat-Rate Interest Calculation - Act 873, eff. 2026-03-01): "
+            "A credit provider or Buy Now Pay Later (BNPL) operator shall NOT include or apply Rule-of-78 "
+            "or flat-rate interest calculation clauses in any consumer credit agreement."
+        ),
+        valid_from=date(2026, 3, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 873",
+        regime_code="ACT_873",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT873-NO-RULE78",
+                regime_id="ACT_873",
+                modality="PROHIBITION",
+                metric_key="rule_of_78_interest_prohibition",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="rule_of_78_or_flat_rate_interest",
+                description="Prohibition of Rule-of-78 and flat-rate interest calculation clauses under Consumer Credit Act 2025 [Act 873].",
+            )
+        ],
+    )
+    act873_s35_bm = StatutoryNode(
+        node_id="ACT-873-SEC-35-V1-BM",
+        act_name="Akta Kredit Pengguna 2025",
+        act_number="Act 873",
+        section_code="SEC-35",
+        parent_node_id="ACT-873-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 35 (Larangan Pengiraan Faedah Peraturan 78 dan Kadar Rata - Akta 873, berkuat kuasa 1 Mac 2026): "
+            "Pemberi kredit atau pengendali Beli Sekarang Bayar Kemudian (BNPL) dilarang menggunakan klausa "
+            "pengiraan faedah Peraturan 78 atau kadar rata dalam perjanjian kredit pengguna."
+        ),
+        valid_from=date(2026, 3, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 873",
+        regime_code="ACT_873",
+        deontic_constraints=act873_s35_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act873_s35_en, act873_s35_bm, authoritative="bm")
+
+    act873_skp_en = StatutoryNode(
+        node_id="ACT-873-SKP-LIC-V1",
+        act_name="Consumer Credit Act 2025",
+        act_number="Act 873",
+        section_code="SEC-42-SKP",
+        parent_node_id="ACT-873-ACT",
+        version=1,
+        language="en",
+        text=(
+            "SKP Licensing & Registration Mandate [Act 873, effective 1 June 2026]: Non-bank credit "
+            "providers, Buy Now Pay Later (BNPL) operators, leasing/factoring firms, and debt-collection "
+            "agencies must be licensed or registered with Suruhanjaya Kredit Pengguna (SKP)."
+        ),
+        valid_from=date(2026, 6, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 873 (SKP Licensing)",
+        regime_code="ACT_873",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT873-SKP-LICENSE",
+                regime_id="ACT_873",
+                modality="OBLIGATION",
+                metric_key="skp_non_bank_credit_license_required",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory SKP licensing/registration for non-bank credit, BNPL, and debt-collection firms effective 2026-06-01.",
+            )
+        ],
+    )
+    act873_skp_bm = StatutoryNode(
+        node_id="ACT-873-SKP-LIC-V1-BM",
+        act_name="Akta Kredit Pengguna 2025",
+        act_number="Act 873",
+        section_code="SEC-42-SKP",
+        parent_node_id="ACT-873-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Pelesenan & Pendaftaran SKP [Akta 873, berkuat kuasa 1 Jun 2026]: Pemberi kredit bukan bank, "
+            "pengendali BNPL, dan agensi pemungut hutang wajib dilesenkan atau didaftarkan dengan "
+            "Suruhanjaya Kredit Pengguna (SKP)."
+        ),
+        valid_from=date(2026, 6, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 873 (Pelesenan SKP)",
+        regime_code="ACT_873",
+        deontic_constraints=act873_skp_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act873_skp_en, act873_skp_bm, authoritative="bm")
+    store.add_citation(
+        "ACT-873-SEC-35-V1",
+        "ACT-873-SKP-LIC-V1",
+        effective_date=date(2026, 6, 1),
+        gazette_ref="Act 873",
+    )
+
+    # Companion Statutes: Digital Signature Act 1997 [Act 562] & Computer Crimes Act 1997 [Act 563]
+    act562_en = StatutoryNode(
+        node_id="ACT-562-SEC-62-V1",
+        act_name="Digital Signature Act 1997",
+        act_number="Act 562",
+        section_code="SEC-62",
+        version=1,
+        language="en",
+        text=(
+            "Section 62 (Satisfaction of Signature Requirements - Digital Signature Act 1997 [Act 562]): "
+            "Where a rule of law requires a signature, that requirement is satisfied by a digital signature "
+            "verified by reference to the public key listed in a valid certificate issued by a licensed Certification Authority."
+        ),
+        valid_from=date(1998, 10, 1),
+        gazette_date=date(1998, 9, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 562 / P.U. (B) 397/1998",
+        regime_code="ACT_562",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT562-DIGITAL-SIG",
+                regime_id="ACT_562",
+                modality="PERMISSION",
+                metric_key="licensed_ca_digital_signature_valid",
+                operator="==",
+                threshold_value=True,
+                description="Licensed CA digital signatures satisfy statutory signature requirements under Act 562 s. 62.",
+            )
+        ],
+    )
+    act562_bm = StatutoryNode(
+        node_id="ACT-562-SEC-62-V1-BM",
+        act_name="Akta Tandatangan Digital 1997",
+        act_number="Act 562",
+        section_code="SEC-62",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 62 (Pematuhan Kehendak Tandatangan - Akta Tandatangan Digital 1997 [Akta 562]): "
+            "Kehendak tandatangan undang-undang dipenuhi melalui tandatangan digital yang disahkan oleh "
+            "Pihak Berkuasa Pemerakuan berlesen."
+        ),
+        valid_from=date(1998, 10, 1),
+        gazette_date=date(1998, 9, 24),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 562 / P.U. (B) 397/1998",
+        regime_code="ACT_562",
+        deontic_constraints=act562_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act562_en, act562_bm, authoritative="bm")
+    store.add_citation(
+        "ACT-658-SEC-7-V1",
+        "ACT-562-SEC-62-V1",
+        effective_date=date(2006, 10, 19),
+        gazette_ref="Act 562",
+    )
+
+    act563_en = StatutoryNode(
+        node_id="ACT-563-SEC-3-V1",
+        act_name="Computer Crimes Act 1997",
+        act_number="Act 563",
+        section_code="SEC-3",
+        version=1,
+        language="en",
+        text=(
+            "Sections 3 & 5 (Unauthorized Access and Modification - Computer Crimes Act 1997 [Act 563]): "
+            "Knowingly causing a computer to perform any function with intent to secure unauthorized access "
+            "to any program or data, or unauthorized modification of computer contents, constitutes a criminal offence."
+        ),
+        valid_from=date(2000, 6, 1),
+        gazette_date=date(2000, 5, 25),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 563 / P.U. (B) 175/2000",
+        regime_code="ACT_563",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT563-UNAUTH-ACCESS",
+                regime_id="ACT_563",
+                modality="PROHIBITION",
+                metric_key="unauthorized_computer_access_prohibited",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="unauthorized_computer_access_or_modification",
+                description="Unauthorized computer access or content modification is prohibited under Computer Crimes Act 1997 [Act 563] ss. 3 & 5.",
+            )
+        ],
+    )
+    act563_bm = StatutoryNode(
+        node_id="ACT-563-SEC-3-V1-BM",
+        act_name="Akta Jenayah Komputer 1997",
+        act_number="Act 563",
+        section_code="SEC-3",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 3 & 5 (Capaian dan Pengubahsuaian Tanpa Kuasa - Akta Jenayah Komputer 1997 [Akta 563]): "
+            "Capaian tanpa kuasa terhadap bahan komputer atau pengubahsuaian kandungan komputer tanpa kuasa "
+            "adalah suatu kesalahan jenayah."
+        ),
+        valid_from=date(2000, 6, 1),
+        gazette_date=date(2000, 5, 25),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 563 / P.U. (B) 175/2000",
+        regime_code="ACT_563",
+        deontic_constraints=act563_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act563_en, act563_bm, authoritative="bm")
+    store.add_citation(
+        "CSA-2024-SEC-23-V1",
+        "ACT-563-SEC-3-V1",
+        effective_date=date(2024, 8, 26),
+        gazette_ref="Act 563",
     )
 
     return store

@@ -1,95 +1,46 @@
 # `lexgraph-lah` — Deterministic Multi-Regime Legal Compliance, Counterfactual Redline & FinOps Engine
 
 [![CI Pipeline](https://github.com/Kearskill/lexgraph-lah/actions/workflows/ci.yml/badge.svg)](https://github.com/Kearskill/lexgraph-lah/actions/workflows/ci.yml)
+[![Security Audit](https://github.com/Kearskill/lexgraph-lah/actions/workflows/security.yml/badge.svg)](https://github.com/Kearskill/lexgraph-lah/actions/workflows/security.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.162%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-1C3C3C?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-**`lexgraph-lah`** is a deterministic multi-agent regulatory compliance, bi-temporal statutory redline diffing, Act 388 bilingual divergence auditing, contract AST trap-detection, and Track-Changes `.docx` redline compiler engineered for overlapping Malaysian statutory regimes: **PDPA 2010 [Act 709] & PDPA (Amendment) Act 2024 [Act A1727]**, **Cyber Security Act 2024 [Act 854] & P.U. (A) 220/2024**, **Bank Negara Malaysia RMiT**, and **Interpretation Acts 1948 and 1967 [Act 388]**, alongside Malaysian constitutional, contractual, and 5-way East/West/Offshore territorial statutes (`Act 265`, `Sabah Cap. 67`, `Sarawak Cap. 76`, `Labuan Act 704`, `Act 136`, `Act 574`).
+**`lexgraph-lah`** is a deterministic multi-agent regulatory compliance, bi-temporal statutory redline diffing, Act 388 bilingual divergence auditing, contract AST trap-detection, and Track-Changes `.docx` redline compiler engineered for overlapping 2025–2026 Malaysian statutory regimes:
+
+- **PDPA 2010 [Act 709], PDPA (Amendment) Act 2024 [Act A1727] & 2025 PDPD Guidelines:** All three phased commencement tranches via `P.U. (B) 522/2024` (`2025-01-01`, `2025-04-01`, `2025-06-01`), including direct Data Processor s. 9 obligations (`RM1M / 3y`), biometric sensitive personal data, s. 129 adequacy/CBPDT Guidelines `No. 03/2025`, s. 43A data portability, mandatory DPO (`No. 01/2025`), **72-hour Commissioner breach notice**, **7-day affected data-subject notice**, and **2-year breach register** (`No. 02/2025`).
+- **Cyber Security Act 2024 [Act 854] Full Subsidiary Suite:** `P.U. (A) 219/2024` (annual NCII risk assessment / biennial independent audit), `P.U. (A) 220/2024` (`6h` initial / `14d` full NCII incident reporting), `P.U. (A) 221/2024` (mandatory NACSA MSSP SOC & penetration testing licensing), `P.U. (A) 222/2024` (compounding of offences), and the **Cyber Security (Exemption) Order 2025** (`P.U. (A) 47/2025`) temporal carve-out metadata.
+- **Bank Negara Malaysia RMiT** (`1h` critical incident notice, cloud exit plan & regulator audit rights).
+- **Enacted 2025–2026 & Companion Malaysian Statutes:**
+  - **Data Sharing Act 2025 [Act 864]** (eff. `2025-04-28`), including **s. 17(1)** extension of public-sector statutory duties to third-party contractors/vendors.
+  - **Online Safety Act 2025 [Act 866]** (eff. `2026-01-01`) & **Risk Mitigation / Child Protection Codes** (eff. `2026-06-01`, under-16 MyKad/passport verification, RM10M non-compliance penalty ceiling).
+  - **Consumer Credit Act 2025 [Act 873]** (eff. `2026-03-01`) & **SKP BNPL/Debt-Collector Licensing** (eff. `2026-06-01`, Rule-of-78 / flat-rate prohibition).
+  - **Digital Signature Act 1997 [Act 562]** and **Computer Crimes Act 1997 [Act 563]**.
+- **Interpretation Acts 1948 and 1967 [Act 388]** (`s. 63`) and 5-way East/West/Offshore territorial statutes (`Act 265`, `Sabah Cap. 67`, `Sarawak Cap. 76`, `Labuan Act 704`, `Act 136`, `Act 658`, `Act 574`).
 
 ---
 
 ## Core Capabilities
 
-1. **Zero-Token Multi-Regime Deontic Conflict Solver (`DeonticEnvelopeResolver`):**
-   - Resolves point-in-time statutes and bi-temporal `P.U. (A)` / `P.U. (B)` subsidiary gazettes in `O(V + E)` (`0` LLM tokens) across **Act 709** (`72h` breach notice), **Act 854 & P.U. (A) 220/2024** (`6h` NCII initial particulars, `14d` full report, effective `2024-08-26`), **BNM RMiT** (`1h` critical incident escalation, cloud exit plan & regulator audit rights), **5-Territory Expansion** (**Act 265** `45h` Peninsular vs. **Sabah Cap. 67** `48h` + work permit vs. **Sarawak Cap. 76** `48h` + non-resident licence vs. **Labuan Act 704** LFSA licensing + **Contracts Act 1950 [Act 136]** s. 75 reasonable compensation cap), and **Electronic Commerce Act 2006 [Act 658]**.
-   - Synthesizes the **Strictest Composite Statutory Envelope** with inter-regime conflict deltas, territorial bounds, and full statutory provenance chains.
-2. **Adversarial OOXML/PDF Security Firewall & Pre-AST Sanitizer (`doc_firewall.py`):**
-   - Zero-token inspection (`$0.00 USD`) of `.docx` OOXML packages, `.pdf` streams, and raw text BEFORE `ContractASTGraph` ingestion (`scan_document_security`, `sanitize_docx_bytes`), detecting and quarantining `<w:vanish/>`, `<w:webHidden/>`, `<= 1pt` micro fonts, `#FFFFFF`/`#FEFEFE`/near-white text, `customXml`, suspicious comments, VBA macros (`vbaProject.bin`), PDF invisible rendering mode (`3 Tr`), zero-point fonts, and off-page `Tm`/`Td` layers, plus bilingual EN/BM Indirect Prompt Injection / statutory spoofing directives while preserving benign visible clauses and `<w:trackRevisions/>` intact.
-3. **Zero-Token Portfolio Gazette Blast-Radius Engine (`portfolio_scanner.py`):**
-   - Scans batches of up to 50 agreements (`{contract_id, title, text}` or `{document_id, raw_text}`) between `from_date` and `to_date`, deterministically ranking impacted contracts by severity shift, broken clause count, newly commenced `P.U.` gazettes, and strictest territorial deontic bounds with pre-flight PII scrubbing.
-4. **Zero-Token Bi-Temporal Statutory Redline Diff & Contract Delta-Audit (`diff_engine.py`):**
-   - Deterministically compares any statutory or `P.U.` subsidiary provision between `from_date` and `to_date` across `AMENDED_BY`, `SUPERSEDED_BY`, and `REPEALED_BY` chains (`diff_statute_lineage` / `StatutoryVersionDiff`), emitting `SourceSpan`-grounded added/removed/modified clause diffs and gazette transition dates at `$0.00 USD / RM 0.00 MYR`.
-   - Evaluates **Contract Delta-Audit** regressions (`evaluate_contract_delta_impact` / `ContractDeltaAuditResponse`) to detect whether an agreement compliant at `from_date` becomes non-compliant at `to_date` due to intervening amendments or `P.U.` gazette commencements (e.g., pre-2025 PDPA vs. Act A1727 / `P.U. (A) 220/2024`), protected by pre-flight Malaysian PII scrubbing.
-5. **Act 388 Bilingual Divergence & Authoritative Text Critic (`bilingual_critic.py`):**
-   - Under Malaysia's **Interpretation Acts 1948 and 1967 [Act 388], s. 63**, deterministically audits paired Bahasa Melayu (`Seksyen`) and English (`Section`) `SourceSpan` nodes (`audit_bilingual_divergence` / `BilingualDivergenceReport`, `$0.00 USD`) for deontic modality mismatches (`hendaklah`/`wajib` vs. `may`), numeric/deadline discrepancies, `RM` penalty ceiling differences, and missing sub-clauses/provisos, surfacing authoritative language precedence.
-6. **Intra-Contract Clause AST, Shadow-Override Trap Detector & Reversible PII Vault:**
-   - Parses `.docx` (OOXML XML), `.pdf` (compressed stream/text), and raw BM/EN/mixed contracts into structural `ContractClauseNode`s with immutable hierarchical `SourceSpan`s (`pdf_page`, `paragraph_idx`, `start_char`, `end_char`, SHA-256).
-   - Scrubs Malaysian NRIC, Passport, Phone, Email, and SSM numbers pre-flight (`<50ms` gate) via `PIIScrubberMiddleware` and a per-request **Reversible Ephemeral Token Vault** (`[MYKAD_01]`, `[PASSPORT_01]`, `[SSM_REG_01]`, `[PHONE_MY_01]`) so zero raw PII ever reaches Gemini prompts or OTel spans, while supporting local re-hydration during downloadable `.docx` compilation.
-   - Builds a typed **Intra-Contract Dependency Graph** (`DEFINES_TERM`, `OVERRIDES_NOTWITHSTANDING`, `CROSS_REFERENCES`) flagging **Narrow Definition Traps** and hostile EN/BM priority overrides (`"Notwithstanding Clause..."`, `"Walau apa pun yang terkandung dalam Klausa..."`).
-7. **5-Node Counterfactual Redline LangGraph & `gemini-4-neon` FinOps Routing (`MAX_RETRIES = 2`):**
-   - **`contract_ast_ingestor_node`** (`0` tokens, IPI firewall -> AST + PII Vault) -> **`deontic_temporal_retriever_node`** (`0` tokens, `0.78` Abstention Gate + 5/7-tier Malaysian authority & territorial reranker) -> **`cross_clause_risk_assessor_node`** (deterministic complexity router `select_model_tier` escalating counterfactual retries, multi-regime collisions, AST anomalies, or security-flagged runs to **`gemini-4-neon`** (`$3.00/$15.00/$0.15` cached per 1M) while keeping simple single-regime paths on **`gemini-4-hydrogen`** (`$0.50/$2.50/$0.05`), emitting `model_tier` on OTel spans) -> **`counterfactual_auditor_node`** (`0` tokens, 4 invariants) -> **`redline_manifest_node`** (`0` tokens, cryptographic SHA-256 `ComplianceAttestationManifest`).
-8. **Tamper-Evident SQLite WAL Attestation Ledger (`attestation_ledger.py`):**
-   - Persists `ComplianceAttestationManifest` records and `TelemetrySummary` snapshots in an append-only SHA-256 hash-chained SQLite WAL store, verifying single-byte document integrity, `as_of_date` graph snapshots, `SourceSpan` citations, and chain links (`GET /api/v1/attestation/{manifest_id}`, `POST /api/v1/attestation/verify`).
-9. **Native JSON-RPC 2.0 MCP Server (11 Tools), OOXML `.docx` Compiler & Dual-Layer UI:**
-   - Exposes all **11 tools** over both REST (`/api/v1/mcp/tools`, `/api/v1/mcp/call`), Streamable HTTP JSON-RPC 2.0 (`POST /mcp`), and CLI stdio (`python -m lexgraph_lah.mcp.jsonrpc --stdio`), alongside Track-Changes `.docx` compilation (`<w:trackRevisions/>`, `<w:del>`, `<w:ins>`), live SSE streaming, Dual-Layer Cytoscape.js Time-Travel Redline Explorer & Portfolio Blast-Radius Console (`/dashboard`), and Studio quick-trigger + Act 388 bilingual drawer (`/demo`).
-
----
-
-## System Architecture
-
-```mermaid
-flowchart TD
-    Client["Client / Demo Studio (/demo) / .docx or .pdf Upload"] -->|"POST /compliance/check | /upload | /stream"| API["FastAPI Router + PIIScrubberMiddleware (src/lexgraph_lah/api/routes.py)"]
-
-    API -->|"Pre-AST Security Gate (0 tok)"| Firewall["Document IPI & OOXML/PDF Firewall (doc_firewall.py)\n<w:vanish/> | 3 Tr / Off-Page | Macros | EN/BM Spoof Quarantine"]
-    Firewall --> Node1["Node 1: contract_ast_ingestor_node (0 tok)\nContractClauseNode AST + ReversiblePIIVault\nDEFINES_TERM | OVERRIDES_NOTWITHSTANDING | CROSS_REFERENCES"]
-    Node1 --> Node2["Node 2: deontic_temporal_retriever_node (0 tok)\nTemporalGraphStore + P.U. Gazettes + BM/EN Crosswalk\n5/7-Tier Territorial Reranker (Peninsular/Sabah/Sarawak/Labuan/Fed) + 0.78 Abstention Gate\nDeonticEnvelopeResolver (Act 709/854/BNM RMiT/Act 265/Cap.67/Cap.76/Act 704/Act 136/Act 658)"]
-
-    Node2 -->|"is_abstained=True (<0.78)"| Node5
-    Node2 -->|"Strictest Composite Envelope"| Node3["Node 3: cross_clause_risk_assessor_node (select_model_tier)\ngemini-4-hydrogen (Fast) | gemini-4-neon (Retry/Multi-Regime/AST/Security)\nPractitioner IRAC / Rakyat gov.my & BM/EN/Bilingual"]
-
-    Node3 --> Node4["Node 4: counterfactual_auditor_node (0 tok)\n4 Invariants: Verbatim SourceSpan | Active Lineage\nCounterfactual Deontic Bound + Override Neutralization | Non-Trivial Diff"]
-    Node4 -->|"Fail & retry_count < 2\nPinpoint auditor_feedback"| Node3
-    Node4 -->|"Pass OR retry_count == 2"| Node5["Node 5: redline_manifest_node (0 tok)\nCryptographic SHA-256 Attestation + SQLite WAL Ledger"]
-
-    API -->|"GET/POST /api/v1/lineage/diff & /delta-audit (0 tok)"| DiffEngine["Bi-Temporal Statutory Diff & Delta-Audit (diff_engine.py)\nAMENDED_BY / REPEALED_BY Redlines + P.U. Regression Check ($0.00)"]
-    API -->|"POST /api/v1/portfolio/blast-radius (0 tok)"| Portfolio["Portfolio Gazette Blast-Radius Engine (portfolio_scanner.py)\n<= 50 Contracts | Severity Ranking | Territorial Deontic Bounds ($0.00)"]
-    API -->|"GET/POST /api/v1/crosswalk/.../divergence (0 tok)"| Critic388["Act 388 s. 63 Bilingual Divergence Critic (bilingual_critic.py)\nModality | Deadline | Penalty Ceiling | Sub-Clause Alignment ($0.00)"]
-    DiffEngine --> GraphStore["TemporalGraphStore + 11-Tool MCP Registry (POST /mcp & jsonrpc.py --stdio)"]
-    Portfolio --> GraphStore
-    Critic388 --> GraphStore
-
-    Node5 -->|"POST /compliance/export-docx"| OOXML["OOXML Redline Compiler (ooxml_redliner.py)\n<w:trackRevisions/> <w:del> <w:ins> <w:comment> + Local PII Re-hydration"]
-    Node5 -->|"Hash-Chained WAL"| Ledger["AttestationLedger (attestation_ledger.py)\nGET /api/v1/attestation/{id} & POST /verify"]
-    Node5 -->|"TelemetrySummary (model_tier, USD & MYR)"| OTel["TelemetryRegistry & Arize Phoenix (:6006)"]
-```
-
-### Core Modules (`src/lexgraph_lah/`)
-
-| Module | Responsibility |
-| :--- | :--- |
-| [`src/lexgraph_lah/schemas/domain.py`](./src/lexgraph_lah/schemas/domain.py) | Strict Pydantic v2 domain models: `DocumentSecurityReport`, `DocumentSecurityFinding`, `PortfolioBlastRadiusResponse`, `AttestationLedgerRecord`, `AttestationVerifyResponse`, `StatutoryVersionDiff`, `ContractDeltaAuditResponse`, `BilingualDivergenceReport`, `DeonticConstraint`, `CompositeDeonticEnvelope`, `ContractASTGraph`, `ShadowOverrideTrap`, `NarrowDefinitionTrap`, `ComplianceAttestationManifest`, `SourceSpan`, `StatutoryNode`, `ClauseAudit`, `ContractAuditResponse`. |
-| [`src/lexgraph_lah/security/doc_firewall.py`](./src/lexgraph_lah/security/doc_firewall.py) | Zero-token Adversarial OOXML/PDF/Text Firewall (`scan_document_security`, `sanitize_docx_bytes`) inspecting hidden `<w:vanish/>`/`<w:webHidden/>` runs, micro/white fonts, `vbaProject.bin`, `customXml`, PDF `3 Tr` / off-page layers, and EN/BM IPI overrides before AST construction. |
-| [`src/lexgraph_lah/security/attestation_ledger.py`](./src/lexgraph_lah/security/attestation_ledger.py) | Thread-safe append-only SQLite WAL SHA-256 hash-chained `AttestationLedger` & single-byte cryptographic tamper verifier. |
-| [`src/lexgraph_lah/schemas/state.py`](./src/lexgraph_lah/schemas/state.py) | `AgentState` `TypedDict` with additive `Annotated[int, operator.add]` token reducers, security findings, model routing metadata, and 5-node state payloads. |
-| [`src/lexgraph_lah/graph/temporal_store.py`](./src/lexgraph_lah/graph/temporal_store.py) | `TemporalGraphStore` & parameterized Cypher builders, seeding Act 709, Act 854 & `P.U. (A) 220/2024`, BNM RMiT, `P.U. (A) 342/2024`, `P.U. (B) 512/2024`, Act 388 s. 63, Act 265, Sabah Cap. 67, Sarawak Cap. 76, Labuan Act 704, Electronic Commerce Act 2006 [Act 658], Act 136, Act 574, and Federal/COA/HC cases. |
-| [`src/lexgraph_lah/graph/portfolio_scanner.py`](./src/lexgraph_lah/graph/portfolio_scanner.py) | Zero-token batch Gazette Blast-Radius Scanner (`scan_portfolio_blast_radius`) ranking up to 50 contracts across `from_date` -> `to_date` with territorial deontic bounds and PII masking. |
-| [`src/lexgraph_lah/graph/diff_engine.py`](./src/lexgraph_lah/graph/diff_engine.py) | Zero-token bi-temporal statutory redline diffing (`diff_statute_lineage`) and Contract Delta-Audit regression engine (`evaluate_contract_delta_impact`). |
-| [`src/lexgraph_lah/graph/bilingual_critic.py`](./src/lexgraph_lah/graph/bilingual_critic.py) | Zero-token Act 388 s. 63 Bilingual Divergence Critic (`audit_bilingual_pair`, `audit_bilingual_divergence`) detecting deontic modality, deadline, `RM` penalty, and sub-clause discrepancies. |
-| [`src/lexgraph_lah/graph/deontic_solver.py`](./src/lexgraph_lah/graph/deontic_solver.py) | `DeonticEnvelopeResolver`: zero-token $O(V + E)$ strictest-bound solver across Federal, Peninsular (`Act 265`), Sabah (`Cap. 67`), Sarawak (`Cap. 76`), Labuan (`Act 704`), Contracts Act (`Act 136`), and `Act 658` regimes. |
-| [`src/lexgraph_lah/graph/bilingual_router.py`](./src/lexgraph_lah/graph/bilingual_router.py) & [`reranker.py`](./src/lexgraph_lah/graph/reranker.py) | BM/EN/code-switched query expansion, 5-way territorial isolation, `0.78` Abstention Gate, and 5/7-tier Malaysian authority reranker. |
-| [`src/lexgraph_lah/graph/ingestion.py`](./src/lexgraph_lah/graph/ingestion.py) | Structure-aware statute splitter (`Act -> Part -> Chapter -> Section -> Subsection -> Proviso -> Illustration`) and `BilingualCrosswalkResolver`. |
-| [`src/lexgraph_lah/ingestion/contract_ast.py`](./src/lexgraph_lah/ingestion/contract_ast.py) | `.docx` / `.pdf` / raw text extractor, Intra-Contract Dependency Graph (`DEFINES_TERM`, `OVERRIDES_NOTWITHSTANDING`, `CROSS_REFERENCES`), and EN/BM trap detection. |
-| [`src/lexgraph_lah/ingestion/ooxml_redliner.py`](./src/lexgraph_lah/ingestion/ooxml_redliner.py) | Native Microsoft Word OOXML Track-Changes `.docx` compiler (`<w:del>`, `<w:ins>`, `<w:comment>`, `<w:trackRevisions/>`) with optional local PII re-hydration. |
-| [`src/lexgraph_lah/middleware/pii_scrubber.py`](./src/lexgraph_lah/middleware/pii_scrubber.py) | Pre-flight `<50ms` Malaysian PII Scrubber Middleware (`PIIScrubberMiddleware`) & per-request `ReversiblePIIVault`. |
-| [`src/lexgraph_lah/compliance/pdpa_scanner.py`](./src/lexgraph_lah/compliance/pdpa_scanner.py) | Deterministic Act 709 PDPA gap scanner with Practitioner IRAC, Rakyat `gov.my` guidance, and Act 388 divergence warnings. |
-| [`src/lexgraph_lah/agents/graph.py`](./src/lexgraph_lah/agents/graph.py) | 5-node bounded LangGraph state machine with pre-AST IPI firewalling and `gemini-4-neon`/`gemini-4-hydrogen` routing. |
-| [`src/lexgraph_lah/mcp/tools.py`](./src/lexgraph_lah/mcp/tools.py) & [`jsonrpc.py`](./src/lexgraph_lah/mcp/jsonrpc.py) | 11-tool MCP registry & native JSON-RPC 2.0 MCP server (`POST /mcp` Streamable HTTP & `--stdio` CLI). |
-| [`src/lexgraph_lah/api/routes.py`](./src/lexgraph_lah/api/routes.py) | FastAPI REST, SSE, security scan, portfolio blast-radius, attestation verify, `/mcp`, `/demo`, and `/dashboard`. |
-| [`src/lexgraph_lah/telemetry/cost_tracker.py`](./src/lexgraph_lah/telemetry/cost_tracker.py) & [`tracer.py`](./src/lexgraph_lah/telemetry/tracer.py) | Tiered `MODEL_PRICING_CATALOG` (`gemini-4-neon`, `gemini-4-hydrogen`), `select_model_tier`, USD/MYR FinOps calculator, and Arize Phoenix OpenTelemetry `model_tier` span instrumentation. |
+1. **Zero-Token Multi-Regime & Multi-Recipient Deontic Conflict Solver (`DeonticEnvelopeResolver`):**
+   - Resolves point-in-time statutes and `P.U. (A)` / `P.U. (B)` gazettes in $O(V + E)$ (`0` LLM tokens), resolving both the strictest initial deadline AND distinct `recipient_obligations` (Commissioner `72h`, Affected Data Subject `7d`, NACSA `6h`/`14d`, BNM RMiT `1h`) without conflating recipients.
+2. **Adversarial OOXML/PDF Firewall & Zip-Bomb Guards (`doc_firewall.py`):**
+   - Zero-token inspection (`$0.00 USD`) of `.docx`, `.pdf`, and raw text **before** AST parsing: enforces `validate_zip_archive_safety` (uncompressed ceiling, streaming >64 KB compression ratio cap, max entry count, path-traversal blocking), quarantines `<w:vanish/>`, `<w:webHidden/>`, micro/near-white fonts, macros, `customXml`, PDF `3 Tr` / off-page `Tm`/`Td` layers, and bilingual EN/BM IPI/statutory-spoofing directives.
+3. **Dual-Backend Temporal Graph Store & Gazette CLI (`temporal_store.py`, `gazette_ingestor.py`):**
+   - Zero-dependency `InMemoryGraphBackend` (`GRAPH_BACKEND=memory`, seeding `107` statutory nodes and `397` edges) alongside parameterized Cypher `Neo4jGraphBackend` (`GRAPH_BACKEND=neo4j` against Neo4j 5), plus idempotent JSON/XML Federal Gazette validation & CLI ingestion.
+4. **Structured OOXML Table Schedules, Scanned PDF OCR Fallback & Expanded PII Vault:**
+   - Parses `<w:tbl>` schedules (`Jadual` / `Lampiran`) into structured `SCHEDULE` `ContractClauseNode`s with `table_rows` and intra-contract edges (`DEFINES_TERM`, `OVERRIDES_NOTWITHSTANDING`, `CROSS_REFERENCES`, `SUBJECT_TO`, `INCORPORATES_SCHEDULE`, `SURVIVES_TERMINATION`).
+   - Detects low-text scanned PDFs and routes through pluggable `OCRAdapter` (`OCR_PROVIDER=none|tesseract|gemini_vision`, yielding deterministic abstention metadata when `none`).
+   - `<50ms` pre-flight PII masking across MyKad/NRIC (`[MYKAD_01]`), Passport, Phone, Email, SSM, LHDN TIN (`[TIN_MY_01]`), KWSP/EPF (`[KWSP_01]`), PERKESO/SOCSO (`[PERKESO_01]`), and MY Bank/DuitNow (`[BANK_MY_01]`), persisted across workers using **AES-256-GCM** `EncryptedPIISessionStore` (`memory|sqlite|redis`) keyed with tenant AAD `(tenant_id, audit_session_id)`.
+5. **Enterprise AuthN/RBAC, Ed25519 Signed Attestation & Async Portfolio Jobs:**
+   - Pure ASGI `EnterpriseSecurityMiddleware` supporting `AUTH_MODE=disabled|api_key|jwt` (HS256 / EdDSA / RS256), fail-closed HTTP `503` when `ENV=production` and `AUTH_MODE=disabled`, `viewer`/`auditor`/`admin` RBAC across REST, SSE (`/compliance/stream`), and `POST /mcp`, anti-spoofing `X-Tenant-ID` enforcement, and per-tenant sliding-window rate limiting.
+   - Append-only SHA-256 hash-chained `AttestationLedger` (SQLite WAL or PostgreSQL) with **Ed25519** chain-tip signing and public verification key endpoint (`GET /api/v1/attestation/public-key`).
+   - Synchronous batch scanner (`POST /api/v1/portfolio/blast-radius`, `<= 50` contracts) and bounded-concurrency async portfolio job engine (`POST /api/v1/portfolio/jobs`, `GET /api/v1/portfolio/jobs/{job_id}`) supporting `500–2,000+` contracts or multipart `.zip` archives of `.docx`/`.pdf`/`.txt` files.
+6. **Configurable Gemini Model Aliasing & Live Bank Negara Malaysia FX:**
+   - Complexity-aware `select_model_tier` preserves `gemini-4-hydrogen`/`gemini-4-neon` in mock/offline CI while mapping `fast_tier` / `reasoning_tier` via `LEXGRAPH_MODEL_FAST` / `LEXGRAPH_MODEL_REASONING` in live mode with exponential backoff and Pydantic structured validation.
+   - Optional async `BNMFXRateProvider` fetches `api.bnm.gov.my/public/exchange-rate` (cached for 24h) with deterministic offline fallback to `LEXGRAPH_USD_MYR_FALLBACK`.
 
 ---
 
@@ -105,104 +56,98 @@ uv sync --all-extras --dev --frozen
 uv run lexgraph-lah
 ```
 
-### Option 2: Docker Compose (API + Arize Phoenix)
+### Option 2: Docker Compose
+
+Base stack (API + Arize Phoenix + Neo4j 5):
 
 ```bash
 cp .env.example .env
+# In .env, set AUTH_API_KEYS_JSON or AUTH_MODE for production Docker defaults
 docker compose up --build
 ```
 
-### Interactive UIs & Consoles
+Enterprise profile (adds **Redis 7** for cross-worker PII vault + **PostgreSQL 16** for multi-replica attestation ledger):
 
-| View | URL | Description |
-| :--- | :--- | :--- |
-| **Interactive Studio UI** | [`http://localhost:8000/`](http://localhost:8000/) (or `/demo`) | Multi-Regime selector chips, `.docx`/`.pdf` drag-and-drop upload, 5-node live SSE stepper + USD/MYR burn ticker, **Portfolio Blast-Radius quick-trigger**, Shadow Override Trap alerts, Bilingual BM/EN Drawer with **Act 388 s. 63 alignment & divergence badges**, Practitioner/Rakyat persona density toggle, and Track-Changes `.docx` download. |
-| **Dual-Layer Graph & FinOps Console** | [`http://localhost:8000/dashboard`](http://localhost:8000/dashboard) | Interactive Cytoscape.js graph with **Dual-Layer Graph Mode**, **Time-Travel Statutory Redline Explorer** (`from_date` <-> `to_date` Cytoscape `AMENDED_BY` / `REPEALED_BY` path highlighting + inline green/red clause diff at `$0.00`), **Portfolio Gazette Blast-Radius Scanner**, Cypher viewer, and OTel `model_tier` span metrics. |
-| **OpenAPI / Swagger Docs** | [`http://localhost:8000/docs`](http://localhost:8000/docs) | OpenAPI v3 schema for all compliance, deontic, diff, divergence, upload, SSE, export, lineage, security, portfolio, attestation, and MCP endpoints. |
-| **Arize Phoenix OTel UI** | [`http://localhost:6006`](http://localhost:6006) | Distributed OpenTelemetry trace inspection (when launched via Docker Compose). |
+```bash
+docker compose --profile enterprise up --build
+```
+
+### Gazette Ingestion CLI
+
+```bash
+uv run python -m lexgraph_lah.ingestion.gazette_ingestor \
+  --input path/to/gazette.json \
+  --backend memory
+```
 
 ---
 
 ## API Contracts & MCP Tool Catalog
 
-### Key REST & SSE Endpoints
+### REST, SSE & Async Portfolio Endpoints
 
 | Endpoint | Method | Purpose |
 | :--- | :--- | :--- |
-| `/compliance/check` | `POST` | Runs the 5-node multi-regime audit (`regimes`, `as_of_date`, `territorial_scope`, `persona`, `language`) with SHA-256 FinOps cache support. |
-| `/compliance/stream` | `POST` | Streams live SSE (`text/event-stream`) frames (`node_update`, `abstention_gate`, `counterfactual_diff`, `finops_tick`, `complete`). |
-| `/compliance/upload` | `POST` | Multipart `.docx`, `.pdf`, or `.txt` upload endpoint with pre-AST security firewall, multi-regime AST trap detection, and reversible PII scrubbing. |
-| `/compliance/export-docx` | `POST` | Compiles and streams a Track-Changes `.docx` (`<w:del>`, `<w:ins>`, `<w:comment>`, `<w:trackRevisions/>`) with `X-LexGraph-Attestation-SHA256` and FinOps headers. |
-| `/api/v1/lineage/diff` | `GET` / `POST` | Zero-token bi-temporal statutory redline diff across `AMENDED_BY` and `REPEALED_BY` chains between `from_date` and `to_date`. |
-| `/api/v1/lineage/delta-audit` | `POST` | Zero-token Contract Delta-Audit detecting whether a contract compliant at `from_date` becomes non-compliant at `to_date` (PII-scrubbed). |
-| `/api/v1/crosswalk/{node_id}/divergence` | `GET` | Zero-token Act 388 s. 63 Bilingual Divergence Critic inspecting paired BM/EN statutory `SourceSpan` nodes. |
-| `/api/v1/crosswalk/divergence` | `POST` | Act 388 s. 63 Bilingual Divergence Critic for stored `node_id` or PII-scrubbed inline `en_text` vs. `bm_text` inputs. |
-| `/api/v1/deontic/envelope` | `GET` | Zero-token `DeonticEnvelopeResolver` returning strictest composite bounds and inter-regime conflict deltas. |
-| `/api/v1/compliance/scan` | `POST` | Deterministic pre-flight PII-scrubbed Act 709 compliance gap scanner with Act 388 divergence warnings. |
-| `/api/v1/research/point-in-time` | `POST` | 4-stage bilingual point-in-time research with 7-tier court/statute authority breakdown and amendment timeline. |
-| `/api/v1/provisions/{id}/lineage` | `GET` | Full chronological amendment history, BM/EN pair, and judicial treatment for a provision node. |
-| `/api/v1/statutes/{node_id}/bilingual` | `GET` | Synchronized BM/EN statutory pair, `SourceSpan` provenance, and Act 388 divergence telemetry. |
-| `/api/v1/retrieval/search` | `GET` | Bilingual hybrid search with 5-way territorial scope filtering and `0.78` Abstention Gate. |
-| `/graph/nodes` | `GET` | Statutory topology + optional `include_contract_ast=true` Dual-Layer Contract AST overlay. |
-| `/api/v1/security/scan` | `POST` | Zero-token OOXML `.docx` / `.pdf` / raw-text IPI & hidden-layer security firewall scanner. |
-| `/api/v1/portfolio/blast-radius` | `POST` | Zero-token batch Gazette Blast-Radius Scanner across up to 50 contracts (`from_date` -> `to_date`). |
-| `/api/v1/attestation/{manifest_id}` | `GET` | Retrieves an immutable hash-chained `AttestationLedgerRecord` from SQLite WAL. |
-| `/api/v1/attestation/verify` | `POST` | Cryptographically verifies document digest, `as_of_date` snapshot, citations, and ledger hash chain. |
-| `/mcp` | `POST` | Native Streamable HTTP JSON-RPC 2.0 MCP transport (`initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`). |
-| `/api/v1/mcp/tools` & `/api/v1/mcp/call` | `GET` / `POST` | Discovery and HTTP invocation for all 11 MCP tools. |
-
-### MCP Tools (`src/lexgraph_lah/mcp/tools.py` & `jsonrpc.py`)
-
-Run over stdio for IDE/agent clients: `uv run python -m lexgraph_lah.mcp.jsonrpc --stdio`
-
-1. `lexgraph_pdpa_compliance_scan`: Act 709 PDPA gap scan with pre-flight PII scrubbing and `SourceSpan` citations.
-2. `lexgraph_point_in_time_search`: Bilingual BM/EN/code-switched statutory search with 5-tier reranking and `0.78` Abstention Gate.
-3. `lexgraph_pii_scrub`: Deterministic `<50ms` Malaysian NRIC, Passport, Phone, Email, and SSM masking.
-4. `resolve_deontic_envelope`: Zero-token strictest composite statutory envelope solver across Act 709, Act 854 (`P.U. (A) 220/2024`), BNM RMiT, Peninsular/Sabah/Sarawak labour statutes, Labuan Act 704, Act 136, and Act 658.
-5. `detect_contract_shadow_overrides`: Pre-AST security firewall + Intra-Contract AST dependency graph builder detecting `DEFINES_TERM` narrow definitions and `OVERRIDES_NOTWITHSTANDING` EN/BM shadow traps.
-6. `audit_and_redline_contract`: End-to-end 5-node multi-regime counterfactual audit and hash-chained attestation manifest generator.
-7. `diff_statutory_versions`: Zero-token bi-temporal statutory version redline diff (`from_date` <-> `to_date`) with optional Contract Delta-Audit regression check.
-8. `audit_bilingual_crosswalk`: Zero-token Act 388 s. 63 Bilingual Divergence Critic inspecting BM/EN `SourceSpan` alignment across modality, deadlines, `RM` ceilings, and sub-clauses.
-9. `scan_document_security`: Zero-token adversarial `.docx` OOXML, `.pdf`, and plain-text Indirect Prompt Injection & hidden-layer quarantine scanner.
-10. `scan_portfolio_blast_radius`: Zero-token batch Gazette Blast-Radius Scanner evaluating up to 50 contracts (`from_date` <-> `to_date`) across intervening statutory commencements and 5-territory bounds.
-11. `verify_compliance_attestation`: Cryptographic verification of stored `ComplianceAttestationManifest` records, contract digests, and SQLite WAL hash chains.
+| `/compliance/check` | `POST` | Runs 5-node multi-regime audit (`audit_session_id` returned for cross-worker `.docx` re-hydration). |
+| `/compliance/stream` | `POST` | Streams live SSE (`text/event-stream`) events (`node_update`, `abstention_gate`, `finops_tick`, `complete`). |
+| `/compliance/upload` | `POST` | Multipart `.docx`, `.pdf`, or `.txt` upload with pre-AST firewall, `<w:tbl>` / OCR handling, and PII scrubbing. |
+| `/compliance/export-docx` | `POST` | Streams Track-Changes `.docx` with cross-worker PII re-hydration (`audit_session_id`) and Ed25519 headers. |
+| `/api/v1/deontic/envelope` | `GET` | Zero-token `DeonticEnvelopeResolver` returning strictest bounds and distinct `recipient_obligations`. |
+| `/api/v1/lineage/diff` | `GET` / `POST` | Zero-token bi-temporal statutory diff across `AMENDED_BY` and `REPEALED_BY` chains. |
+| `/api/v1/lineage/delta-audit` | `POST` | Zero-token Contract Delta-Audit detecting newly commenced statutory/gazette regressions. |
+| `/api/v1/crosswalk/{node_id}/divergence` | `GET` / `POST` | Act 388 s. 63 Bilingual Divergence Critic across BM/EN `SourceSpan` nodes. |
+| `/api/v1/compliance/scan` | `POST` | Deterministic pre-flight PII-scrubbed Act 709 gap scanner with Act 388 warnings. |
+| `/api/v1/research/point-in-time` | `POST` | 4-stage bilingual point-in-time research with 7-tier court/statute breakdown. |
+| `/api/v1/portfolio/blast-radius` | `POST` | Zero-token synchronous Gazette Blast-Radius Scanner (`<= 50` contracts). |
+| `/api/v1/portfolio/jobs` | `POST` | Submits async portfolio job (`202 Accepted`) for `500–2,000+` contracts (JSON) or `.zip` archive upload. |
+| `/api/v1/portfolio/jobs/{job_id}` | `GET` | Polls tenant-scoped async portfolio job progress (`QUEUED`/`RUNNING`/`COMPLETED`/`FAILED`). |
+| `/api/v1/attestation/public-key` | `GET` | Returns Ed25519 PEM/raw public key and SHA-256 fingerprint for offline attestation verification. |
+| `/api/v1/attestation/{manifest_id}` | `GET` | Retrieves an immutable hash-chained & Ed25519-signed `AttestationLedgerRecord`. |
+| `/api/v1/attestation/verify` | `POST` | Cryptographically verifies digest, `as_of_date`, citations, SHA-256 chain, and Ed25519 signature. |
+| `/api/v1/security/scan` | `POST` | Zero-token OOXML `.docx` / `.pdf` / raw-text IPI & zip-bomb firewall scanner. |
+| `/mcp` | `POST` | Streamable HTTP JSON-RPC 2.0 MCP server (`11` tools; stdio via `python -m lexgraph_lah.mcp.jsonrpc --stdio`). |
 
 ---
 
 ## Testing, Evaluation & Determinism Benchmark
 
-### 1. Run Quality Gates & Offline-Safe Tests
+### 1. Run Quality Gates
 
 ```bash
-uv run ruff check src/ tests/ evals/
-uv run mypy src/ --ignore-missing-imports
-uv run pytest -v
+uv run ruff check src tests evals
+uv run mypy src
+uv run pytest -q
 ```
 
-### 2. Run the 26-Scenario Determinism & FinOps Benchmark v3
-
-`evals/run_benchmark.py` executes 26 Malaysian compliance scenarios across 3 repeated trials (`78` total evaluation runs), covering pre-2025 PDPA baselines, post-2025 PDPA Amendments, Act 854 `6h` counterfactual rejection/recovery, BNM RMiT `1h` tri-regime collisions, adversarial EN/BM shadow-override traps, `0.78` out-of-domain abstention rejection, 5-way territorial isolation, pre-flight Malaysian PII scrubbing, bi-temporal `P.U. (A) 220/2024` gazette transitions, zero-token statutory diff + Contract Delta-Audit, Act 388 s. 63 bilingual divergence, OOXML `<w:vanish/>`/tiny-white-font & PDF `3 Tr` quarantine, bilingual EN/BM IPI neutralization, 5-territory (`Act 265`, `Sabah Cap. 67`, `Sarawak Cap. 76`, `Labuan Act 704`, `Act 136`, `Act 658`) deontic bounds, portfolio gazette blast-radius ranking, tamper-evident SQLite attestation verification, 11-tool JSON-RPC 2.0 MCP protocol, and `gemini-4-neon` FinOps routing:
+### 2. Run the 30-Scenario Determinism & FinOps Benchmark
 
 ```bash
-uv run python evals/run_benchmark.py --mode mock --trials 3
-# Live Gemini evaluation (requires GEMINI_API_KEY in .env):
-uv run python evals/run_benchmark.py --mode live --trials 3
+uv run python -m evals.run_benchmark --mode mock --trials 3
+# Live Gemini evaluation (writes JSON & Markdown artifacts to evals/results/):
+uv run python -m evals.run_benchmark --mode live --trials 3
 ```
 
 | Metric | Observed (`--mode mock --trials 3`) | SLA Target | Status |
 | :--- | :--- | :--- | :--- |
-| **Scenarios x Trials** | `26 scenarios x 3 trials (78 runs)` | `>= 18 scenarios` | PASS |
+| **Scenarios x Trials** | `30 scenarios x 3 trials (90 runs)` | `>= 18 scenarios` | PASS |
 | **Determinism Consistency (%)** | `100.00%` | `100.00%` | PASS |
+| **Cross-Trial Verdict Stability (%)** | `100.00%` | `100.00%` | PASS |
 | **Verdict Accuracy (%)** | `100.00%` | `>= 95.00%` | PASS |
 | **Verbatim Citation Grounding (%)** | `100.00%` | `100.00%` | PASS |
+| **Counterfactual Retry Recovery Rate (%)** | `100.00%` | `>= 95.00%` | PASS |
+| **Citation Hallucinations Rejected** | `3` | `Audited` | PASS |
+| **Abstention Precision (%)** | `100.00%` | `100.00%` | PASS |
 | **Temporal Context Recall (%)** | `100.00%` | `100.00%` | PASS |
 | **Temporal Contamination Rate (%)** | `0.00%` | `0.00%` | PASS |
-| **Latency p50 / p95 (ms)** | `15.02 ms / 76.16 ms` | `< 5000.00 ms` | PASS |
-| **Mean Tokens per Audit** | `541.2 tokens` | `< 15000 tokens` | PASS |
-| **Mean Cost per Audit (USD & MYR)** | `$0.000136 USD / RM 0.000600 MYR` | `< $0.005000 USD` | PASS |
+| **Latency p50 / p95 (ms)** | `23.27 ms / 104.14 ms` | `< 5000.00 ms` | PASS |
+| **Mean Tokens per Audit** | `572.8 tokens` | `< 15000 tokens` | PASS |
+| **Mean Cost per Audit (USD & MYR)** | `$0.000144 USD / RM 0.000634 MYR` | `< $0.005000 USD` | PASS |
 
 ---
 
-## License
+## Governance & License
 
-Released under the [MIT License](./LICENSE). Copyright (c) 2026 Kearney Leith Julius.
+- See [SECURITY.md](./SECURITY.md) for threat boundaries, PII handling, Ed25519 verification, and vulnerability disclosure.
+- See [CONTRIBUTING.md](./CONTRIBUTING.md) for adding Malaysian statutes/`P.U.` gazettes and bilingual Act 388 test cases.
+- See [CHANGELOG.md](./CHANGELOG.md) for release history.
+- Released under the [MIT License](./LICENSE). Copyright (c) 2026 Kearney Leith Julius.

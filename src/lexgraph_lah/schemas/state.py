@@ -36,3 +36,4 @@ class AgentState(TypedDict):
     trace_id: NotRequired[str | None]
     prompt_tokens: Annotated[int, operator.add]
     completion_tokens: Annotated[int, operator.add]
+    hallucination_rejections: NotRequired[Annotated[int, operator.add]]

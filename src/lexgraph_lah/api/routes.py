@@ -25,17 +25,26 @@ from lexgraph_lah.graph.diff_engine import (
     diff_statute_lineage,
     evaluate_contract_delta_impact,
 )
-from lexgraph_lah.graph.portfolio_scanner import scan_portfolio_blast_radius
+from lexgraph_lah.graph.portfolio_scanner import (
+    default_portfolio_job_manager,
+    extract_contracts_from_zip_archive,
+    scan_portfolio_blast_radius,
+)
 from lexgraph_lah.graph.reranker import filter_by_territorial_scope
 from lexgraph_lah.graph.temporal_store import build_point_in_time_cypher
 from lexgraph_lah.ingestion.contract_ast import build_contract_ast
 from lexgraph_lah.ingestion.ooxml_redliner import compile_track_changes_docx
 from lexgraph_lah.mcp.jsonrpc import handle_jsonrpc_message
 from lexgraph_lah.mcp.tools import MCP_TOOL_DEFINITIONS, dispatch_mcp_tool_async
-from lexgraph_lah.middleware.pii_scrubber import ReversiblePIIVault, scrub_malaysian_pii
+from lexgraph_lah.middleware.pii_scrubber import (
+    ReversiblePIIVault,
+    default_pii_session_store,
+    scrub_malaysian_pii,
+)
 from lexgraph_lah.schemas.domain import (
     DEFAULT_LEGAL_DISCLAIMER,
     AttestationLedgerRecord,
+    AttestationPublicKeyResponse,
     AttestationVerifyRequest,
     AttestationVerifyResponse,
     BilingualClausePair,
@@ -59,8 +68,10 @@ from lexgraph_lah.schemas.domain import (
     PIIScrubSummary,
     PointInTimeResearchRequest,
     PointInTimeResearchResponse,
+    PortfolioAsyncJobRequest,
     PortfolioBlastRadiusRequest,
     PortfolioBlastRadiusResponse,
+    PortfolioJobStatusResponse,
     ProvisionLineageResponse,
     RakyatGuidance,
     RetrievalSearchResponse,
@@ -76,7 +87,8 @@ from lexgraph_lah.security.attestation_ledger import (
     compute_manifest_sha256,
     default_attestation_ledger,
 )
-from lexgraph_lah.security.doc_firewall import scan_document_security
+from lexgraph_lah.security.auth import get_request_tenant_id
+from lexgraph_lah.security.doc_firewall import ZipBombError, scan_document_security
 from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
 from lexgraph_lah.telemetry.tracer import (
     ComplianceSpanRecord,
@@ -107,6 +119,7 @@ class ExportDocxRequest(BaseModel):
     persona: OutputPersona = OutputPersona.PRACTITIONER
     language: str = "bilingual"
     rehydrate_pii: bool = True
+    audit_session_id: str | None = None
     findings: list[ClauseAudit] | None = None
 
 
@@ -270,6 +283,7 @@ def _finalize_audit_response(
     scope: TerritorialScope,
     elapsed_ms: float,
     record_span: bool = True,
+    audit_session_id: str | None = None,
 ) -> ContractAuditResponse:
     clauses: list[ClauseAudit] = final_state.get("extracted_clauses", [])
     active_statutes = final_state.get("retrieved_statutes", [])
@@ -390,6 +404,7 @@ def _finalize_audit_response(
         attestation_manifest=manifest,
         security_findings=security_findings,
         security_report=security_report,
+        audit_session_id=audit_session_id,
         disclaimer=DEFAULT_LEGAL_DISCLAIMER,
     )
 
@@ -407,9 +422,15 @@ async def check_compliance(
     2. Resolves active statutes, 0.78 Abstention Gate & Strictest Composite Deontic Envelope.
     3. Evaluates cross-clause traps & counterfactual redlines with FinOps USD/MYR telemetry.
     """
+    tenant_id = get_request_tenant_id()
+    session_id = payload.audit_session_id or f"sess-{uuid.uuid4().hex[:12]}"
     key = _cache_key(payload)
     if use_cache and key in _COMPLIANCE_CACHE:
         cached = _COMPLIANCE_CACHE[key]
+        if cached.pii_scrub and cached.pii_scrub.placeholders:
+            default_pii_session_store.save_session(
+                tenant_id, session_id, cached.pii_scrub.placeholders
+            )
         zero_cost_telemetry = compute_telemetry_summary(
             prompt_tokens=0,
             completion_tokens=0,
@@ -421,6 +442,7 @@ async def check_compliance(
         return cached.model_copy(
             update={
                 "document_id": payload.document_id,
+                "audit_session_id": session_id,
                 "telemetry": zero_cost_telemetry,
             }
         )
@@ -440,7 +462,13 @@ async def check_compliance(
         scope=scope,
         elapsed_ms=elapsed_holder[0],
         record_span=True,
+        audit_session_id=session_id,
     )
+    vault_map = final_state.get("pii_vault_map") or (
+        response.pii_scrub.placeholders if response.pii_scrub else {}
+    )
+    if isinstance(vault_map, dict) and vault_map:
+        default_pii_session_store.save_session(tenant_id, session_id, vault_map)
     if use_cache:
         _COMPLIANCE_CACHE[key] = response
     return response
@@ -741,6 +769,7 @@ async def export_redline_docx(payload: ExportDocxRequest) -> Response:
     `<w:del>` deletions, `<w:ins>` insertions (author `lexgraph-lah`), `<w:comment>` statutory
     lineage callouts, optional local PII re-hydration, and cryptographic attestation headers.
     """
+    tenant_id = get_request_tenant_id()
     effective_date = payload.as_of_date or payload.reference_date or date.today()
     scope = payload.territorial_scope or TerritorialScope.ALL_MALAYSIA
     regimes = normalize_regimes(payload.regimes) if payload.regimes else ["ACT_709"]
@@ -755,6 +784,7 @@ async def export_redline_docx(payload: ExportDocxRequest) -> Response:
         territorial_scope=scope,
         persona=payload.persona,
         language=_normalize_lang_literal(payload.language),
+        audit_session_id=payload.audit_session_id,
     )
 
     graph = build_compliance_graph()
@@ -769,11 +799,21 @@ async def export_redline_docx(payload: ExportDocxRequest) -> Response:
         scope=scope,
         elapsed_ms=elapsed_holder[0],
         record_span=True,
+        audit_session_id=payload.audit_session_id,
     )
     findings = payload.findings if payload.findings is not None else audit_resp.findings
-    vault_map = final_state.get("pii_vault_map") or {}
-    vault = ReversiblePIIVault(initial_mapping=vault_map)
-    placeholders = audit_resp.pii_scrub.placeholders if audit_resp.pii_scrub else {}
+    vault_map: dict[str, str] = dict(final_state.get("pii_vault_map") or {})
+    persisted_map: dict[str, str] | None = None
+    if payload.audit_session_id:
+        persisted_map = default_pii_session_store.load_session(
+            tenant_id=tenant_id, audit_session_id=payload.audit_session_id
+        )
+    merged_vault_map: dict[str, str] = {
+        **(audit_resp.pii_scrub.placeholders if audit_resp.pii_scrub else {}),
+        **vault_map,
+        **(persisted_map or {}),
+    }
+    vault = ReversiblePIIVault(initial_mapping=merged_vault_map)
 
     docx_bytes = compile_track_changes_docx(
         document_id=payload.document_id,
@@ -785,7 +825,7 @@ async def export_redline_docx(payload: ExportDocxRequest) -> Response:
         manifest=audit_resp.attestation_manifest,
         rehydrate_pii=payload.rehydrate_pii,
         pii_vault=vault,
-        pii_placeholders=placeholders,
+        pii_placeholders=merged_vault_map,
     )
 
     manifest = audit_resp.attestation_manifest
@@ -795,6 +835,9 @@ async def export_redline_docx(payload: ExportDocxRequest) -> Response:
     headers = {
         "Content-Disposition": f'attachment; filename="{safe_name}_redlined.docx"',
         "X-LexGraph-Attestation-SHA256": manifest.manifest_sha256 if manifest else "",
+        "X-LexGraph-Attestation-Signature": manifest.signature_b64 if manifest else "",
+        "X-LexGraph-Signing-Key-Id": manifest.signing_key_id if manifest else "",
+        "X-LexGraph-Audit-Session-Id": payload.audit_session_id or "",
         "X-LexGraph-Graph-Hash": manifest.graph_state_hash if manifest else "",
         "X-LexGraph-As-Of-Date": effective_date.isoformat(),
         "X-LexGraph-FinOps-USD": f"{audit_resp.telemetry.estimated_cost_usd:.6f}",
@@ -1138,6 +1181,103 @@ async def api_v1_portfolio_blast_radius(
         return scan_portfolio_blast_radius(payload, store=_DEFAULT_TEMPORAL_STORE)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/v1/portfolio/jobs",
+    status_code=202,
+    response_model=PortfolioJobStatusResponse,
+)
+async def api_v1_submit_portfolio_job(request: Request) -> PortfolioJobStatusResponse:
+    """
+    Asynchronous Portfolio Blast-Radius Job submission supporting 500-2,000+ contracts
+    via JSON (`PortfolioAsyncJobRequest`) OR multipart `.zip` archives of `.docx`/`.pdf`/`.txt` files
+    processed with bounded worker concurrency.
+    """
+    tenant_id = get_request_tenant_id(request)
+    content_type = request.headers.get("content-type", "").lower()
+
+    if "multipart/form-data" in content_type:
+        fields, file_bytes, _filename = await _parse_multipart_upload(request)
+        if not file_bytes:
+            raise HTTPException(
+                status_code=422,
+                detail="Multipart portfolio job requires a non-empty '.zip' archive under 'file'.",
+            )
+        from_raw = fields.get("from_date")
+        to_raw = fields.get("to_date")
+        if not from_raw or not to_raw:
+            raise HTTPException(
+                status_code=422,
+                detail="Multipart portfolio job requires 'from_date' and 'to_date' (YYYY-MM-DD).",
+            )
+        try:
+            from_d = date.fromisoformat(from_raw)
+            to_d = date.fromisoformat(to_raw)
+            scope = TerritorialScope(
+                fields.get("default_territorial_scope")
+                or TerritorialScope.ALL_MALAYSIA.value
+            )
+            persona = OutputPersona(
+                fields.get("persona") or OutputPersona.PRACTITIONER.value
+            )
+            raw_workers = fields.get("max_workers")
+            max_workers = int(raw_workers) if raw_workers else 4
+            regimes = (
+                _parse_regimes_field(fields.get("regimes"))
+                if fields.get("regimes")
+                else None
+            )
+            contracts = extract_contracts_from_zip_archive(file_bytes)
+            job_req = PortfolioAsyncJobRequest(
+                from_date=from_d,
+                to_date=to_d,
+                contracts=contracts,
+                regimes=regimes,
+                default_territorial_scope=scope,
+                persona=persona,
+                max_workers=max_workers,
+            )
+        except (ZipBombError, ValidationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    else:
+        raw_body = await request.body()
+        try:
+            job_req = PortfolioAsyncJobRequest.model_validate_json(raw_body)
+        except (ValidationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        return default_portfolio_job_manager.submit_job(
+            job_req, tenant_id=tenant_id, store=_DEFAULT_TEMPORAL_STORE
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/v1/portfolio/jobs/{job_id}", response_model=PortfolioJobStatusResponse
+)
+async def api_v1_get_portfolio_job(
+    job_id: str, request: Request
+) -> PortfolioJobStatusResponse:
+    """Polls an asynchronous portfolio blast-radius job status and ranked results."""
+    tenant_id = get_request_tenant_id(request)
+    job = default_portfolio_job_manager.get_job(job_id, tenant_id=tenant_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Portfolio job '{job_id}' not found for tenant '{tenant_id}'.",
+        )
+    return job
+
+
+@router.get(
+    "/api/v1/attestation/public-key", response_model=AttestationPublicKeyResponse
+)
+async def api_v1_attestation_public_key() -> AttestationPublicKeyResponse:
+    """Returns the Ed25519 public verification key and SHA-256 fingerprint for independent attestation verification."""
+    return default_attestation_ledger.get_public_key_info()
 
 
 @router.get("/api/v1/attestation/{manifest_id}", response_model=AttestationLedgerRecord)

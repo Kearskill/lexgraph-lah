@@ -1,7 +1,7 @@
 import difflib
 import re
 from datetime import date
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from lexgraph_lah.ingestion.contract_ast import extract_numeric_sla_from_text
 from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
@@ -19,6 +19,7 @@ from lexgraph_lah.schemas.domain import (
     StatutoryTransitionStep,
     StatutoryVersionDiff,
     TemporalEdgeType,
+    TerritorialScope,
 )
 from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
 from lexgraph_lah.telemetry.tracer import measure_latency_ms
@@ -475,9 +476,94 @@ def _gap_map(gaps: list[PDPAGapItem]) -> dict[str, PDPAGapItem]:
     return {g.rule_id: g for g in gaps}
 
 
+def compute_statutory_window_context(
+    *,
+    from_date: date,
+    to_date: date,
+    regimes: list[str] | None = None,
+    act_filter: str | None = None,
+    territorial_scope: TerritorialScope = TerritorialScope.ALL_MALAYSIA,
+    store: "TemporalGraphStore | None" = None,
+) -> dict[str, Any]:
+    """
+    Precomputes contract-independent bi-temporal statutory envelopes and intervening
+    `diff_statute_lineage` changes across `(from_date, to_date]` for bulk portfolio scans.
+    """
+    if store is None:
+        from lexgraph_lah.graph.temporal_store import get_default_temporal_store
+
+        store = get_default_temporal_store()
+
+    from lexgraph_lah.graph.deontic_solver import (
+        DeonticEnvelopeResolver,
+        normalize_regimes,
+    )
+
+    target_regimes = normalize_regimes(regimes) if regimes else ["ACT_709"]
+    resolver = DeonticEnvelopeResolver(store)
+    env_from = resolver.resolve(
+        regimes=target_regimes,
+        as_of_date=from_date,
+        territorial_scope=territorial_scope,
+    )
+    env_to = resolver.resolve(
+        regimes=target_regimes,
+        as_of_date=to_date,
+        territorial_scope=territorial_scope,
+    )
+
+    intervening_diffs: list[StatutoryVersionDiff] = []
+    seen_diff_keys: set[tuple[str, str]] = set()
+    newly_commenced_gazettes: list[str] = []
+    seen_gazettes: set[str] = set()
+
+    candidate_nodes = sorted(
+        store.nodes.values(),
+        key=lambda n: (
+            n.normalized_language != "en",
+            n.act_number,
+            n.section_code,
+            n.node_id,
+        ),
+    )
+    for node in candidate_nodes:
+        if node.normalized_language != "en":
+            continue
+        if act_filter and node.act_name != act_filter:
+            continue
+        if regimes and node.regime_code not in target_regimes:
+            continue
+        dedup_key = (node.act_number, node.section_code)
+        if dedup_key in seen_diff_keys:
+            continue
+        seen_diff_keys.add(dedup_key)
+
+        vdiff = diff_statute_lineage(
+            provision_id=node.node_id,
+            from_date=from_date,
+            to_date=to_date,
+            store=store,
+        )
+        if vdiff.change_status in {"AMENDED", "NEWLY_ENACTED", "REPEALED"}:
+            intervening_diffs.append(vdiff)
+            for g in vdiff.related_gazettes:
+                if g not in seen_gazettes:
+                    seen_gazettes.add(g)
+                    newly_commenced_gazettes.append(g)
+
+    return {
+        "env_from": env_from,
+        "env_to": env_to,
+        "intervening_diffs": intervening_diffs,
+        "newly_commenced_gazettes": newly_commenced_gazettes,
+    }
+
+
 def evaluate_contract_delta_impact(
     req: ContractDeltaAuditRequest,
     store: "TemporalGraphStore | None" = None,
+    *,
+    precomputed_window: dict[str, Any] | None = None,
 ) -> ContractDeltaAuditResponse:
     """
     Zero-token Contract Delta-Audit evaluator: compares contract compliance at `from_date`
@@ -495,10 +581,6 @@ def evaluate_contract_delta_impact(
         store = get_default_temporal_store()
 
     from lexgraph_lah.compliance.pdpa_scanner import scan_pdpa_compliance
-    from lexgraph_lah.graph.deontic_solver import (
-        DeonticEnvelopeResolver,
-        normalize_regimes,
-    )
 
     with measure_latency_ms() as elapsed_holder:
         pii_scrub = scrub_malaysian_pii(req.raw_text)
@@ -527,59 +609,18 @@ def evaluate_contract_delta_impact(
             record_telemetry=False,
         )
 
-        # Also evaluate multi-regime deontic bounds delta when regimes include ACT_854 / BNM_RMIT
-        target_regimes = normalize_regimes(req.regimes) if req.regimes else ["ACT_709"]
-        resolver = DeonticEnvelopeResolver(store)
-        env_from = resolver.resolve(
-            regimes=target_regimes,
-            as_of_date=req.from_date,
+        win = precomputed_window or compute_statutory_window_context(
+            from_date=req.from_date,
+            to_date=req.to_date,
+            regimes=req.regimes,
+            act_filter=req.act_filter,
             territorial_scope=req.territorial_scope,
+            store=store,
         )
-        env_to = resolver.resolve(
-            regimes=target_regimes,
-            as_of_date=req.to_date,
-            territorial_scope=req.territorial_scope,
-        )
-
-        # Identify intervening statutory / P.U. gazette diffs inside (from_date, to_date]
-        intervening_diffs: list[StatutoryVersionDiff] = []
-        seen_diff_keys: set[tuple[str, str]] = set()
-        newly_commenced_gazettes: list[str] = []
-        seen_gazettes: set[str] = set()
-
-        candidate_nodes = sorted(
-            store.nodes.values(),
-            key=lambda n: (
-                n.normalized_language != "en",
-                n.act_number,
-                n.section_code,
-                n.node_id,
-            ),
-        )
-        for node in candidate_nodes:
-            if node.normalized_language != "en":
-                continue
-            if req.act_filter and node.act_name != req.act_filter:
-                continue
-            if req.regimes and node.regime_code not in target_regimes:
-                continue
-            dedup_key = (node.act_number, node.section_code)
-            if dedup_key in seen_diff_keys:
-                continue
-            seen_diff_keys.add(dedup_key)
-
-            vdiff = diff_statute_lineage(
-                provision_id=node.node_id,
-                from_date=req.from_date,
-                to_date=req.to_date,
-                store=store,
-            )
-            if vdiff.change_status in {"AMENDED", "NEWLY_ENACTED", "REPEALED"}:
-                intervening_diffs.append(vdiff)
-                for g in vdiff.related_gazettes:
-                    if g not in seen_gazettes:
-                        seen_gazettes.add(g)
-                        newly_commenced_gazettes.append(g)
+        env_from = win["env_from"]
+        env_to = win["env_to"]
+        intervening_diffs = list(win["intervening_diffs"])
+        newly_commenced_gazettes = list(win["newly_commenced_gazettes"])
 
         delta_findings: list[ContractDeltaFinding] = []
         from_gaps = _gap_map(scan_from.gaps)
@@ -752,6 +793,202 @@ def evaluate_contract_delta_impact(
                         ),
                     )
                 )
+
+        low_safe = safe_text.lower()
+
+        def _append_regime_mandate_delta(
+            metric_key: str,
+            rule_id: str,
+            severity: RiskSeverity,
+            practitioner_msg: str,
+            rakyat_msg: str,
+        ) -> None:
+            nonlocal to_max_rank
+            if metric_key not in env_to.resolved_bounds:
+                return
+            if metric_key in env_from.resolved_bounds:
+                return
+            bound = env_to.resolved_bounds[metric_key]
+            dom_node = store.nodes.get(bound.dominating_node_id)
+            to_max_rank = max(to_max_rank, _SEVERITY_RANK[severity])
+            delta_findings.append(
+                ContractDeltaFinding(
+                    rule_id=rule_id,
+                    section_ref=bound.dominating_citation,
+                    impact_type="NEW_STATUTORY_MANDATE",
+                    from_status="NOT_IN_FORCE",
+                    to_status="NON_COMPLIANT",
+                    from_severity=RiskSeverity.LOW,
+                    to_severity=severity,
+                    exact_quote=safe_text,
+                    triggering_statute_ids=[bound.dominating_node_id],
+                    triggering_gazettes=[
+                        g for g in [dom_node.gazette_ref if dom_node else None] if g
+                    ],
+                    source_spans=list(dom_node.source_spans) if dom_node else [],
+                    explanation_practitioner=practitioner_msg,
+                    explanation_rakyat=rakyat_msg,
+                )
+            )
+
+        # Act 854 P.U. (A) 221/2024 MSSP SOC & Penetration Testing Licensing
+        if any(
+            kw in low_safe
+            for kw in (
+                "unlicensed",
+                "without nacsa license",
+                "without nacsa licence",
+                "no nacsa licence",
+                "tanpa lesen nacsa",
+            )
+        ) and any(
+            kw in low_safe
+            for kw in (
+                "soc",
+                "managed security",
+                "penetration test",
+                "pentest",
+                "mssp",
+            )
+        ):
+            _append_regime_mandate_delta(
+                "mssp_soc_pentest_nacsa_license_required",
+                "DELTA-ACT_854-PUA221-MSSP",
+                RiskSeverity.HIGH,
+                "Managed SOC monitoring / penetration testing vendor lacks mandatory NACSA licence under Act 854 s. 27 & P.U. (A) 221/2024.",
+                "Cyber security monitoring and testing vendors must hold a valid NACSA licence.",
+            )
+
+        # Act 864 Section 17(1) Public-Sector Third-Party Shared Data Duties
+        if any(
+            kw in low_safe
+            for kw in (
+                "public sector",
+                "public-sector",
+                "government agency",
+                "shared data",
+                "agensi awam",
+                "data dikongsi",
+            )
+        ) and any(
+            kw in low_safe
+            for kw in (
+                "no statutory duty",
+                "disclaims",
+                "waives",
+                "exempt from act 864",
+                "not bound",
+                "tiada kewajipan berkanun",
+            )
+        ):
+            _append_regime_mandate_delta(
+                "public_sector_third_party_data_protection",
+                "DELTA-ACT_864-SEC17-VENDOR",
+                RiskSeverity.CRITICAL,
+                "Public-sector vendor/contractor cannot disclaim Data Sharing Act 2025 [Act 864] s. 17(1) shared-data protection duties.",
+                "Vendors handling Malaysian government shared data must protect it directly under Act 864.",
+            )
+
+        # Act 873 Consumer Credit Act 2025 (Rule-of-78 / Flat-Rate & SKP Licensing)
+        if any(
+            kw in low_safe
+            for kw in (
+                "rule of 78",
+                "rule-of-78",
+                "flat-rate interest",
+                "flat rate interest",
+                "peraturan 78",
+                "kadar rata",
+            )
+        ):
+            _append_regime_mandate_delta(
+                "rule_of_78_interest_prohibition",
+                "DELTA-ACT_873-RULE78",
+                RiskSeverity.HIGH,
+                "Rule-of-78 / flat-rate interest calculation clauses are prohibited under Consumer Credit Act 2025 [Act 873] s. 35.",
+                "BNPL and credit contracts cannot charge Rule-of-78 or flat-rate interest.",
+            )
+        if any(
+            kw in low_safe
+            for kw in (
+                "bnpl",
+                "buy now pay later",
+                "debt collection",
+                "non-bank credit",
+            )
+        ) and any(
+            kw in low_safe
+            for kw in (
+                "without skp",
+                "unlicensed",
+                "no skp license",
+                "no skp licence",
+                "exempt from skp",
+            )
+        ):
+            _append_regime_mandate_delta(
+                "skp_non_bank_credit_license_required",
+                "DELTA-ACT_873-SKP-LIC",
+                RiskSeverity.CRITICAL,
+                "Non-bank credit / BNPL / debt-collection operator requires Suruhanjaya Kredit Pengguna (SKP) licence from 2026-06-01 under Act 873.",
+                "BNPL and credit agencies must be licensed by SKP.",
+            )
+
+        # Act 866 Online Safety Act 2025
+        if any(
+            kw in low_safe for kw in ("under-16", "under 16", "child", "kanak-kanak")
+        ) and any(
+            kw in low_safe
+            for kw in (
+                "no age verification",
+                "without age verification",
+                "skip mykad",
+                "self-declaration only",
+            )
+        ):
+            _append_regime_mandate_delta(
+                "online_safety_under_16_age_verification",
+                "DELTA-ACT_866-U16-AGE",
+                RiskSeverity.HIGH,
+                "Platform lacks mandatory under-16 MyKad/passport age verification under Act 866 Codes effective 2026-06-01.",
+                "Platforms must verify under-16 users with MyKad or passport checks.",
+            )
+
+        # PDPA Phase 3 (2025-06-01): Affected data subject 7d breach notice & 2-year register
+        subj_delay_m = re.search(
+            r"(?:data\s+subject|affected\s+individuals?|subjek\s+data)[^.;\n]{0,80}?(\d+)\s*(?:days?|hari)",
+            low_safe,
+        )
+        if (subj_delay_m and float(subj_delay_m.group(1)) > 7.0) or any(
+            kw in low_safe
+            for kw in (
+                "need not notify affected data subjects",
+                "no notice to affected data subjects",
+                "waives data subject breach notification",
+            )
+        ):
+            _append_regime_mandate_delta(
+                "data_subject_breach_notice_max_days",
+                "DELTA-ACT709-P3-SUBJECT-7D",
+                RiskSeverity.HIGH,
+                "Affected data-subject breach notification exceeds or omits the 7-day mandate effective 2025-06-01 (PDPD Guideline No. 02/2025).",
+                "Affected individuals must also be notified within 7 days of significant harm data breaches.",
+            )
+
+        reg_ret_m = re.search(
+            r"(?:breach\s+register|daftar\s+pelanggaran)[^.;\n]{0,60}?(\d+)\s*(?:months?|bulan)",
+            low_safe,
+        )
+        if (
+            reg_ret_m and float(reg_ret_m.group(1)) < 24.0
+        ) or "no breach register" in low_safe:
+            _append_regime_mandate_delta(
+                "breach_register_min_retention_years",
+                "DELTA-ACT709-P3-REGISTER-2Y",
+                RiskSeverity.MEDIUM,
+                "Data breach register retention is below the mandatory 2-year minimum effective 2025-06-01.",
+                "Companies must keep a personal data breach log for at least 2 years.",
+            )
 
         inv_rank_to_sev = {v: k for k, v in _SEVERITY_RANK.items()}
         from_overall = inv_rank_to_sev[from_max_rank]

@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from lexgraph_lah.api.routes import router
 from lexgraph_lah.config import settings
 from lexgraph_lah.middleware.pii_scrubber import PIIScrubberMiddleware
+from lexgraph_lah.security.auth import EnterpriseSecurityMiddleware
 from lexgraph_lah.telemetry.tracer import telemetry_registry
 
 
@@ -17,6 +18,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
     app.add_middleware(PIIScrubberMiddleware)
+    app.add_middleware(EnterpriseSecurityMiddleware)
     app.include_router(router)
     return app
 

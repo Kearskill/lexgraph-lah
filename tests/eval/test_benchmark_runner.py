@@ -11,17 +11,17 @@ from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
 @pytest.mark.asyncio
 async def test_benchmark_runner_mock_mode_and_markdown_table():
     """
-    Verifies the 26-case golden benchmark suite (v3) in mock mode produces 100% determinism
+    Verifies the 30-case golden benchmark suite (v4) in mock mode produces 100% determinism
     consistency, 100% verdict accuracy, 100% verbatim grounding, and renders a Markdown
     report with p50/p95 latency and USD/MYR cost metrics.
     """
     dataset = get_benchmark_dataset()
-    assert len(dataset) == 26
+    assert len(dataset) == 30
 
     summary = await run_benchmark_async(mode="mock", trials=2)
     assert summary.total_cases == len(dataset)
     assert summary.trials_per_case == 2
-    assert summary.total_runs == 52
+    assert summary.total_runs == 60
     assert summary.determinism_consistency_pct == 100.0
     assert summary.verdict_accuracy_pct == 100.0
     assert summary.verbatim_grounding_pct == 100.0
@@ -50,6 +50,10 @@ async def test_benchmark_runner_mock_mode_and_markdown_table():
     assert "BENCH-24-SARAWAK-LABUAN-TERRITORIAL-ISOLATION" in report
     assert "BENCH-25-PORTFOLIO-GAZETTE-BLAST-RADIUS" in report
     assert "BENCH-26-ATTESTATION-LEDGER-AND-NEON-FINOPS" in report
+    assert "BENCH-27-ACT854-PUA221-MSSP-LICENSING" in report
+    assert "BENCH-28-ACT864-PUBLIC-SECTOR-VENDOR-S17" in report
+    assert "BENCH-29-ACT873-BNPL-RULE-OF-78-SKP" in report
+    assert "BENCH-30-PDPA-DUAL-RECIPIENT-72H-7D-PHASES" in report
 
 
 def test_finops_myr_usd_deterministic_rounding():

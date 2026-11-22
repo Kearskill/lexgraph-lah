@@ -2,9 +2,11 @@ import argparse
 import asyncio
 import hashlib
 import io
+import json
 import math
 import zipfile
-from datetime import date
+from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -60,6 +62,7 @@ from lexgraph_lah.security.doc_firewall import (
 from lexgraph_lah.telemetry.cost_tracker import (
     assert_within_budget,
     compute_telemetry_summary,
+    default_bnm_fx_provider,
     select_model_tier,
 )
 from lexgraph_lah.telemetry.tracer import measure_latency_ms
@@ -140,6 +143,10 @@ class CaseTrialResult(BaseModel):
     cost_myr: float
     latency_ms: float
     signature: str
+    abstained: bool = False
+    expected_abstained: bool = False
+    citation_hallucinations_rejected: int = 0
+    recovered_after_retry: bool = False
 
 
 class BenchmarkSummary(BaseModel):
@@ -159,18 +166,26 @@ class BenchmarkSummary(BaseModel):
     mean_cost_myr: float
     total_cost_usd: float
     total_cost_myr: float
+    cross_trial_verdict_stability_pct: float = 100.0
+    counterfactual_retry_recovery_rate_pct: float = 100.0
+    citation_hallucination_rejection_count: int = 0
+    abstention_precision_pct: float = 100.0
+    fx_rate_used: float = 4.40
+    fx_rate_source: str = "fallback"
+    results_artifact_path: str | None = None
     case_results: list[CaseTrialResult] = Field(default_factory=list)
 
 
 def get_benchmark_dataset() -> list[BenchmarkCase]:
     """
-    Returns 26 structured Malaysian regulatory compliance benchmark scenarios (v3) covering
-    pre-amendment (2024) and post-amendment (2025/2026) PDPA statutory regimes, Act 854
-    P.U. (A) 220/2024, BNM RMiT, shadow overrides, 0.78 abstention gate, 5-tier territorial
-    reranking, pre-flight PII scrubbing, zero-token lineage diffing, Act 388 divergence,
-    OOXML/PDF hidden-layer quarantine, bilingual EN/BM IPI neutralization, Sabah/Peninsular/
-    Sarawak/Labuan/Act 136 5-territory deontic bounds, portfolio gazette blast-radius ranking,
-    tamper-evident SHA-256 attestation ledger verification, JSON-RPC 2.0 MCP, and gemini-4-neon FinOps.
+    Returns 30 structured Malaysian regulatory compliance benchmark scenarios (v4) covering
+    pre-amendment (2024) and post-amendment (2025/2026) PDPA 3-phase commencement, Act 854
+    full subsidiary suite (P.U. (A) 219-222/2024 & P.U. (A) 47/2025), BNM RMiT, Data Sharing
+    Act 2025 [Act 864], Online Safety Act 2025 [Act 866], Consumer Credit Act 2025 [Act 873],
+    Act 562/563, shadow overrides, 0.78 abstention gate, 5-tier territorial reranking, pre-flight
+    PII scrubbing, zero-token lineage diffing, Act 388 divergence, OOXML/PDF hidden-layer quarantine,
+    bilingual EN/BM IPI neutralization, 5-territory deontic bounds, portfolio gazette blast-radius
+    ranking, tamper-evident SHA-256 attestation ledger verification, JSON-RPC 2.0 MCP, and FinOps.
     """
     return [
         BenchmarkCase(
@@ -987,6 +1002,172 @@ def get_benchmark_dataset() -> list[BenchmarkCase]:
             expected_clause_ids=set(),
             mock_attempts=[],
         ),
+        BenchmarkCase(
+            case_id="BENCH-27-ACT854-PUA221-MSSP-LICENSING",
+            title="Act 854 P.U. (A) 221/2024 Unlicensed Managed SOC & Penetration Testing Vendor",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_854"],
+            contract_text=(
+                "SEC-27.1 Managed SOC & Pentest Services: Vendor shall provide managed SOC monitoring "
+                "and penetration testing services without a NACSA licence under Act 854."
+            ),
+            expected_overall_risk=RiskSeverity.HIGH,
+            expected_active_statute_ids={"CSA-2024-SEC-27-V1", "PUA-221-2024-REG-3"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"SEC-27.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-27.1",
+                            category="MSSP NACSA Licensing Breach",
+                            exact_quote=(
+                                "SEC-27.1 Managed SOC & Pentest Services: Vendor shall provide managed SOC monitoring "
+                                "and penetration testing services without a NACSA licence under Act 854."
+                            ),
+                            severity=RiskSeverity.HIGH,
+                            rationale="P.U. (A) 221/2024 mandates a valid NACSA licence for managed SOC monitoring and penetration testing.",
+                            recommended_redline=(
+                                "Vendor shall hold and maintain a valid NACSA Cyber Security Service Provider Licence "
+                                "under P.U. (A) 221/2024 throughout the contract term."
+                            ),
+                            violated_statute_ids=[
+                                "PUA-221-2024-REG-3",
+                                "CSA-2024-SEC-27-V1",
+                            ],
+                        )
+                    ],
+                    595,
+                    165,
+                )
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-28-ACT864-PUBLIC-SECTOR-VENDOR-S17",
+            title="Data Sharing Act 2025 [Act 864] s. 17(1) Public-Sector Third-Party Vendor Waiver",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_864"],
+            contract_text=(
+                "SEC-17.1 Public-Sector Shared Data Migration: Third-party vendor performing public-sector "
+                "shared data migration and analytics disclaims all statutory protection duties under Act 864."
+            ),
+            expected_overall_risk=RiskSeverity.CRITICAL,
+            expected_active_statute_ids={"ACT-864-SEC-17-V1", "ACT-864-SEC-12-V1"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"SEC-17.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-17.1",
+                            category="Public-Sector Shared Data Vendor Liability",
+                            exact_quote=(
+                                "SEC-17.1 Public-Sector Shared Data Migration: Third-party vendor performing public-sector "
+                                "shared data migration and analytics disclaims all statutory protection duties under Act 864."
+                            ),
+                            severity=RiskSeverity.CRITICAL,
+                            rationale="Act 864 s. 17(1) directly extends public-sector shared data protection duties to third-party migration/analytics vendors.",
+                            recommended_redline=(
+                                "Third-party vendor shall comply directly with Section 17(1) of the Data Sharing Act 2025 [Act 864] "
+                                "for all public-sector shared data migration, integration, and analytics."
+                            ),
+                            violated_statute_ids=["ACT-864-SEC-17-V1"],
+                        )
+                    ],
+                    610,
+                    175,
+                )
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-29-ACT873-BNPL-RULE-OF-78-SKP",
+            title="Consumer Credit Act 2025 [Act 873] BNPL Rule-of-78 Prohibition & SKP Licensing",
+            reference_date=date(2026, 7, 1),
+            act_filter=None,
+            regimes=["ACT_873"],
+            contract_text=(
+                "SEC-35.1 BNPL Credit Terms: Non-bank BNPL operator applies Rule-of-78 flat-rate "
+                "interest calculation without SKP licensing under Consumer Credit Act 2025."
+            ),
+            expected_overall_risk=RiskSeverity.CRITICAL,
+            expected_active_statute_ids={"ACT-873-SEC-35-V1", "ACT-873-SKP-LIC-V1"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"SEC-35.1"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-35.1",
+                            category="Prohibited BNPL Interest & Unlicensed Credit",
+                            exact_quote=(
+                                "SEC-35.1 BNPL Credit Terms: Non-bank BNPL operator applies Rule-of-78 flat-rate "
+                                "interest calculation without SKP licensing under Consumer Credit Act 2025."
+                            ),
+                            severity=RiskSeverity.CRITICAL,
+                            rationale="Act 873 prohibits Rule-of-78 / flat-rate interest clauses and mandates SKP licensing from 2026-06-01.",
+                            recommended_redline=(
+                                "BNPL operator shall maintain valid SKP registration under Act 873 and compute finance "
+                                "charges strictly on a reducing-balance method."
+                            ),
+                            violated_statute_ids=[
+                                "ACT-873-SEC-35-V1",
+                                "ACT-873-SKP-LIC-V1",
+                            ],
+                        )
+                    ],
+                    605,
+                    170,
+                )
+            ],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-30-PDPA-DUAL-RECIPIENT-72H-7D-PHASES",
+            title="PDPA Phase 3 Dual-Recipient Breach Notification (72h Commissioner + 7d Data Subject + 2y Register)",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_709"],
+            contract_text=(
+                "SEC-12.2 Dual-Recipient Breach Reporting: Data User shall notify the Commissioner within 72 hours, "
+                "need not notify affected data subjects for 30 days, and keeps no breach register."
+            ),
+            expected_overall_risk=RiskSeverity.HIGH,
+            expected_active_statute_ids={
+                "PDPA-2010-SEC-12B-V1",
+                "PDPD-DBN-2025-02",
+                "PDPA-2010-SEC-43A-V1",
+            },
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1", "PDPA-2010-SEC-129-V1"},
+            expected_clause_ids={"SEC-12.2"},
+            mock_attempts=[
+                (
+                    [
+                        ClauseAudit(
+                            clause_id="SEC-12.2",
+                            category="Dual-Recipient Data Breach Notification",
+                            exact_quote=(
+                                "SEC-12.2 Dual-Recipient Breach Reporting: Data User shall notify the Commissioner within 72 hours, "
+                                "need not notify affected data subjects for 30 days, and keeps no breach register."
+                            ),
+                            severity=RiskSeverity.HIGH,
+                            rationale="PDPA Phase 3 (eff. 2025-06-01) mandates 72h Commissioner notice, <=7d affected data subject notice, and >=2y breach register.",
+                            recommended_redline=(
+                                "Data User shall notify the Commissioner within 72 hours and notify affected data subjects "
+                                "within 7 days, maintaining a data breach register for at least 2 years."
+                            ),
+                            violated_statute_ids=[
+                                "PDPD-DBN-2025-02",
+                                "PDPA-2010-SEC-12B-V1",
+                            ],
+                            proposed_notice_hours=72.0,
+                        )
+                    ],
+                    615,
+                    180,
+                )
+            ],
+        ),
     ]
 
 
@@ -1007,7 +1188,11 @@ def _build_mock_llm_for_case(case: BenchmarkCase) -> MagicMock:
 
 
 async def _run_single_trial(
-    case: BenchmarkCase, trial_index: int, mode: str
+    case: BenchmarkCase,
+    trial_index: int,
+    mode: str,
+    *,
+    usd_to_myr_rate: float | None = None,
 ) -> CaseTrialResult:
     if case.check_kind == "territorial_rerank":
         store = get_default_temporal_store()
@@ -1851,6 +2036,7 @@ async def _run_single_trial(
         "auditor_feedback": "",
         "is_grounded": False,
         "retry_count": 0,
+        "hallucination_rejections": 0,
         "prompt_tokens": 0,
         "completion_tokens": 0,
     }
@@ -1922,6 +2108,7 @@ async def _run_single_trial(
         latency_ms=elapsed_holder[0],
         retry_count=final_state.get("retry_count", 0),
         is_verified_grounded=is_grounded_ok,
+        usd_to_myr_rate=usd_to_myr_rate,
     )
     assert_within_budget(telemetry)
 
@@ -1929,6 +2116,10 @@ async def _run_single_trial(
         overall_risk == case.expected_overall_risk
         and is_abstained == case.expect_abstained
         and pii_ok
+    )
+    hallucinations_rejected = int(final_state.get("hallucination_rejections", 0))
+    recovered_after_retry = bool(
+        telemetry.retry_count > 0 and telemetry.is_verified_grounded and verdict_ok
     )
     statute_sig = ",".join(sorted(s.node_id for s in retrieved_statutes))
     clause_sig = ",".join(
@@ -1955,28 +2146,77 @@ async def _run_single_trial(
         cost_myr=telemetry.estimated_cost_myr,
         latency_ms=telemetry.latency_ms,
         signature=signature,
+        abstained=is_abstained,
+        expected_abstained=case.expect_abstained,
+        citation_hallucinations_rejected=hallucinations_rejected,
+        recovered_after_retry=recovered_after_retry,
     )
 
 
-async def run_benchmark_async(mode: str = "mock", trials: int = 3) -> BenchmarkSummary:
+def write_benchmark_results(
+    summary: BenchmarkSummary,
+    output_dir: Path | None = None,
+) -> tuple[Path, Path]:
+    """
+    Persists JSON & Markdown benchmark reports (cross-trial stability, retry recovery,
+    citation hallucination rejections, abstention precision, latency, USD/MYR cost)
+    into `evals/results/`.
+    """
+    target_dir = output_dir or (Path(__file__).resolve().parent / "results")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stem = f"{summary.mode}_{ts}"
+    json_path = target_dir / f"{stem}.json"
+    md_path = target_dir / f"{stem}.md"
+
+    enriched = summary.model_copy(update={"results_artifact_path": str(json_path)})
+    json_path.write_text(
+        json.dumps(enriched.model_dump(mode="json"), indent=2),
+        encoding="utf-8",
+    )
+    md_path.write_text(format_markdown_report(enriched), encoding="utf-8")
+    return json_path, md_path
+
+
+async def run_benchmark_async(
+    mode: str = "mock",
+    trials: int = 3,
+    *,
+    output_dir: Path | None = None,
+    write_results: bool | None = None,
+) -> BenchmarkSummary:
     dataset = get_benchmark_dataset()
     safe_trials = max(1, trials)
+    if mode == "live":
+        fx_rate, fx_source = await default_bnm_fx_provider.get_usd_to_myr_rate()
+    else:
+        fx_rate = settings.usd_to_myr_rate
+        fx_source = "fallback"
+
     all_results: list[CaseTrialResult] = []
     consistent_cases = 0
+    verdict_stable_cases = 0
 
     for case in dataset:
         case_trials: list[CaseTrialResult] = []
         for t_idx in range(1, safe_trials + 1):
-            res = await _run_single_trial(case, trial_index=t_idx, mode=mode)
+            res = await _run_single_trial(
+                case,
+                trial_index=t_idx,
+                mode=mode,
+                usd_to_myr_rate=fx_rate,
+            )
             case_trials.append(res)
             all_results.append(res)
 
-        unique_signatures = {r.signature for r in case_trials}
-        if len(unique_signatures) == 1:
+        if len({r.signature for r in case_trials}) == 1:
             consistent_cases += 1
+        if len({(r.overall_risk, r.abstained) for r in case_trials}) == 1:
+            verdict_stable_cases += 1
 
     total_runs = len(all_results)
     determinism_pct = round((consistent_cases / len(dataset)) * 100.0, 2)
+    stability_pct = round((verdict_stable_cases / len(dataset)) * 100.0, 2)
     verdict_acc_pct = round(
         (sum(1 for r in all_results if r.verdict_correct) / total_runs) * 100.0, 2
     )
@@ -1990,6 +2230,34 @@ async def run_benchmark_async(mode: str = "mock", trials: int = 3) -> BenchmarkS
         (sum(r.temporal_contamination for r in all_results) / total_runs) * 100.0, 2
     )
 
+    retried_runs = [r for r in all_results if r.retry_count > 0]
+    retry_recovery_pct = (
+        round(
+            (
+                sum(1 for r in retried_runs if r.recovered_after_retry)
+                / len(retried_runs)
+            )
+            * 100.0,
+            2,
+        )
+        if retried_runs
+        else 100.0
+    )
+    hallucinations_total = sum(r.citation_hallucinations_rejected for r in all_results)
+    abstained_runs = [r for r in all_results if r.abstained]
+    abstention_precision_pct = (
+        round(
+            (
+                sum(1 for r in abstained_runs if r.expected_abstained)
+                / len(abstained_runs)
+            )
+            * 100.0,
+            2,
+        )
+        if abstained_runs
+        else 100.0
+    )
+
     sorted_latencies = sorted(r.latency_ms for r in all_results)
     p50_ms = _percentile(sorted_latencies, 50.0)
     p95_ms = _percentile(sorted_latencies, 95.0)
@@ -2000,7 +2268,7 @@ async def run_benchmark_async(mode: str = "mock", trials: int = 3) -> BenchmarkS
     mean_myr = round(total_myr / total_runs, 6)
     mean_tokens = round(sum(r.total_tokens for r in all_results) / total_runs, 1)
 
-    return BenchmarkSummary(
+    summary = BenchmarkSummary(
         mode=mode,
         total_cases=len(dataset),
         trials_per_case=safe_trials,
@@ -2017,8 +2285,25 @@ async def run_benchmark_async(mode: str = "mock", trials: int = 3) -> BenchmarkS
         mean_cost_myr=mean_myr,
         total_cost_usd=total_usd,
         total_cost_myr=total_myr,
+        cross_trial_verdict_stability_pct=stability_pct,
+        counterfactual_retry_recovery_rate_pct=retry_recovery_pct,
+        citation_hallucination_rejection_count=hallucinations_total,
+        abstention_precision_pct=abstention_precision_pct,
+        fx_rate_used=fx_rate,
+        fx_rate_source=fx_source,
         case_results=all_results,
     )
+
+    should_write = (
+        write_results
+        if write_results is not None
+        else (mode == "live" or output_dir is not None)
+    )
+    if should_write:
+        json_path, _ = write_benchmark_results(summary, output_dir=output_dir)
+        summary = summary.model_copy(update={"results_artifact_path": str(json_path)})
+
+    return summary
 
 
 def format_markdown_report(summary: BenchmarkSummary) -> str:
@@ -2028,15 +2313,19 @@ def format_markdown_report(summary: BenchmarkSummary) -> str:
         f"- **Execution Mode:** `{summary.mode}`",
         f"- **Golden Dataset Size:** `{summary.total_cases}` Malaysian regulatory compliance scenarios",
         f"- **Trials per Scenario:** `{summary.trials_per_case}` (`{summary.total_runs}` total LangGraph audit runs)",
-        f"- **FX Rate (`USD_TO_MYR_RATE`):** `1 USD = RM {settings.usd_to_myr_rate:.2f} MYR`",
+        f"- **FX Rate (`USD -> MYR`, `{summary.fx_rate_source}`):** `1 USD = RM {summary.fx_rate_used:.4f} MYR`",
         "",
         "## 1. Aggregate SLA & FinOps Summary",
         "",
         "| Metric | Value | SLA Target | Status |",
         "| :--- | :--- | :--- | :--- |",
         f"| **Determinism Consistency (%)** | `{summary.determinism_consistency_pct:.2f}%` | `100.00%` | {'PASS' if summary.determinism_consistency_pct == 100.0 else 'WARN'} |",
+        f"| **Cross-Trial Verdict Stability (%)** | `{summary.cross_trial_verdict_stability_pct:.2f}%` | `100.00%` | {'PASS' if summary.cross_trial_verdict_stability_pct == 100.0 else 'WARN'} |",
         f"| **Verdict Accuracy (%)** | `{summary.verdict_accuracy_pct:.2f}%` | `>= 95.00%` | {'PASS' if summary.verdict_accuracy_pct >= 95.0 else 'FAIL'} |",
         f"| **Verbatim Citation Grounding (%)** | `{summary.verbatim_grounding_pct:.2f}%` | `100.00%` | {'PASS' if summary.verbatim_grounding_pct == 100.0 else 'FAIL'} |",
+        f"| **Counterfactual Retry Recovery Rate (%)** | `{summary.counterfactual_retry_recovery_rate_pct:.2f}%` | `>= 95.00%` | {'PASS' if summary.counterfactual_retry_recovery_rate_pct >= 95.0 else 'WARN'} |",
+        f"| **Citation Hallucinations Rejected** | `{summary.citation_hallucination_rejection_count}` | `Audited` | PASS |",
+        f"| **Abstention Precision (%)** | `{summary.abstention_precision_pct:.2f}%` | `100.00%` | {'PASS' if summary.abstention_precision_pct == 100.0 else 'WARN'} |",
         f"| **Temporal Context Recall (%)** | `{summary.temporal_recall_pct:.2f}%` | `100.00%` | {'PASS' if summary.temporal_recall_pct == 100.0 else 'FAIL'} |",
         f"| **Temporal Contamination Rate (%)** | `{summary.temporal_contamination_pct:.2f}%` | `0.00%` | {'PASS' if summary.temporal_contamination_pct == 0.0 else 'FAIL'} |",
         f"| **Latency (p50 / p95 ms)** | `{summary.latency_p50_ms:.2f} ms / {summary.latency_p95_ms:.2f} ms` | `< 5000.00 ms` | PASS |",
@@ -2076,9 +2365,21 @@ def main() -> None:
         default=3,
         help="Number of repeated trials per golden scenario to measure determinism consistency.",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Optional directory to write JSON and Markdown benchmark artifacts.",
+    )
     args = parser.parse_args()
 
-    summary = asyncio.run(run_benchmark_async(mode=args.mode, trials=args.trials))
+    summary = asyncio.run(
+        run_benchmark_async(
+            mode=args.mode,
+            trials=args.trials,
+            output_dir=args.output_dir,
+        )
+    )
     print(format_markdown_report(summary))
 
 

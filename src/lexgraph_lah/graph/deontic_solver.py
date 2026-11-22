@@ -11,6 +11,7 @@ from lexgraph_lah.schemas.domain import (
     CompositeDeonticEnvelope,
     DeonticConstraint,
     InterRegimeConflictDelta,
+    RecipientNoticeObligation,
     RegimeConstraintCandidate,
     ResolvedMetricBound,
     StatutoryNode,
@@ -27,6 +28,11 @@ ALL_SUPPORTED_REGIMES: tuple[str, ...] = (
     "ACT_704",
     "ACT_136",
     "ACT_658",
+    "ACT_864",
+    "ACT_866",
+    "ACT_873",
+    "ACT_562",
+    "ACT_563",
 )
 
 _REGIME_ALIASES: dict[str, str] = {
@@ -91,7 +97,57 @@ _REGIME_ALIASES: dict[str, str] = {
     "electronic commerce act 2006": "ACT_658",
     "akta 658": "ACT_658",
     "akta perdagangan elektronik 2006": "ACT_658",
+    "p.u.(a) 219/2024": "ACT_854",
+    "p.u. (a) 219/2024": "ACT_854",
+    "p.u.(a) 221/2024": "ACT_854",
+    "p.u. (a) 221/2024": "ACT_854",
+    "p.u.(a) 222/2024": "ACT_854",
+    "p.u. (a) 222/2024": "ACT_854",
+    "p.u.(a) 47/2025": "ACT_854",
+    "p.u. (a) 47/2025": "ACT_854",
+    "p.u.(b) 522/2024": "ACT_709",
+    "p.u. (b) 522/2024": "ACT_709",
+    "cbpdt": "ACT_709",
+    "act_864": "ACT_864",
+    "act 864": "ACT_864",
+    "act864": "ACT_864",
+    "akta 864": "ACT_864",
+    "data sharing act": "ACT_864",
+    "data sharing act 2025": "ACT_864",
+    "akta perkongsian data 2025": "ACT_864",
+    "act_866": "ACT_866",
+    "act 866": "ACT_866",
+    "act866": "ACT_866",
+    "akta 866": "ACT_866",
+    "onsa": "ACT_866",
+    "online safety act": "ACT_866",
+    "online safety act 2025": "ACT_866",
+    "akta keselamatan dalam talian 2025": "ACT_866",
+    "act_873": "ACT_873",
+    "act 873": "ACT_873",
+    "act873": "ACT_873",
+    "akta 873": "ACT_873",
+    "skp": "ACT_873",
+    "bnpl": "ACT_873",
+    "consumer credit act": "ACT_873",
+    "consumer credit act 2025": "ACT_873",
+    "akta kredit pengguna 2025": "ACT_873",
+    "act_562": "ACT_562",
+    "act 562": "ACT_562",
+    "act562": "ACT_562",
+    "akta 562": "ACT_562",
+    "dsa 1997": "ACT_562",
+    "digital signature act 1997": "ACT_562",
+    "akta tandatangan digital 1997": "ACT_562",
+    "act_563": "ACT_563",
+    "act 563": "ACT_563",
+    "act563": "ACT_563",
+    "akta 563": "ACT_563",
+    "cca 1997": "ACT_563",
+    "computer crimes act 1997": "ACT_563",
+    "akta jenayah komputer 1997": "ACT_563",
 }
+
 
 _CONDITION_STRICTNESS_RANK: dict[str, int] = {
     "bnm_oversight_and_exit_plan_required": 3,
@@ -105,11 +161,54 @@ def normalize_regime_key(raw: str) -> str:
     cleaned = raw.strip().lower()
     if cleaned in _REGIME_ALIASES:
         return _REGIME_ALIASES[cleaned]
-    if "854" in cleaned or "220/2024" in cleaned or "cyber" in cleaned:
+    if "864" in cleaned or "data sharing" in cleaned or "perkongsian data" in cleaned:
+        return "ACT_864"
+    if (
+        "866" in cleaned
+        or "online safety" in cleaned
+        or "keselamatan dalam talian" in cleaned
+        or "onsa" in cleaned
+    ):
+        return "ACT_866"
+    if (
+        "873" in cleaned
+        or "consumer credit" in cleaned
+        or "kredit pengguna" in cleaned
+        or "bnpl" in cleaned
+        or "skp" in cleaned
+    ):
+        return "ACT_873"
+    if (
+        "562" in cleaned
+        or "digital signature" in cleaned
+        or "tandatangan digital" in cleaned
+    ):
+        return "ACT_562"
+    if (
+        "563" in cleaned
+        or "computer crimes" in cleaned
+        or "jenayah komputer" in cleaned
+    ):
+        return "ACT_563"
+    if (
+        "854" in cleaned
+        or "219/2024" in cleaned
+        or "220/2024" in cleaned
+        or "221/2024" in cleaned
+        or "222/2024" in cleaned
+        or "47/2025" in cleaned
+        or "cyber" in cleaned
+    ):
         return "ACT_854"
     if "rmit" in cleaned or "bnm" in cleaned:
         return "BNM_RMIT"
-    if "709" in cleaned or "pdpa" in cleaned or "data peribadi" in cleaned:
+    if (
+        "709" in cleaned
+        or "pdpa" in cleaned
+        or "data peribadi" in cleaned
+        or "522/2024" in cleaned
+        or "cbpdt" in cleaned
+    ):
         return "ACT_709"
     if (
         "658" in cleaned
@@ -276,6 +375,7 @@ class DeonticEnvelopeResolver:
 
         # Group constraints by metric_key while avoiding EN/BM duplicate noise for the same node pair
         candidates_by_metric: dict[str, list[RegimeConstraintCandidate]] = {}
+        recipient_candidates: dict[str, list[RegimeConstraintCandidate]] = {}
         seen_per_regime_section: set[tuple[str, str, str, str]] = set()
 
         for node in active_nodes:
@@ -312,20 +412,26 @@ class DeonticEnvelopeResolver:
                     continue
                 seen_per_regime_section.add(dedup_key)
 
-                candidates_by_metric.setdefault(constraint.metric_key, []).append(
-                    RegimeConstraintCandidate(
-                        regime_id=regime_id,
-                        node_id=node.node_id,
-                        act_name=node.act_name,
-                        act_number=node.act_number,
-                        section_code=node.section_code,
-                        gazette_ref=node.gazette_ref,
-                        authority_tier=node.authority_tier,
-                        constraint=constraint,
-                    )
+                candidate = RegimeConstraintCandidate(
+                    regime_id=regime_id,
+                    node_id=node.node_id,
+                    act_name=node.act_name,
+                    act_number=node.act_number,
+                    section_code=node.section_code,
+                    gazette_ref=node.gazette_ref,
+                    authority_tier=node.authority_tier,
+                    constraint=constraint,
                 )
+                candidates_by_metric.setdefault(constraint.metric_key, []).append(
+                    candidate
+                )
+                if constraint.recipient:
+                    stage = constraint.notice_stage or constraint.metric_key
+                    recip_key = f"{constraint.recipient}:{stage}"
+                    recipient_candidates.setdefault(recip_key, []).append(candidate)
 
         resolved_bounds: dict[str, ResolvedMetricBound] = {}
+        recipient_obligations: dict[str, RecipientNoticeObligation] = {}
         conflicts: list[InterRegimeConflictDelta] = []
 
         for metric_key in sorted(candidates_by_metric.keys()):
@@ -370,6 +476,23 @@ class DeonticEnvelopeResolver:
                         )
                     )
 
+        for recip_key in sorted(recipient_candidates.keys()):
+            r_cands = sorted(recipient_candidates[recip_key], key=_constraint_rank_key)
+            r_win = r_cands[0]
+            rc = r_win.constraint
+            recipient_obligations[recip_key] = RecipientNoticeObligation(
+                recipient=rc.recipient or recip_key.split(":", 1)[0],
+                notice_stage=rc.notice_stage or rc.metric_key,
+                regime_id=r_win.regime_id,
+                node_id=r_win.node_id,
+                citation=f"{r_win.act_number} {r_win.section_code}",
+                metric_key=rc.metric_key,
+                operator=rc.operator,
+                threshold_value=rc.threshold_value,
+                unit=rc.unit,
+                description=rc.description,
+            )
+
         digest_basis = json.dumps(
             {
                 "as_of_date": as_of_date.isoformat(),
@@ -383,6 +506,14 @@ class DeonticEnvelopeResolver:
                     }
                     for k, v in resolved_bounds.items()
                 },
+                "recipient_obligations": {
+                    k: {
+                        "val": v.threshold_value,
+                        "op": v.operator,
+                        "node": v.node_id,
+                    }
+                    for k, v in recipient_obligations.items()
+                },
             },
             sort_keys=True,
         )
@@ -394,6 +525,7 @@ class DeonticEnvelopeResolver:
             regimes_evaluated=target_regimes,
             active_node_ids=[n.node_id for n in active_nodes],
             resolved_bounds=resolved_bounds,
+            recipient_obligations=recipient_obligations,
             inter_regime_conflicts=conflicts,
             envelope_hash=envelope_hash,
         )

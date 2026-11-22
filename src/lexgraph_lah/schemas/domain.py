@@ -294,6 +294,14 @@ class DeonticConstraint(BaseModel):
     territorial_scope: list[TerritorialScope] = Field(
         default_factory=lambda: [TerritorialScope.ALL_MALAYSIA]
     )
+    recipient: str | None = Field(
+        default=None,
+        description="Recipient authority or party for notice duties, e.g., PDPA_COMMISSIONER, AFFECTED_DATA_SUBJECT, NACSA, BNM_SUPERVISOR, MCMC",
+    )
+    notice_stage: str | None = Field(
+        default=None,
+        description="Notice stage discriminator, e.g., INITIAL_NOTICE, FULL_REPORT, DATA_SUBJECT_NOTICE, HARMFUL_CONTENT_REPORT",
+    )
     description: str = Field(default="")
 
 
@@ -373,6 +381,14 @@ class StatutoryNode(BaseModel):
     gazette_ref: str | None = Field(
         default=None,
         description="Federal Gazette reference, e.g., P.U. (A) 342/2024, P.U. (B) 512/2024",
+    )
+    gazette_date: date | None = Field(
+        default=None,
+        description="Official Federal Gazette publication date",
+    )
+    carve_out_metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional statutory exemption/carve-out metadata",
     )
     authority_tier: AuthorityTier = Field(
         default=AuthorityTier.TIER_2_ACT_OF_PARLIAMENT,
@@ -681,12 +697,30 @@ class ResolvedMetricBound(BaseModel):
     provenance_chain: list[RegimeConstraintCandidate] = Field(default_factory=list)
 
 
+class RecipientNoticeObligation(BaseModel):
+    """Distinct recipient-specific statutory notification obligation resolved without conflation."""
+
+    recipient: str
+    notice_stage: str = "INITIAL_NOTICE"
+    regime_id: str
+    node_id: str
+    citation: str
+    metric_key: str
+    operator: Literal["<=", ">=", "==", "FORBIDDEN_CLAUSE"] = "<="
+    threshold_value: float | str | bool
+    unit: str = ""
+    description: str = ""
+
+
 class CompositeDeonticEnvelope(BaseModel):
     as_of_date: date
     territorial_scope: TerritorialScope = TerritorialScope.ALL_MALAYSIA
     regimes_evaluated: list[str] = Field(default_factory=list)
     active_node_ids: list[str] = Field(default_factory=list)
     resolved_bounds: dict[str, ResolvedMetricBound] = Field(default_factory=dict)
+    recipient_obligations: dict[str, RecipientNoticeObligation] = Field(
+        default_factory=dict
+    )
     inter_regime_conflicts: list[InterRegimeConflictDelta] = Field(default_factory=list)
     envelope_hash: str = ""
 
@@ -695,14 +729,17 @@ class ContractEdgeType(str, Enum):
     DEFINES_TERM = "DEFINES_TERM"
     OVERRIDES_NOTWITHSTANDING = "OVERRIDES_NOTWITHSTANDING"
     CROSS_REFERENCES = "CROSS_REFERENCES"
+    SUBJECT_TO = "SUBJECT_TO"
+    INCORPORATES_SCHEDULE = "INCORPORATES_SCHEDULE"
+    SURVIVES_TERMINATION = "SURVIVES_TERMINATION"
 
 
 class ContractClauseNode(BaseModel):
     clause_id: str
     heading: str = ""
-    section_type: Literal["DEFINITION", "OPERATIVE", "PRIORITY_OVERRIDE", "GENERAL"] = (
-        "OPERATIVE"
-    )
+    section_type: Literal[
+        "DEFINITION", "OPERATIVE", "PRIORITY_OVERRIDE", "SCHEDULE", "GENERAL"
+    ] = "OPERATIVE"
     text: str
     paragraph_idx: int = 0
     pdf_page: int = 1
@@ -712,6 +749,7 @@ class ContractClauseNode(BaseModel):
     defined_terms: list[str] = Field(default_factory=list)
     referenced_clauses: list[str] = Field(default_factory=list)
     extracted_metrics: dict[str, float | str | bool] = Field(default_factory=dict)
+    table_rows: list[list[str]] = Field(default_factory=list)
 
 
 class ContractDependencyEdge(BaseModel):
@@ -752,6 +790,8 @@ class ContractASTGraph(BaseModel):
     edges: list[ContractDependencyEdge] = Field(default_factory=list)
     narrow_definition_traps: list[NarrowDefinitionTrap] = Field(default_factory=list)
     shadow_override_traps: list[ShadowOverrideTrap] = Field(default_factory=list)
+    ocr_metadata: dict[str, Any] | None = None
+    requires_ocr_abstention: bool = False
 
 
 class DocumentSecurityFinding(BaseModel):
@@ -765,6 +805,7 @@ class DocumentSecurityFinding(BaseModel):
         "HIDDEN_PDF_LAYER",
         "INDIRECT_PROMPT_INJECTION",
         "STATUTORY_SPOOF_OVERRIDE",
+        "ZIP_BOMB_OR_MALFORMED_ARCHIVE",
     ]
     severity: RiskSeverity
     source_format: Literal["docx", "pdf", "text"]
@@ -809,6 +850,9 @@ class ComplianceAttestationManifest(BaseModel):
     manifest_sha256: str = ""
     prev_chain_hash: str = ""
     chain_hash: str = ""
+    signature_b64: str = ""
+    signing_key_id: str = ""
+    signature_algorithm: str = "Ed25519"
 
 
 class ClauseAudit(BaseModel):
@@ -891,6 +935,7 @@ class ContractAuditResponse(BaseModel):
     attestation_manifest: ComplianceAttestationManifest | None = None
     security_findings: list[DocumentSecurityFinding] = Field(default_factory=list)
     security_report: DocumentSecurityReport | None = None
+    audit_session_id: str | None = None
     disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
 
 
@@ -932,6 +977,10 @@ class ComplianceCheckRequest(BaseModel):
         ge=0.0,
         le=1.0,
         description="Optional override for deterministic relevance abstention threshold (default 0.78)",
+    )
+    audit_session_id: str | None = Field(
+        default=None,
+        description="Optional client-supplied audit session ID for cross-worker PII vault re-hydration.",
     )
 
 
@@ -1338,6 +1387,32 @@ class PortfolioBlastRadiusResponse(BaseModel):
     disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
 
 
+class PortfolioAsyncJobRequest(BaseModel):
+    from_date: date
+    to_date: date
+    contracts: list[PortfolioContractInput] = Field(..., min_length=1, max_length=2000)
+    regimes: list[str] | None = None
+    default_territorial_scope: TerritorialScope = Field(
+        default=TerritorialScope.ALL_MALAYSIA
+    )
+    persona: OutputPersona = Field(default=OutputPersona.PRACTITIONER)
+    max_workers: int = Field(default=4, ge=1, le=16)
+
+
+class PortfolioJobStatusResponse(BaseModel):
+    job_id: str
+    tenant_id: str = "default-tenant"
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED"]
+    total_contracts: int = 0
+    processed_contracts: int = 0
+    max_workers: int = 4
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
+    result: PortfolioBlastRadiusResponse | None = None
+
+
 class AttestationLedgerRecord(BaseModel):
     manifest_id: str
     document_id: str
@@ -1357,6 +1432,9 @@ class AttestationLedgerRecord(BaseModel):
     manifest_sha256: str
     prev_chain_hash: str
     chain_hash: str
+    signature_b64: str = ""
+    signing_key_id: str = ""
+    signature_algorithm: str = "Ed25519"
     recorded_at: str
     telemetry_snapshot: dict[str, Any] = Field(default_factory=dict)
 
@@ -1376,7 +1454,18 @@ class AttestationVerifyResponse(BaseModel):
     manifest_sha256_valid: bool = False
     chain_link_valid: bool = False
     ledger_chain_valid: bool = False
+    signature_valid: bool = False
+    signing_key_id: str | None = None
+    signature_algorithm: str = "Ed25519"
     tamper_reasons: list[str] = Field(default_factory=list)
     record: AttestationLedgerRecord | None = None
     telemetry: TelemetrySummary
     disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+class AttestationPublicKeyResponse(BaseModel):
+    key_id: str
+    algorithm: Literal["Ed25519"] = "Ed25519"
+    public_key_pem: str
+    public_key_b64: str
+    fingerprint_sha256: str

@@ -15,8 +15,9 @@ import time
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
-from typing import Literal
+from typing import Any, Literal
 
+from lexgraph_lah.config import settings
 from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
 from lexgraph_lah.schemas.domain import (
     DocumentSecurityFinding,
@@ -293,12 +294,126 @@ def _detect_run_hidden_reason(
     return None
 
 
+class ZipBombError(ValueError):
+    """Raised when an uploaded OOXML/ZIP archive violates zip-bomb or traversal safety guards."""
+
+
+def validate_zip_archive_safety(
+    data: bytes,
+    *,
+    max_uncompressed_bytes: int | None = None,
+    max_compression_ratio: float | None = None,
+    max_entries: int | None = None,
+) -> dict[str, Any]:
+    """
+    Validates a ZIP/OOXML archive BEFORE full XML unpacking to neutralize zip-bombs
+    (decompression bombs, spoofed central-directory sizes, excessive entry counts)
+    and archive path-traversal entries (`../`, leading `/`, or backslashes).
+    """
+    byte_limit = (
+        max_uncompressed_bytes
+        if max_uncompressed_bytes is not None
+        else settings.docx_max_uncompressed_bytes
+    )
+    ratio_limit = (
+        max_compression_ratio
+        if max_compression_ratio is not None
+        else settings.docx_max_compression_ratio
+    )
+    entry_limit = max_entries if max_entries is not None else settings.docx_max_entries
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data), "r")
+    except zipfile.BadZipFile as exc:
+        raise ZipBombError("Malformed or invalid ZIP/OOXML archive.") from exc
+
+    total_actual_bytes = 0
+    total_declared_bytes = 0
+    entry_count = 0
+
+    with zf:
+        infos = zf.infolist()
+        entry_count = len(infos)
+        if entry_count > entry_limit:
+            raise ZipBombError(
+                f"Archive entry count ({entry_count}) exceeds ceiling ({entry_limit})."
+            )
+
+        for info in infos:
+            fname = info.filename
+            if (
+                fname.startswith(("/", "\\"))
+                or ".." in fname.replace("\\", "/").split("/")
+                or (len(fname) >= 2 and fname[1] == ":")
+            ):
+                raise ZipBombError(f"Unsafe ZIP path traversal entry '{fname}'.")
+
+            total_declared_bytes += max(0, info.file_size)
+            if total_declared_bytes > byte_limit:
+                raise ZipBombError(
+                    f"Archive declared uncompressed size exceeds ceiling ({byte_limit} bytes)."
+                )
+            if (
+                info.file_size > 65536
+                and info.compress_size > 0
+                and (info.file_size / info.compress_size) > ratio_limit
+            ):
+                raise ZipBombError(
+                    f"Archive entry '{fname}' exceeds max compression ratio ({ratio_limit}x)."
+                )
+
+            # Stream entry in bounded 64 KB chunks to catch spoofed header file_size values
+            entry_actual = 0
+            with zf.open(info, "r") as stream:
+                while True:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        break
+                    entry_actual += len(chunk)
+                    total_actual_bytes += len(chunk)
+                    if total_actual_bytes > byte_limit:
+                        raise ZipBombError(
+                            f"Archive decompressed payload exceeds ceiling ({byte_limit} bytes)."
+                        )
+                    if (
+                        entry_actual > 65536
+                        and info.compress_size > 0
+                        and (entry_actual / info.compress_size) > ratio_limit
+                    ):
+                        raise ZipBombError(
+                            f"Archive entry '{fname}' runtime ratio exceeds {ratio_limit}x."
+                        )
+
+    return {
+        "entry_count": entry_count,
+        "total_uncompressed_bytes": total_actual_bytes,
+    }
+
+
 def _inspect_docx_security(
     data: bytes,
 ) -> tuple[str, list[DocumentSecurityFinding], list[str]]:
     findings: list[DocumentSecurityFinding] = []
     quarantined: list[str] = []
     clean_paragraphs: list[str] = []
+
+    try:
+        validate_zip_archive_safety(data)
+    except ZipBombError as exc:
+        findings.append(
+            DocumentSecurityFinding(
+                finding_id="SEC-001",
+                category="ZIP_BOMB_OR_MALFORMED_ARCHIVE",
+                severity=RiskSeverity.CRITICAL,
+                source_format="docx",
+                location="archive.zip",
+                excerpt="[Quarantined OOXML/ZIP bomb or path-traversal archive]",
+                rationale=str(exc),
+                quarantined=True,
+            )
+        )
+        quarantined.append(f"[ZIP safety violation: {exc}]")
+        return "", findings, quarantined
 
     try:
         zf = zipfile.ZipFile(io.BytesIO(data), "r")
@@ -776,6 +891,7 @@ def sanitize_docx_bytes(
     suspicious comments, and hidden OOXML runs (`<w:vanish/>`, `<w:webHidden/>`,
     tiny/near-white fonts) while preserving valid visible paragraphs and `<w:trackRevisions/>`.
     """
+    validate_zip_archive_safety(data)
     report = scan_document_security(
         document_id=document_id,
         file_bytes=data,
