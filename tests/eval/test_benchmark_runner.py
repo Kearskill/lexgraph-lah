@@ -11,17 +11,17 @@ from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
 @pytest.mark.asyncio
 async def test_benchmark_runner_mock_mode_and_markdown_table():
     """
-    Verifies the 30-case golden benchmark suite (v4) in mock mode produces 100% determinism
+    Verifies the 36-case golden benchmark suite (v5) in mock mode produces 100% determinism
     consistency, 100% verdict accuracy, 100% verbatim grounding, and renders a Markdown
     report with p50/p95 latency and USD/MYR cost metrics.
     """
     dataset = get_benchmark_dataset()
-    assert len(dataset) == 30
+    assert len(dataset) == 36
 
     summary = await run_benchmark_async(mode="mock", trials=2)
     assert summary.total_cases == len(dataset)
     assert summary.trials_per_case == 2
-    assert summary.total_runs == 60
+    assert summary.total_runs == 72
     assert summary.determinism_consistency_pct == 100.0
     assert summary.verdict_accuracy_pct == 100.0
     assert summary.verbatim_grounding_pct == 100.0
@@ -54,6 +54,12 @@ async def test_benchmark_runner_mock_mode_and_markdown_table():
     assert "BENCH-28-ACT864-PUBLIC-SECTOR-VENDOR-S17" in report
     assert "BENCH-29-ACT873-BNPL-RULE-OF-78-SKP" in report
     assert "BENCH-30-PDPA-DUAL-RECIPIENT-72H-7D-PHASES" in report
+    assert "BENCH-31-ACT378-SDSAS-2026" in report
+    assert "BENCH-32-ACT53-MYINVOIS-2026" in report
+    assert "BENCH-33-AIGE-VOLUNTARY-VS-BNM-OUTSOURCING" in report
+    assert "BENCH-34-COUNTERPARTY-DOCX-TRACK-CHANGES" in report
+    assert "BENCH-35-SLA-CASCADE-AND-INCIDENT-PLAYBOOK" in report
+    assert "BENCH-36-LEXPACK-CACHE-AND-FINOPS-GUARDRAIL" in report
 
 
 def test_finops_myr_usd_deterministic_rounding():

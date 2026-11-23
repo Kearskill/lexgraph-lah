@@ -214,6 +214,13 @@ def scan_pdpa_compliance(
     req: PDPAComplianceScanRequest,
     store: TemporalGraphStore | None = None,
     record_telemetry: bool = True,
+    *,
+    precomputed_active_nodes: list[StatutoryNode] | None = None,
+    precomputed_bilingual_cache: dict[
+        tuple[str, tuple[str, ...]],
+        tuple[list[BilingualClausePair], list[BilingualDivergenceReport]],
+    ]
+    | None = None,
 ) -> PDPAComplianceScanResponse:
     """
     Pre-flight PII-scrubbed Act 709 (PDPA) Compliance Gap Scanner returning strict
@@ -235,11 +242,15 @@ def scan_pdpa_compliance(
         low_text = safe_text.lower()
 
         # 2. Bi-temporal & territorial active statute lookup
-        active_nodes = graph_store.query_point_in_time(
-            as_of_date=effective_date,
-            include_citations=True,
-            include_translations=True,
-            territorial_scope=req.territorial_scope,
+        active_nodes = (
+            precomputed_active_nodes
+            if precomputed_active_nodes is not None
+            else graph_store.query_point_in_time(
+                as_of_date=effective_date,
+                include_citations=True,
+                include_translations=True,
+                territorial_scope=req.territorial_scope,
+            )
         )
 
         # 3. Deterministic 0.78 Abstention Gate
@@ -772,9 +783,20 @@ def scan_pdpa_compliance(
             round((compliant_count / len(gaps)) * 100.0, 2) if gaps else 100.0
         )
 
-        bilingual_provisions, divergence_warnings = _build_bilingual_provisions(
-            graph_store, implicated_node_ids, as_of_date=effective_date
-        )
+        if precomputed_bilingual_cache is not None:
+            bkey = (effective_date.isoformat(), tuple(implicated_node_ids))
+            cached_pair = precomputed_bilingual_cache.get(bkey)
+            if cached_pair is None:
+                cached_pair = _build_bilingual_provisions(
+                    graph_store, implicated_node_ids, as_of_date=effective_date
+                )
+                precomputed_bilingual_cache[bkey] = cached_pair
+            bilingual_provisions = list(cached_pair[0])
+            divergence_warnings = list(cached_pair[1])
+        else:
+            bilingual_provisions, divergence_warnings = _build_bilingual_provisions(
+                graph_store, implicated_node_ids, as_of_date=effective_date
+            )
         irac_summary, rakyat_summary = build_persona_summaries(
             document_id=req.document_id,
             as_of_date=effective_date,

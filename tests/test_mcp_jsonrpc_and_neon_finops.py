@@ -242,11 +242,13 @@ async def test_mcp_jsonrpc_http_11_tools_and_model_tier_telemetry():
         )
         assert rpc_list.status_code == 200
         rpc_tools = rpc_list.json()["result"]["tools"]
-        assert len(rpc_tools) == 11
+        assert len(rpc_tools) == 13
         assert {
             "scan_document_security",
             "scan_portfolio_blast_radius",
             "verify_compliance_attestation",
+            "audit_counterparty_docx_redlines",
+            "compile_incident_playbook",
         } <= {t["name"] for t in rpc_tools}
 
         b64_docx = base64.b64encode(hostile_docx).decode("ascii")
@@ -375,4 +377,4 @@ def test_mcp_jsonrpc_stdio_cli_subprocess():
     assert lines[1]["id"] == 2
     assert lines[1]["result"] == {}
     assert lines[2]["id"] == 3
-    assert len(lines[2]["result"]["tools"]) == 11
+    assert len(lines[2]["result"]["tools"]) == 13

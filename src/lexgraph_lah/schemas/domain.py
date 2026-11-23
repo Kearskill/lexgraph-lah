@@ -252,12 +252,14 @@ class TelemetrySummary(BaseModel):
     is_verified_grounded: bool
     model_name: str | None = None
     trace_id: str | None = None
+    cache_hit: bool = False
 
 
 class DeonticModality(str, Enum):
     OBLIGATION = "OBLIGATION"
     PROHIBITION = "PROHIBITION"
     PERMISSION = "PERMISSION"
+    VOLUNTARY_GUIDELINE = "VOLUNTARY_GUIDELINE"
 
 
 class DeonticOperator(str, Enum):
@@ -275,9 +277,9 @@ class DeonticConstraint(BaseModel):
         default="ACT_709",
         description="Canonical regime code, e.g., ACT_709, ACT_854, BNM_RMIT",
     )
-    modality: Literal["OBLIGATION", "PROHIBITION", "PERMISSION"] = Field(
-        default="OBLIGATION"
-    )
+    modality: Literal[
+        "OBLIGATION", "PROHIBITION", "PERMISSION", "VOLUNTARY_GUIDELINE"
+    ] = Field(default="OBLIGATION")
     metric_key: str = Field(
         ...,
         description=(
@@ -687,7 +689,7 @@ class InterRegimeConflictDelta(BaseModel):
 
 class ResolvedMetricBound(BaseModel):
     metric_key: str
-    modality: Literal["OBLIGATION", "PROHIBITION", "PERMISSION"]
+    modality: Literal["OBLIGATION", "PROHIBITION", "PERMISSION", "VOLUNTARY_GUIDELINE"]
     operator: Literal["<=", ">=", "==", "FORBIDDEN_CLAUSE"]
     strictest_value: float | str | bool
     unit: str = ""
@@ -903,6 +905,16 @@ class ClauseAudit(BaseModel):
         default=True,
         description="True when counterfactual redline simulation satisfies the strictest composite deontic envelope.",
     )
+    deontic_modality: (
+        Literal["OBLIGATION", "PROHIBITION", "PERMISSION", "VOLUNTARY_GUIDELINE"] | None
+    ) = Field(
+        default=None,
+        description="Optional deontic modality discriminating mandatory statutory duties vs voluntary guidelines.",
+    )
+    is_voluntary_guideline: bool = Field(
+        default=False,
+        description="True when finding arises from a voluntary governance guideline (e.g. MOSTI AIGE) rather than mandatory statute.",
+    )
 
 
 class ClauseExtractionList(BaseModel):
@@ -981,6 +993,10 @@ class ComplianceCheckRequest(BaseModel):
     audit_session_id: str | None = Field(
         default=None,
         description="Optional client-supplied audit session ID for cross-worker PII vault re-hydration.",
+    )
+    cache_bypass: bool = Field(
+        default=False,
+        description="When true, bypasses the deterministic Clause-AST verdict cache.",
     )
 
 
@@ -1397,6 +1413,19 @@ class PortfolioAsyncJobRequest(BaseModel):
     )
     persona: OutputPersona = Field(default=OutputPersona.PRACTITIONER)
     max_workers: int = Field(default=4, ge=1, le=16)
+    webhook_url: str | None = None
+    cache_bypass: bool = False
+
+
+class WebhookDeliveryStatus(BaseModel):
+    webhook_url: str
+    status: Literal["PENDING", "DELIVERED", "FAILED", "BLOCKED_SSRF"] = "PENDING"
+    attempts: int = 0
+    last_http_status: int | None = None
+    last_error: str | None = None
+    delivered_at: str | None = None
+    signature_hmac_256: str | None = None
+    signature_ed25519: str | None = None
 
 
 class PortfolioJobStatusResponse(BaseModel):
@@ -1410,6 +1439,10 @@ class PortfolioJobStatusResponse(BaseModel):
     started_at: str | None = None
     completed_at: str | None = None
     error: str | None = None
+    webhook_url: str | None = None
+    webhook_delivery: WebhookDeliveryStatus | None = None
+    cache_hits: int = 0
+    cache_misses: int = 0
     result: PortfolioBlastRadiusResponse | None = None
 
 
@@ -1469,3 +1502,238 @@ class AttestationPublicKeyResponse(BaseModel):
     public_key_pem: str
     public_key_b64: str
     fingerprint_sha256: str
+
+
+# =============================================================================
+# Deliverable 1: Counterparty OOXML Track-Changes & Comment-Thread Negotiation
+# =============================================================================
+
+RedlineClassification = Literal[
+    "COMPLIANT_ACCEPT",
+    "DEONTIC_REGRESSION",
+    "COMMENT_CONFLICT",
+    "NEUTRAL_EDIT",
+]
+
+
+class RedlineRevisionItem(BaseModel):
+    revision_id: str = ""
+    revision_type: Literal["INS", "DEL", "MOVE_FROM", "MOVE_TO", "REPLACE"]
+    author: str = "counterparty"
+    date: str = ""
+    text: str = ""
+
+
+class CommentAnnotation(BaseModel):
+    comment_id: str
+    author: str = "counterparty"
+    date: str = ""
+    text: str
+    para_id: str | None = None
+    parent_comment_id: str | None = None
+    parent_para_id: str | None = None
+    resolved: bool = False
+    has_conflict: bool = False
+    conflict_reason: str | None = None
+
+
+class RedlineRevisionInput(BaseModel):
+    clause_id: str = "SEC-1.0"
+    baseline_text: str = ""
+    proposed_text: str = ""
+    author: str = "counterparty"
+    date: str = ""
+    revision_id: str = ""
+    revision_type: Literal["INS", "DEL", "MOVE_FROM", "MOVE_TO", "REPLACE"] = "REPLACE"
+    comments: list[CommentAnnotation] = Field(default_factory=list)
+
+
+class CounterpartyRedlineJsonRequest(BaseModel):
+    document_id: str = Field(default="NEG-REDLINE-001", min_length=1)
+    as_of_date: date | None = None
+    regimes: list[str] | None = None
+    territorial_scope: TerritorialScope = Field(default=TerritorialScope.ALL_MALAYSIA)
+    docx_base64: str | None = None
+    filename: str | None = None
+    baseline_text: str | None = None
+    proposed_text: str | None = None
+    revisions: list[RedlineRevisionInput] = Field(default_factory=list)
+    comments: list[CommentAnnotation] = Field(default_factory=list)
+    audit_session_id: str | None = None
+
+
+class ClauseRedlineDelta(BaseModel):
+    clause_id: str
+    classification: RedlineClassification
+    severity: RiskSeverity = RiskSeverity.LOW
+    baseline_text: str
+    proposed_text: str
+    revisions: list[RedlineRevisionItem] = Field(default_factory=list)
+    comments: list[CommentAnnotation] = Field(default_factory=list)
+    breached_bounds: list[str] = Field(default_factory=list)
+    violated_statute_ids: list[str] = Field(default_factory=list)
+    source_span_ids: list[str] = Field(default_factory=list)
+    rationale: str = ""
+    recommended_counter_redline: str = ""
+
+
+class CounterpartyRedlineDiff(BaseModel):
+    document_id: str
+    as_of_date: date
+    territorial_scope: TerritorialScope = TerritorialScope.ALL_MALAYSIA
+    regimes: list[str] = Field(default_factory=list)
+    overall_risk: RiskSeverity = RiskSeverity.LOW
+    baseline_clauses: list[ContractClauseNode] = Field(default_factory=list)
+    proposed_clauses: list[ContractClauseNode] = Field(default_factory=list)
+    clause_deltas: list[ClauseRedlineDelta] = Field(default_factory=list)
+    regression_count: int = 0
+    comment_conflict_count: int = 0
+    compliant_accept_count: int = 0
+    neutral_edit_count: int = 0
+    deontic_envelope: CompositeDeonticEnvelope | None = None
+    security_report: DocumentSecurityReport | None = None
+    pii_scrub: PIIScrubSummary | None = None
+    audit_session_id: str | None = None
+    attestation_manifest: ComplianceAttestationManifest | None = None
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+# =============================================================================
+# Deliverable 3: Sub-Processor SLA Cascade Verifier & Incident Playbook
+# =============================================================================
+
+PartyRole = Literal[
+    "DATA_USER_CONTROLLER",
+    "NCII_ENTITY",
+    "BNM_FINANCIAL_INSTITUTION",
+    "PUBLIC_SECTOR_AGENCY_ACT_864",
+]
+
+
+class SLACascadeCheckItem(BaseModel):
+    recipient: str
+    notice_stage: str
+    regime_id: str
+    citation: str
+    node_id: str
+    vendor_notice_hours: float
+    regulator_deadline_hours: float
+    slack_hours: float
+    deficit_hours: float
+    triage_buffer_ratio: float
+    min_required_buffer_hours: float
+    recommended_max_vendor_hours: float
+    status: Literal["COMPLIANT", "SLA_CASCADE_BREACH"]
+    breach_reason: Literal["NONE", "IMPOSSIBLE_TIMELINE", "INSUFFICIENT_TRIAGE_BUFFER"]
+    severity: RiskSeverity
+    clause_id: str = "SEC-1.0"
+    clause_excerpt: str = ""
+
+
+class SLACascadeReport(BaseModel):
+    document_id: str
+    party_role: PartyRole
+    as_of_date: date
+    territorial_scope: TerritorialScope = TerritorialScope.ALL_MALAYSIA
+    regimes: list[str] = Field(default_factory=list)
+    extracted_vendor_notice_hours: float | None = None
+    is_business_days_window: bool = False
+    cascade_breach_detected: bool = False
+    overall_risk: RiskSeverity = RiskSeverity.LOW
+    checks: list[SLACascadeCheckItem] = Field(default_factory=list)
+    recommended_redline_en: str = ""
+    recommended_redline_bm: str = ""
+    pii_scrub: PIIScrubSummary | None = None
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+class IncidentTimelineMilestone(BaseModel):
+    milestone_order: int
+    recipient: str
+    notice_stage: str
+    regime_id: str
+    node_id: str
+    citation: str
+    statutory_window_value: float
+    statutory_window_unit: str
+    deadline_utc: str
+    deadline_myt: str
+    hours_from_discovery: float
+    act_388_s54_applied: bool = False
+    act_388_s54_metadata: dict[str, Any] | None = None
+    description: str = ""
+    source_span_ids: list[str] = Field(default_factory=list)
+
+
+class IncidentPlaybookRequest(BaseModel):
+    document_id: str = Field(default="INCIDENT-PLAYBOOK-001", min_length=1)
+    discovery_timestamp: str = Field(
+        ...,
+        min_length=10,
+        description="ISO-8601 incident discovery timestamp, normalized to Asia/Kuala_Lumpur.",
+    )
+    party_role: PartyRole = Field(default="DATA_USER_CONTROLLER")
+    triggered_regimes: list[str] = Field(
+        default_factory=lambda: ["ACT_709", "ACT_854", "BNM_RMIT"]
+    )
+    territorial_scope: TerritorialScope = Field(default=TerritorialScope.ALL_MALAYSIA)
+    as_of_date: date | None = None
+    contract_text: str | None = None
+    clauses: list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_regimes_alias(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        if "triggered_regimes" not in d and "regimes" in d:
+            d["triggered_regimes"] = d["regimes"]
+        return d
+
+
+class IncidentPlaybookResponse(BaseModel):
+    document_id: str
+    party_role: PartyRole
+    discovery_timestamp_utc: str
+    discovery_timestamp_myt: str
+    as_of_date: date
+    territorial_scope: TerritorialScope
+    triggered_regimes: list[str] = Field(default_factory=list)
+    milestones: list[IncidentTimelineMilestone] = Field(default_factory=list)
+    sla_cascade_report: SLACascadeReport | None = None
+    sla_cascade_warnings: list[SLACascadeCheckItem] = Field(default_factory=list)
+    recommended_redline_en: str = ""
+    recommended_redline_bm: str = ""
+    attestation_manifest: ComplianceAttestationManifest | None = None
+    attestation_record: AttestationLedgerRecord | None = None
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+# =============================================================================
+# Deliverable 5: Tenant FinOps Monthly Usage & Budget Guardrail
+# =============================================================================
+
+
+class TenantFinOpsUsageResponse(BaseModel):
+    tenant_id: str
+    billing_month: str
+    total_runs: int = 0
+    cache_hit_runs: int = 0
+    deterministic_fallback_runs: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cumulative_cost_usd: float = 0.0
+    cumulative_cost_myr: float = 0.0
+    monthly_budget_myr: float = 0.0
+    remaining_budget_myr: float | None = None
+    budget_exceeded: bool = False
+    budget_policy: Literal["deterministic_fallback", "reject_429"] = (
+        "deterministic_fallback"
+    )
+    fx_rate_used: float = 4.40
+    fx_rate_source: str = "fallback"

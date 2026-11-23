@@ -743,6 +743,15 @@ class AttestationLedger:
             row = self._backend.get_by_manifest_id(manifest_id)
             return self._row_to_record(row) if row is not None else None
 
+    def get_with_seq(
+        self, manifest_id: str
+    ) -> tuple[int, AttestationLedgerRecord] | None:
+        with self._lock:
+            row = self._backend.get_by_manifest_id(manifest_id)
+            if row is None:
+                return None
+            return int(row["seq"]), self._row_to_record(row)
+
     def list_records(self) -> list[AttestationLedgerRecord]:
         with self._lock:
             return [self._row_to_record(r) for r in self._backend.list_rows()]

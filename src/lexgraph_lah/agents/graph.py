@@ -12,6 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
 
+from lexgraph_lah.compliance.fiscal_aige_scanner import evaluate_fiscal_aige_clauses
 from lexgraph_lah.config import settings
 from lexgraph_lah.graph.deontic_solver import (
     DeonticEnvelopeResolver,
@@ -45,6 +46,7 @@ from lexgraph_lah.telemetry.cost_tracker import (
     resolve_provider_model_id,
     select_model_tier,
 )
+from lexgraph_lah.telemetry.tracer import emit_otel_attributes
 
 MAX_RETRIES = 2
 
@@ -69,7 +71,13 @@ _LEGAL_DOMAIN_ANCHOR_RE = re.compile(
     r"act\s+873|akta\s+873|consumer\s+credit|bnpl|rule[\s-]+of[\s-]+78|peraturan\s+78|skp|"
     r"act\s+562|akta\s+562|digital\s+signature|act\s+563|akta\s+563|computer\s+crimes|"
     r"mssp|soc\s+monitoring|penetration\s+testing|p\.u\.\s*\(a\)\s*221/2024|"
-    r"biometric|data\s+portability|breach\s+register|affected\s+data\s+subject)\b",
+    r"biometric|data\s+portability|breach\s+register|affected\s+data\s+subject|"
+    r"act\s+378|akta\s+378|stamp\s+act|stamp\s+duty|duti\s+setem|sdsas|"
+    r"act\s+53|akta\s+53|income\s+tax|myinvois|e-?invoic|e-?invois|82c|120\(1\)\(d\)|"
+    r"mosti|aige|ai\s+governance|human-in-the-loop|kecerdasan\s+buatan|"
+    r"cryptographic\s+key|byok|sub-?contract|outsourcing|penyumberan\s+luar|"
+    r"service\s+agreement|employment\s+contract|commercial\s+contract|"
+    r"jadual\s+pembayaran|billing\s+schedule|payment\s+schedule|monthly\s+salary)\b",
     re.IGNORECASE,
 )
 
@@ -752,6 +760,31 @@ def _offline_deterministic_assess(
                 )
                 covered_clause_ids.add(cnode.clause_id)
 
+        # Evaluate 2026 Malaysian Commercial Fiscal (Act 378 / Act 53), MOSTI AIGE & BNM Outsourcing
+        raw_ref_d = state.get("reference_date")
+        eff_as_of = date.fromisoformat(raw_ref_d) if raw_ref_d else date.today()
+        fiscal_aige_findings = evaluate_fiscal_aige_clauses(
+            ast_graph=ast_graph,
+            envelope=envelope,
+            as_of_date=eff_as_of,
+            store=_DEFAULT_TEMPORAL_STORE,
+            active_statute_ids=active_ids,
+        )
+        for fg in fiscal_aige_findings:
+            if fg.clause_id not in covered_clause_ids or fg.category.startswith(
+                (
+                    "LHDN MyInvois",
+                    "Stamp",
+                    "Omitted Stamp",
+                    "Foreign Residential",
+                    "MyInvois",
+                    "MOSTI AIGE",
+                    "BNM Outsourcing",
+                )
+            ):
+                clauses.append(fg)
+                covered_clause_ids.add(fg.clause_id)
+
     # 3. Fallback when no specific rule fired
     if not clauses:
         if "sec-1.1" in lower_text or "within 72 hours" in lower_text:
@@ -1118,6 +1151,21 @@ async def cross_clause_risk_assessor_node(state: AgentState) -> dict[str, Any]:
         cross_clause_anomaly_count=anomaly_count,
         security_finding_count=sec_count,
     )
+
+    if state.get("force_deterministic_fallback"):
+        emit_otel_attributes(
+            {
+                "lexgraph.budget_fallback": True,
+                "lexgraph.model_routing_reason": "tenant_monthly_budget_exceeded_fallback",
+            }
+        )
+        offline_out = _offline_deterministic_assess(state, safe_text=safe_text)
+        offline_out["pii_scrub"] = pii_dict
+        offline_out["selected_model"] = "deterministic_fallback"
+        offline_out["model_routing_reason"] = "tenant_monthly_budget_exceeded_fallback"
+        offline_out["prompt_tokens"] = 0
+        offline_out["completion_tokens"] = 0
+        return offline_out
 
     llm = get_llm(selected_model)
     if (

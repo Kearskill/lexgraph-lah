@@ -34,6 +34,8 @@ class AgentState(TypedDict):
     selected_model: NotRequired[str | None]
     model_routing_reason: NotRequired[str | None]
     trace_id: NotRequired[str | None]
+    force_deterministic_fallback: NotRequired[bool]
+    cache_hit: NotRequired[bool]
     prompt_tokens: Annotated[int, operator.add]
     completion_tokens: Annotated[int, operator.add]
     hallucination_rejections: NotRequired[Annotated[int, operator.add]]

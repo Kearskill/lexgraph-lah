@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,6 +65,23 @@ class Settings(BaseSettings):
     bnm_fx_api_url: str = "https://api.bnm.gov.my/public/exchange-rate"
     bnm_fx_cache_ttl_seconds: int = 86400
     lexgraph_usd_myr_fallback: float | None = None
+
+    # Phase 5: Firewall XML limits, durable portfolio jobs/webhooks, clause AST cache & tenant FinOps budget
+    docx_max_xml_part_bytes: int = 5 * 1024 * 1024
+    portfolio_job_store: str = "memory"
+    portfolio_job_db_path: str = ":memory:"
+    portfolio_job_postgres_dsn: str = ""
+    portfolio_webhook_hmac_secret: str = "lexgraph-webhook-dev-secret"
+    portfolio_webhook_timeout_seconds: float = 5.0
+    portfolio_webhook_max_attempts: int = 3
+    portfolio_webhook_backoff_base_seconds: float = 0.25
+    clause_cache_backend: str = "memory"
+    clause_cache_redis_url: str = "redis://localhost:6379/0"
+    clause_cache_ttl_seconds: int = 3600
+    lexgraph_tenant_monthly_budget_myr: float = 0.0
+    lexgraph_budget_exceeded_policy: Literal["deterministic_fallback", "reject_429"] = (
+        "deterministic_fallback"
+    )
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

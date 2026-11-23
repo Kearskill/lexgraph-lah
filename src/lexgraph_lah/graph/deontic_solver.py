@@ -33,6 +33,9 @@ ALL_SUPPORTED_REGIMES: tuple[str, ...] = (
     "ACT_873",
     "ACT_562",
     "ACT_563",
+    "ACT_378",
+    "ACT_53",
+    "MOSTI_AIGE",
 )
 
 _REGIME_ALIASES: dict[str, str] = {
@@ -146,6 +149,36 @@ _REGIME_ALIASES: dict[str, str] = {
     "cca 1997": "ACT_563",
     "computer crimes act 1997": "ACT_563",
     "akta jenayah komputer 1997": "ACT_563",
+    "act_378": "ACT_378",
+    "act 378": "ACT_378",
+    "act378": "ACT_378",
+    "akta 378": "ACT_378",
+    "stamp act": "ACT_378",
+    "stamp act 1949": "ACT_378",
+    "akta setem": "ACT_378",
+    "akta setem 1949": "ACT_378",
+    "sdsas": "ACT_378",
+    "stamp duty": "ACT_378",
+    "duti setem": "ACT_378",
+    "act_53": "ACT_53",
+    "act 53": "ACT_53",
+    "act53": "ACT_53",
+    "akta 53": "ACT_53",
+    "income tax act 1967": "ACT_53",
+    "akta cukai pendapatan 1967": "ACT_53",
+    "myinvois": "ACT_53",
+    "e-invoice": "ACT_53",
+    "e-invoicing": "ACT_53",
+    "s. 82c": "ACT_53",
+    "82c": "ACT_53",
+    "mosti_aige": "MOSTI_AIGE",
+    "mosti aige": "MOSTI_AIGE",
+    "aige": "MOSTI_AIGE",
+    "mosti": "MOSTI_AIGE",
+    "ai governance": "MOSTI_AIGE",
+    "ai ethics": "MOSTI_AIGE",
+    "bnm outsourcing": "BNM_RMIT",
+    "bnm/rh/pd 028-99": "BNM_RMIT",
 }
 
 
@@ -190,6 +223,27 @@ def normalize_regime_key(raw: str) -> str:
         or "jenayah komputer" in cleaned
     ):
         return "ACT_563"
+    if (
+        "378" in cleaned
+        or "stamp act" in cleaned
+        or "akta setem" in cleaned
+        or "sdsas" in cleaned
+        or "stamp duty" in cleaned
+    ):
+        return "ACT_378"
+    if (
+        "act 53" in cleaned
+        or "act_53" in cleaned
+        or "akta 53" in cleaned
+        or "income tax" in cleaned
+        or "cukai pendapatan" in cleaned
+        or "myinvois" in cleaned
+        or "82c" in cleaned
+        or "120(1)(d)" in cleaned
+    ):
+        return "ACT_53"
+    if "aige" in cleaned or "mosti" in cleaned or "ai governance" in cleaned:
+        return "MOSTI_AIGE"
     if (
         "854" in cleaned
         or "219/2024" in cleaned
@@ -271,12 +325,16 @@ def infer_node_regime(node: StatutoryNode) -> str:
     return normalize_regime_key(blob)
 
 
-def _constraint_rank_key(cand: RegimeConstraintCandidate) -> tuple[float, int, str]:
+def _constraint_rank_key(
+    cand: RegimeConstraintCandidate,
+) -> tuple[int, float, int, str]:
     """
     Produces a deterministic comparison key where SMALLER tuple means STRICTER bound
-    (wins the composite envelope).
+    (wins the composite envelope). Mandatory obligations/prohibitions strictly outrank
+    voluntary guidelines (`VOLUNTARY_GUIDELINE`) on shared metric keys.
     """
     c = cand.constraint
+    modality_rank = 1 if c.modality == "VOLUNTARY_GUIDELINE" else 0
     tier = int(cand.authority_tier)
     val = c.threshold_value
 
@@ -285,22 +343,22 @@ def _constraint_rank_key(cand: RegimeConstraintCandidate) -> tuple[float, int, s
         and isinstance(val, (int, float))
         and not isinstance(val, bool)
     ):
-        return (float(val), tier, cand.node_id)
+        return (modality_rank, float(val), tier, cand.node_id)
     if (
         c.operator == ">="
         and isinstance(val, (int, float))
         and not isinstance(val, bool)
     ):
-        return (-float(val), tier, cand.node_id)
+        return (modality_rank, -float(val), tier, cand.node_id)
     if c.operator == "FORBIDDEN_CLAUSE":
-        return (0.0, tier, cand.node_id)
+        return (modality_rank, 0.0, tier, cand.node_id)
     if isinstance(val, bool):
         # True obligation is stricter than False permission
-        return (0.0 if val else 1.0, tier, cand.node_id)
+        return (modality_rank, 0.0 if val else 1.0, tier, cand.node_id)
     if isinstance(val, str):
         rank = _CONDITION_STRICTNESS_RANK.get(val, 1)
-        return (-float(rank), tier, cand.node_id)
-    return (0.0, tier, cand.node_id)
+        return (modality_rank, -float(rank), tier, cand.node_id)
+    return (modality_rank, 0.0, tier, cand.node_id)
 
 
 def _format_bound(constraint: DeonticConstraint) -> str:

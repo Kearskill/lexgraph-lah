@@ -152,7 +152,7 @@ async def test_enterprise_auth_jwt_api_key_rbac_tenant_isolation_and_rate_limit(
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         )
         assert r_mcp_list.status_code == 200
-        assert len(r_mcp_list.json()["result"]["tools"]) == 11
+        assert len(r_mcp_list.json()["result"]["tools"]) == 13
 
         r_mcp_call_denied = await client.post(
             "/mcp",

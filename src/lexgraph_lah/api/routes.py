@@ -1,8 +1,12 @@
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from datetime import date
 from email import policy
 from email.parser import BytesParser
@@ -14,7 +18,16 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from lexgraph_lah.agents.graph import _DEFAULT_TEMPORAL_STORE, build_compliance_graph
+from lexgraph_lah.attestation.bundle import build_lexpack_bundle
+from lexgraph_lah.compliance.clause_cache import (
+    compute_clause_ast_digest,
+    compute_regime_set_hash,
+    compute_statutory_graph_digest,
+    default_clause_cache,
+    record_cache_otel_event,
+)
 from lexgraph_lah.compliance.pdpa_scanner import scan_pdpa_compliance
+from lexgraph_lah.compliance.sla_cascade import compile_incident_playbook
 from lexgraph_lah.config import settings
 from lexgraph_lah.graph.bilingual_critic import (
     audit_bilingual_divergence,
@@ -41,6 +54,9 @@ from lexgraph_lah.middleware.pii_scrubber import (
     default_pii_session_store,
     scrub_malaysian_pii,
 )
+from lexgraph_lah.negotiation.docx_redline_critic import (
+    analyze_counterparty_docx_redlines,
+)
 from lexgraph_lah.schemas.domain import (
     DEFAULT_LEGAL_DISCLAIMER,
     AttestationLedgerRecord,
@@ -58,9 +74,13 @@ from lexgraph_lah.schemas.domain import (
     ContractAuditResponse,
     ContractDeltaAuditRequest,
     ContractDeltaAuditResponse,
+    CounterpartyRedlineDiff,
+    CounterpartyRedlineJsonRequest,
     DocumentSecurityFinding,
     DocumentSecurityReport,
     GraphTopologyResponse,
+    IncidentPlaybookRequest,
+    IncidentPlaybookResponse,
     IRACAnalysis,
     OutputPersona,
     PDPAComplianceScanRequest,
@@ -80,6 +100,7 @@ from lexgraph_lah.schemas.domain import (
     StatutoryDiffRequest,
     StatutoryVersionDiff,
     TelemetryMetricsResponse,
+    TenantFinOpsUsageResponse,
     TerritorialScope,
 )
 from lexgraph_lah.schemas.state import AgentState
@@ -89,7 +110,11 @@ from lexgraph_lah.security.attestation_ledger import (
 )
 from lexgraph_lah.security.auth import get_request_tenant_id
 from lexgraph_lah.security.doc_firewall import ZipBombError, scan_document_security
-from lexgraph_lah.telemetry.cost_tracker import compute_telemetry_summary
+from lexgraph_lah.telemetry.cost_tracker import (
+    compute_telemetry_summary,
+    default_bnm_fx_provider,
+    default_tenant_budget_tracker,
+)
 from lexgraph_lah.telemetry.tracer import (
     ComplianceSpanRecord,
     measure_latency_ms,
@@ -152,8 +177,61 @@ def _load_all_fixtures() -> list[dict[str, Any]]:
     return items
 
 
+class _SyncedComplianceCache(dict[str, ContractAuditResponse]):
+    """Keeps legacy `_COMPLIANCE_CACHE.clear()` synchronized with `default_clause_cache`."""
+
+    def clear(self) -> None:
+        super().clear()
+        default_clause_cache.clear()
+
+
 # Semantic/exact-match response cache to avoid redundant LLM billing on identical (text, reference_date, act_filter)
-_COMPLIANCE_CACHE: dict[str, ContractAuditResponse] = {}
+_COMPLIANCE_CACHE: dict[str, ContractAuditResponse] = _SyncedComplianceCache()
+
+# Tenant-isolated LRU caches for `.lexpack.zip` `include_docx=true` hydration.
+_SESSION_ARTIFACT_LOCK = threading.RLock()
+_SESSION_DOCX_CACHE: OrderedDict[tuple[str, str], bytes] = OrderedDict()
+_SESSION_AUDIT_SNAPSHOTS: OrderedDict[
+    tuple[str, str], tuple[str, ContractAuditResponse]
+] = OrderedDict()
+_MAX_SESSION_ARTIFACTS = 256
+
+
+def _store_session_docx(tenant_id: str, audit_session_id: str, data: bytes) -> None:
+    if not audit_session_id:
+        return
+    with _SESSION_ARTIFACT_LOCK:
+        key = (tenant_id, audit_session_id)
+        _SESSION_DOCX_CACHE[key] = data
+        _SESSION_DOCX_CACHE.move_to_end(key)
+        while len(_SESSION_DOCX_CACHE) > _MAX_SESSION_ARTIFACTS:
+            _SESSION_DOCX_CACHE.popitem(last=False)
+
+
+def _get_session_docx(tenant_id: str, audit_session_id: str) -> bytes | None:
+    with _SESSION_ARTIFACT_LOCK:
+        return _SESSION_DOCX_CACHE.get((tenant_id, audit_session_id))
+
+
+def _store_session_audit_snapshot(
+    tenant_id: str, audit_session_id: str, raw_text: str, resp: ContractAuditResponse
+) -> None:
+    if not audit_session_id:
+        return
+    with _SESSION_ARTIFACT_LOCK:
+        key = (tenant_id, audit_session_id)
+        _SESSION_AUDIT_SNAPSHOTS[key] = (raw_text, resp)
+        _SESSION_AUDIT_SNAPSHOTS.move_to_end(key)
+        while len(_SESSION_AUDIT_SNAPSHOTS) > _MAX_SESSION_ARTIFACTS:
+            _SESSION_AUDIT_SNAPSHOTS.popitem(last=False)
+
+
+def _get_session_audit_snapshot(
+    tenant_id: str, audit_session_id: str
+) -> tuple[str, ContractAuditResponse] | None:
+    with _SESSION_ARTIFACT_LOCK:
+        return _SESSION_AUDIT_SNAPSHOTS.get((tenant_id, audit_session_id))
+
 
 _SEVERITY_RANK: dict[RiskSeverity, int] = {
     RiskSeverity.LOW: 1,
@@ -409,48 +487,108 @@ def _finalize_audit_response(
     )
 
 
-@router.post("/compliance/check", response_model=ContractAuditResponse)
-async def check_compliance(
+async def _execute_compliance_check(
     payload: ComplianceCheckRequest,
-    use_cache: Annotated[
-        bool, Query(description="Enable deterministic FinOps cache lookup")
-    ] = True,
+    *,
+    tenant_id: str,
+    use_cache: bool = True,
 ) -> ContractAuditResponse:
-    """
-    Executes the 5-node multi-regime temporal Graph-RAG & counterfactual compliance pipeline:
-    1. Builds Intra-Contract Dependency AST + Reversible PII Vault (`contract_ast_ingestor`).
-    2. Resolves active statutes, 0.78 Abstention Gate & Strictest Composite Deontic Envelope.
-    3. Evaluates cross-clause traps & counterfactual redlines with FinOps USD/MYR telemetry.
-    """
-    tenant_id = get_request_tenant_id()
     session_id = payload.audit_session_id or f"sess-{uuid.uuid4().hex[:12]}"
-    key = _cache_key(payload)
-    if use_cache and key in _COMPLIANCE_CACHE:
-        cached = _COMPLIANCE_CACHE[key]
-        if cached.pii_scrub and cached.pii_scrub.placeholders:
-            default_pii_session_store.save_session(
-                tenant_id, session_id, cached.pii_scrub.placeholders
-            )
-        zero_cost_telemetry = compute_telemetry_summary(
-            prompt_tokens=0,
-            completion_tokens=0,
-            latency_ms=0.1,
-            retry_count=0,
-            is_verified_grounded=cached.telemetry.is_verified_grounded,
-            trace_id=cached.telemetry.trace_id or "span-cached",
-        )
-        return cached.model_copy(
-            update={
-                "document_id": payload.document_id,
-                "audit_session_id": session_id,
-                "telemetry": zero_cost_telemetry,
-            }
-        )
-
     effective_date = payload.as_of_date or payload.reference_date or date.today()
     scope = payload.territorial_scope or TerritorialScope.ALL_MALAYSIA
+    cache_enabled = bool(use_cache and not payload.cache_bypass)
+    key = _cache_key(payload)
+
+    regimes_norm = normalize_regimes(payload.regimes) if payload.regimes else None
+    reg_hash = compute_regime_set_hash(regimes_norm)
+    stat_digest = compute_statutory_graph_digest(
+        _DEFAULT_TEMPORAL_STORE,
+        as_of_date=effective_date,
+        territorial_scope=scope,
+        regimes=regimes_norm,
+    )
+    ast_graph, _ = build_contract_ast(
+        document_id=payload.document_id,
+        raw_text=payload.raw_text,
+        token_style="vault",
+    )
+    clause_digest = compute_clause_ast_digest(
+        ast_graph,
+        as_of_date=effective_date,
+        territorial_scope=scope,
+        regime_set_hash=reg_hash,
+        statutory_graph_digest=stat_digest,
+        persona=payload.persona.value,
+        language=payload.language,
+        act_filter=payload.act_filter,
+        abstention_threshold=payload.abstention_threshold,
+        cache_namespace="compliance",
+    )
+
+    if cache_enabled:
+        cached_resp: ContractAuditResponse | None = None
+        ast_hit = default_clause_cache.get(clause_digest)
+        if isinstance(ast_hit, dict):
+            cached_resp = ContractAuditResponse.model_validate(ast_hit)
+        elif key in _COMPLIANCE_CACHE:
+            cached_resp = _COMPLIANCE_CACHE[key]
+
+        if cached_resp is not None:
+            cur_pii = scrub_malaysian_pii(payload.raw_text)
+            if cur_pii.placeholders:
+                default_pii_session_store.save_session(
+                    tenant_id, session_id, cur_pii.placeholders
+                )
+            zero_cost_telemetry = compute_telemetry_summary(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=0.1,
+                retry_count=0,
+                is_verified_grounded=cached_resp.telemetry.is_verified_grounded,
+                trace_id=cached_resp.telemetry.trace_id or "span-cached",
+                cache_hit=True,
+            )
+            record_cache_otel_event(
+                cache_hit=True,
+                digest=clause_digest,
+                surface="compliance",
+                tenant_id=tenant_id,
+            )
+            default_tenant_budget_tracker.record_usage(
+                tenant_id=tenant_id,
+                telemetry=zero_cost_telemetry,
+                cache_hit=True,
+            )
+            hit_resp = cached_resp.model_copy(
+                update={
+                    "document_id": payload.document_id,
+                    "audit_session_id": session_id,
+                    "pii_scrub": cur_pii,
+                    "telemetry": zero_cost_telemetry,
+                }
+            )
+            _store_session_audit_snapshot(
+                tenant_id, session_id, payload.raw_text, hit_resp
+            )
+            return hit_resp
+
+    exceeded, budget_policy, usage_snap = default_tenant_budget_tracker.check_budget(
+        tenant_id
+    )
+    if exceeded and budget_policy == "reject_429":
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Tenant '{tenant_id}' exceeded monthly FinOps budget "
+                f"(RM {usage_snap.cumulative_cost_myr:.4f} / "
+                f"RM {usage_snap.monthly_budget_myr:.4f})."
+            ),
+        )
+
     graph = build_compliance_graph()
     initial_state = _build_initial_agent_state(payload, effective_date, scope)
+    if exceeded and budget_policy == "deterministic_fallback":
+        initial_state["force_deterministic_fallback"] = True
 
     with measure_latency_ms() as elapsed_holder:
         final_state = await graph.ainvoke(initial_state)
@@ -464,14 +602,56 @@ async def check_compliance(
         record_span=True,
         audit_session_id=session_id,
     )
+    fx_rate, fx_source = await default_bnm_fx_provider.get_usd_to_myr_rate()
+    default_tenant_budget_tracker.record_usage(
+        tenant_id=tenant_id,
+        telemetry=response.telemetry,
+        cache_hit=False,
+        deterministic_fallback=bool(initial_state.get("force_deterministic_fallback")),
+        fx_rate_used=fx_rate,
+        fx_rate_source=fx_source,
+    )
+    record_cache_otel_event(
+        cache_hit=False,
+        digest=clause_digest,
+        surface="compliance",
+        tenant_id=tenant_id,
+    )
+
     vault_map = final_state.get("pii_vault_map") or (
         response.pii_scrub.placeholders if response.pii_scrub else {}
     )
     if isinstance(vault_map, dict) and vault_map:
         default_pii_session_store.save_session(tenant_id, session_id, vault_map)
-    if use_cache:
+    if cache_enabled:
         _COMPLIANCE_CACHE[key] = response
+        sanitized_for_ast_cache = response.model_dump(mode="json")
+        if isinstance(sanitized_for_ast_cache.get("pii_scrub"), dict):
+            # Never persist raw PII placeholders in shared ClauseASTCache.
+            sanitized_for_ast_cache["pii_scrub"]["placeholders"] = {}
+        default_clause_cache.set(clause_digest, sanitized_for_ast_cache)
+    _store_session_audit_snapshot(tenant_id, session_id, payload.raw_text, response)
     return response
+
+
+@router.post("/compliance/check", response_model=ContractAuditResponse)
+async def check_compliance(
+    payload: ComplianceCheckRequest,
+    request: Request,
+    use_cache: Annotated[
+        bool, Query(description="Enable deterministic FinOps cache lookup")
+    ] = True,
+) -> ContractAuditResponse:
+    """
+    Executes the 5-node multi-regime temporal Graph-RAG & counterfactual compliance pipeline:
+    1. Builds Intra-Contract Dependency AST + Reversible PII Vault (`contract_ast_ingestor`).
+    2. Resolves active statutes, 0.78 Abstention Gate & Strictest Composite Deontic Envelope.
+    3. Evaluates cross-clause traps & counterfactual redlines with FinOps USD/MYR telemetry.
+    """
+    tenant_id = get_request_tenant_id(request)
+    return await _execute_compliance_check(
+        payload, tenant_id=tenant_id, use_cache=use_cache
+    )
 
 
 def _sse_frame(event_name: str, data: dict[str, Any]) -> str:
@@ -753,7 +933,9 @@ async def upload_compliance_contract(request: Request) -> ContractAuditResponse:
         persona=persona,
         language=_normalize_lang_literal(lang),
     )
-    resp = await check_compliance(payload, use_cache=False)
+    resp = await _execute_compliance_check(
+        payload, tenant_id=get_request_tenant_id(request), use_cache=False
+    )
     return resp.model_copy(
         update={
             "security_report": sec_report,
@@ -827,6 +1009,11 @@ async def export_redline_docx(payload: ExportDocxRequest) -> Response:
         pii_vault=vault,
         pii_placeholders=merged_vault_map,
     )
+    if payload.audit_session_id:
+        _store_session_docx(tenant_id, payload.audit_session_id, docx_bytes)
+        _store_session_audit_snapshot(
+            tenant_id, payload.audit_session_id, payload.raw_text, audit_resp
+        )
 
     manifest = audit_resp.attestation_manifest
     safe_name = "".join(
@@ -1229,6 +1416,12 @@ async def api_v1_submit_portfolio_job(request: Request) -> PortfolioJobStatusRes
                 else None
             )
             contracts = extract_contracts_from_zip_archive(file_bytes)
+            cache_bypass_flag = str(fields.get("cache_bypass", "")).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            webhook_url_val = (fields.get("webhook_url") or "").strip() or None
             job_req = PortfolioAsyncJobRequest(
                 from_date=from_d,
                 to_date=to_d,
@@ -1237,6 +1430,8 @@ async def api_v1_submit_portfolio_job(request: Request) -> PortfolioJobStatusRes
                 default_territorial_scope=scope,
                 persona=persona,
                 max_workers=max_workers,
+                webhook_url=webhook_url_val,
+                cache_bypass=cache_bypass_flag,
             )
         except (ZipBombError, ValidationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1270,6 +1465,233 @@ async def api_v1_get_portfolio_job(
             detail=f"Portfolio job '{job_id}' not found for tenant '{tenant_id}'.",
         )
     return job
+
+
+@router.post(
+    "/api/v1/negotiation/diff-docx",
+    response_model=CounterpartyRedlineDiff,
+)
+async def api_v1_negotiation_diff_docx(request: Request) -> CounterpartyRedlineDiff:
+    """
+    Zero-token Counterparty OOXML Track-Changes (<w:ins>, <w:del>, <w:moveFrom>, <w:moveTo>)
+    & Comment-Thread Negotiation Critic supporting multipart `.docx` uploads or JSON payloads.
+    """
+    tenant_id = get_request_tenant_id(request)
+    content_type = request.headers.get("content-type", "").lower()
+
+    if "multipart/form-data" in content_type:
+        fields, file_bytes, filename = await _parse_multipart_upload(request)
+        if not file_bytes and not (
+            fields.get("baseline_text") or fields.get("proposed_text")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Provide a multipart '.docx' file under 'file' or baseline_text/proposed_text.",
+            )
+        doc_id = fields.get("document_id") or filename or f"NEG-{uuid.uuid4().hex[:6]}"
+        as_of_raw = fields.get("as_of_date")
+        try:
+            as_of = date.fromisoformat(as_of_raw) if as_of_raw else None
+            regimes = (
+                _parse_regimes_field(fields.get("regimes"))
+                if fields.get("regimes")
+                else None
+            )
+            scope = fields.get("territorial_scope")
+            return analyze_counterparty_docx_redlines(
+                document_id=doc_id,
+                docx_bytes=file_bytes,
+                filename=filename,
+                baseline_text=fields.get("baseline_text"),
+                proposed_text=fields.get("proposed_text"),
+                as_of_date=as_of,
+                regimes=regimes,
+                territorial_scope=scope,
+                tenant_id=tenant_id,
+                audit_session_id=fields.get("audit_session_id"),
+                store=_DEFAULT_TEMPORAL_STORE,
+                ledger=default_attestation_ledger,
+                pii_store=default_pii_session_store,
+            )
+        except (ZipBombError, ValidationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    raw_body = await request.body()
+    try:
+        json_req = CounterpartyRedlineJsonRequest.model_validate_json(raw_body)
+        docx_bytes = (
+            base64.b64decode(json_req.docx_base64, validate=True)
+            if json_req.docx_base64
+            else None
+        )
+        return analyze_counterparty_docx_redlines(
+            document_id=json_req.document_id,
+            docx_bytes=docx_bytes,
+            filename=json_req.filename,
+            revisions=json_req.revisions,
+            baseline_text=json_req.baseline_text,
+            proposed_text=json_req.proposed_text,
+            comments=json_req.comments,
+            as_of_date=json_req.as_of_date,
+            regimes=json_req.regimes,
+            territorial_scope=json_req.territorial_scope,
+            tenant_id=tenant_id,
+            audit_session_id=json_req.audit_session_id,
+            store=_DEFAULT_TEMPORAL_STORE,
+            ledger=default_attestation_ledger,
+            pii_store=default_pii_session_store,
+        )
+    except (ZipBombError, ValidationError, ValueError, binascii.Error) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/v1/deontic/incident-playbook",
+    response_model=IncidentPlaybookResponse,
+)
+async def api_v1_incident_playbook(
+    payload: IncidentPlaybookRequest, request: Request
+) -> IncidentPlaybookResponse:
+    """
+    Zero-token Multi-Regulator Incident Timeline Compiler (UTC + Asia/Kuala_Lumpur +
+    Act 388 s. 54 computation-of-time) & Sub-Processor SLA Cascade Verifier.
+    """
+    tenant_id = get_request_tenant_id(request)
+    try:
+        return compile_incident_playbook(
+            payload,
+            store=_DEFAULT_TEMPORAL_STORE,
+            ledger=default_attestation_ledger,
+            tenant_id=tenant_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/api/v1/attestation/{manifest_id}/bundle")
+async def api_v1_attestation_bundle(
+    manifest_id: str,
+    request: Request,
+    include_docx: Annotated[
+        bool,
+        Query(
+            description="Include tenant-scoped redlined_contract.docx inside .lexpack.zip"
+        ),
+    ] = False,
+    audit_session_id: Annotated[
+        str | None,
+        Query(description="Tenant-scoped audit_session_id for DOCX bundle hydration"),
+    ] = None,
+) -> Response:
+    """
+    Streams a deterministic, offline-verifiable `.lexpack.zip` air-gapped evidence bundle
+    (`manifest.json`, `signature.ed25519`, `public_key.pem`, `statutory_snapshot.json`,
+    `verification_instructions.txt`, and optional `redlined_contract.docx`).
+    """
+    rec = default_attestation_ledger.get(manifest_id)
+    if rec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Attestation manifest '{manifest_id}' not found in ledger.",
+        )
+
+    tenant_id = get_request_tenant_id(request)
+    docx_bytes: bytes | None = None
+    if include_docx:
+        if not audit_session_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Query parameter 'audit_session_id' is required when include_docx=true.",
+            )
+        docx_bytes = _get_session_docx(tenant_id, audit_session_id)
+        if docx_bytes is None:
+            snapshot = _get_session_audit_snapshot(tenant_id, audit_session_id)
+            if snapshot is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"No exportable session artifact found for tenant '{tenant_id}' "
+                        f"and audit_session_id '{audit_session_id}'."
+                    ),
+                )
+            snap_raw_text, snap_resp = snapshot
+            persisted_map = default_pii_session_store.load_session(
+                tenant_id=tenant_id, audit_session_id=audit_session_id
+            )
+            merged_map: dict[str, str] = {
+                **(snap_resp.pii_scrub.placeholders if snap_resp.pii_scrub else {}),
+                **(persisted_map or {}),
+            }
+            vault = ReversiblePIIVault(initial_mapping=merged_map)
+            docx_bytes = compile_track_changes_docx(
+                document_id=snap_resp.document_id,
+                raw_text=snap_raw_text,
+                findings=snap_resp.findings,
+                active_statutes=snap_resp.active_statutes,
+                deontic_envelope=snap_resp.deontic_envelope,
+                contract_ast=snap_resp.contract_ast,
+                manifest=snap_resp.attestation_manifest,
+                rehydrate_pii=True,
+                pii_vault=vault,
+                pii_placeholders=merged_map,
+            )
+            _store_session_docx(tenant_id, audit_session_id, docx_bytes)
+
+    bundle_bytes = build_lexpack_bundle(
+        manifest_id,
+        ledger=default_attestation_ledger,
+        store=_DEFAULT_TEMPORAL_STORE,
+        docx_bytes=docx_bytes,
+        tenant_id=tenant_id,
+    )
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in manifest_id)
+    return Response(
+        content=bundle_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_id}.lexpack.zip"',
+            "X-LexGraph-Manifest-Id": manifest_id,
+        },
+    )
+
+
+@router.get(
+    "/api/v1/finops/tenant-usage",
+    response_model=TenantFinOpsUsageResponse,
+)
+async def api_v1_finops_tenant_usage(
+    request: Request,
+    tenant_id: Annotated[
+        str | None,
+        Query(
+            description="Optional tenant_id (must match verified X-Tenant-ID identity)"
+        ),
+    ] = None,
+    billing_month: Annotated[
+        str | None,
+        Query(description="Optional YYYY-MM billing month filter"),
+    ] = None,
+) -> TenantFinOpsUsageResponse:
+    """
+    Returns real-time per-tenant cumulative USD/MYR FinOps usage, cache hits,
+    deterministic fallback count, and configured monthly budget guardrail state.
+    """
+    verified_tenant = get_request_tenant_id(request)
+    if (
+        tenant_id is not None
+        and tenant_id.strip()
+        and tenant_id.strip() != verified_tenant
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Tenant spoofing blocked: requested tenant_id '{tenant_id}' does not "
+                f"match verified tenant '{verified_tenant}'."
+            ),
+        )
+    return default_tenant_budget_tracker.get_usage(
+        verified_tenant, billing_month=billing_month
+    )
 
 
 @router.get(

@@ -103,7 +103,7 @@ _IPI_RULES: tuple[tuple[str, SecurityCategory, RiskSeverity, str], ...] = (
         "Bahasa Malaysia hidden system directive detected.",
     ),
     (
-        r"(?i)\b(?:act\s*709|pdpa|act\s*854|p\.?u\.?\s*\(a\)\s*220/2024|bnm\s*rmit|sabah\s*cap\.?\s*67|sarawak\s*cap\.?\s*76|akta\s*(?:709|854)|seksyen\s*12b|section\s*12b)\b.{0,55}\b(?:is\s+hereby\s+repealed|does\s+not\s+apply\s+to\s+this\s+(?:ai|vendor)|exempts?\s+this\s+audit|telah\s+dimansuhkan|permits?\s+(?:30|60|90)\s*[- ]?days?\s+(?:breach|notification|notice)|allows\s+(?:30|60|90)\s+days)\b",
+        r"(?i)\b(?:act\s*709|pdpa|act\s*854|p\.?u\.?\s*\(a\)\s*220/2024|bnm\s*rmit|sabah\s*cap\.?\s*67|sarawak\s*cap\.?\s*76|akta\s*(?:709|854)|seksyen\s*12b|section\s*12b|act\s*378|stamp\s*act|act\s*53|myinvois|act\s*(?:864|866|873))\b.{0,65}\b(?:(?:is\s+hereby|is|has\s+been)\s+repealed|does\s+not\s+apply\s+to\s+this\s+(?:ai|vendor|contract)|exempts?\s+this\s+audit|exempts?\s+.*?\bconsolidated|telah\s+dimansuhkan|permits?\s+(?:30|60|90)\s*[- ]?days?\s+(?:breach|notification|notice)|allows\s+(?:30|60|90)\s+days|allows?\s+consolidated\s+e-?invoices?\s+over\s+rm\s*10,?000)\b",
         "STATUTORY_SPOOF_OVERRIDE",
         RiskSeverity.HIGH,
         "Adversarial statutory-spoofing override attempting to misrepresent Malaysian statutory bounds.",
@@ -447,15 +447,37 @@ def _inspect_docx_security(
                 )
                 quarantined.append(f"[Binary part quarantined: {name}]")
 
-        # 2. Inspect customXml/*.xml and word/comments.xml
+        # 2. Inspect customXml/*.xml, word/comments.xml, and word/commentsExtended.xml
         for name in sorted(names):
             low = name.lower()
             is_custom_xml = low.startswith("customxml/") and low.endswith(".xml")
             is_comments = low == "word/comments.xml"
-            if not (is_custom_xml or is_comments):
+            is_comments_ext = low == "word/commentsextended.xml"
+            if not (is_custom_xml or is_comments or is_comments_ext):
                 continue
+
+            raw_part = zf.read(name)
+            if len(raw_part) > settings.docx_max_xml_part_bytes:
+                findings.append(
+                    DocumentSecurityFinding(
+                        finding_id=f"SEC-{len(findings) + 1:03d}",
+                        category="ZIP_BOMB_OR_MALFORMED_ARCHIVE",
+                        severity=RiskSeverity.CRITICAL,
+                        source_format="docx",
+                        location=name,
+                        excerpt=f"[Oversized OOXML part quarantined: {len(raw_part)} bytes]",
+                        rationale=(
+                            f"OOXML supplementary part '{name}' ({len(raw_part)} bytes) exceeds "
+                            f"DOCX_MAX_XML_PART_BYTES ({settings.docx_max_xml_part_bytes})."
+                        ),
+                        quarantined=True,
+                    )
+                )
+                quarantined.append(f"[Oversized XML part quarantined: {name}]")
+                continue
+
             try:
-                part_root = ET.fromstring(zf.read(name))
+                part_root = ET.fromstring(raw_part)
             except ET.ParseError:
                 findings.append(
                     DocumentSecurityFinding(
@@ -476,30 +498,117 @@ def _inspect_docx_security(
                     part_root.iter(f"{_W_NS}comment"), start=1
                 ):
                     c_text = "".join(
-                        t.text for t in comment.iter(f"{_W_NS}t") if t.text
+                        t.text
+                        for t in comment.iter()
+                        if t.tag in {f"{_W_NS}t", f"{_W_NS}delText"} and t.text
                     ).strip()
                     if not c_text:
                         continue
                     ipi_hit = _extract_matching_ipi(c_text)
-                    hidden_in_comment = any(
-                        _detect_run_hidden_reason(r.find(f"{_W_NS}rPr")) is not None
-                        for r in comment.iter(f"{_W_NS}r")
+                    hidden_reason = next(
+                        (
+                            hr
+                            for hr in (
+                                _detect_run_hidden_reason(
+                                    p.find(f"{_W_NS}pPr/{_W_NS}rPr")
+                                )
+                                for p in comment.iter(f"{_W_NS}p")
+                            )
+                            if hr is not None
+                        ),
+                        None,
+                    ) or next(
+                        (
+                            hr
+                            for hr in (
+                                _detect_run_hidden_reason(r.find(f"{_W_NS}rPr"))
+                                for r in comment.iter(f"{_W_NS}r")
+                            )
+                            if hr is not None
+                        ),
+                        None,
                     )
-                    if ipi_hit is not None or hidden_in_comment:
-                        sev = ipi_hit[1] if ipi_hit else RiskSeverity.HIGH
+                    if ipi_hit is not None or hidden_reason is not None:
+                        cat = (
+                            ipi_hit[0] if ipi_hit is not None else hidden_reason[0]  # type: ignore[index]
+                        )
+                        sev = (
+                            ipi_hit[1] if ipi_hit is not None else hidden_reason[1]  # type: ignore[index]
+                        )
                         findings.append(
                             DocumentSecurityFinding(
                                 finding_id=f"SEC-{len(findings) + 1:03d}",
-                                category="SUSPICIOUS_CUSTOM_XML",
+                                category=cat,
                                 severity=sev,
                                 source_format="docx",
                                 location=f"{name}:comment[{c_idx}]",
                                 excerpt=_safe_excerpt(c_text),
-                                rationale="Suspicious instruction or hidden run embedded inside OOXML comment.",
+                                rationale=(
+                                    ipi_hit[2]
+                                    if ipi_hit is not None
+                                    else f"Hidden run inside OOXML comment: {hidden_reason[2]}"  # type: ignore[index]
+                                ),
                                 quarantined=True,
                             )
                         )
                         quarantined.append(_safe_excerpt(c_text))
+            elif is_comments_ext:
+                xml_comments = [
+                    c.strip()
+                    for c in re.findall(
+                        r"<!--(.*?)-->",
+                        raw_part.decode("utf-8", errors="ignore"),
+                        flags=re.DOTALL,
+                    )
+                    if c.strip()
+                ]
+                ext_texts = [
+                    elem.text.strip()
+                    for elem in part_root.iter()
+                    if elem.text and elem.text.strip()
+                ]
+                ext_attr_vals = [
+                    str(v).strip()
+                    for elem in part_root.iter()
+                    for v in elem.attrib.values()
+                    if str(v).strip()
+                ]
+                joined_ext = " ".join(ext_texts + ext_attr_vals + xml_comments).strip()
+                tag_signal = any(
+                    kw in elem.tag.lower()
+                    for elem in part_root.iter()
+                    for kw in ("prompt", "instruction", "system", "override", "inject")
+                )
+                ipi_hit = _extract_matching_ipi(joined_ext) if joined_ext else None
+                hidden_in_ext = any(
+                    _detect_run_hidden_reason(r.find(f"{_W_NS}rPr")) is not None
+                    for r in part_root.iter(f"{_W_NS}r")
+                )
+                if tag_signal or ipi_hit is not None or hidden_in_ext:
+                    cat = (
+                        ipi_hit[0]
+                        if ipi_hit is not None
+                        else (
+                            "HIDDEN_OOXML_TEXT"
+                            if hidden_in_ext
+                            else "SUSPICIOUS_CUSTOM_XML"
+                        )
+                    )
+                    sev = ipi_hit[1] if ipi_hit is not None else RiskSeverity.CRITICAL
+                    findings.append(
+                        DocumentSecurityFinding(
+                            finding_id=f"SEC-{len(findings) + 1:03d}",
+                            category=cat,
+                            severity=sev,
+                            source_format="docx",
+                            location=name,
+                            excerpt=_safe_excerpt(joined_ext or f"<{part_root.tag}>"),
+                            rationale="Suspicious instruction or hidden payload inside word/commentsExtended.xml quarantined.",
+                            quarantined=True,
+                        )
+                    )
+                    if joined_ext:
+                        quarantined.append(_safe_excerpt(joined_ext))
             else:
                 # customXml part: inspect tag names and text content
                 custom_texts = [
@@ -547,9 +656,40 @@ def _inspect_docx_security(
             and n.endswith(".xml")
         )
         for part_name in body_parts:
+            raw_body_part = zf.read(part_name)
+            if len(raw_body_part) > settings.docx_max_xml_part_bytes:
+                findings.append(
+                    DocumentSecurityFinding(
+                        finding_id=f"SEC-{len(findings) + 1:03d}",
+                        category="ZIP_BOMB_OR_MALFORMED_ARCHIVE",
+                        severity=RiskSeverity.CRITICAL,
+                        source_format="docx",
+                        location=part_name,
+                        excerpt=f"[Oversized OOXML XML part quarantined: {len(raw_body_part)} bytes]",
+                        rationale=(
+                            f"OOXML part '{part_name}' ({len(raw_body_part)} bytes) exceeds "
+                            f"DOCX_MAX_XML_PART_BYTES ({settings.docx_max_xml_part_bytes})."
+                        ),
+                        quarantined=True,
+                    )
+                )
+                quarantined.append(f"[Oversized XML part quarantined: {part_name}]")
+                continue
             try:
-                root = ET.fromstring(zf.read(part_name))
+                root = ET.fromstring(raw_body_part)
             except ET.ParseError:
+                findings.append(
+                    DocumentSecurityFinding(
+                        finding_id=f"SEC-{len(findings) + 1:03d}",
+                        category="SUSPICIOUS_CUSTOM_XML",
+                        severity=RiskSeverity.HIGH,
+                        source_format="docx",
+                        location=part_name,
+                        excerpt=f"[Malformed XML payload in {part_name}]",
+                        rationale=f"Malformed OOXML part '{part_name}' quarantined.",
+                        quarantined=True,
+                    )
+                )
                 continue
 
             for p_idx, para in enumerate(root.iter(f"{_W_NS}p"), start=1):
@@ -904,7 +1044,15 @@ def sanitize_docx_bytes(
     suspicious_parts = {
         f.location
         for f in report.findings
-        if f.category in {"MACRO_OR_EMBEDDED", "SUSPICIOUS_CUSTOM_XML"}
+        if f.category
+        in {
+            "MACRO_OR_EMBEDDED",
+            "SUSPICIOUS_CUSTOM_XML",
+            "INDIRECT_PROMPT_INJECTION",
+            "STATUTORY_SPOOF_OVERRIDE",
+            "HIDDEN_OOXML_TEXT",
+            "ZIP_BOMB_OR_MALFORMED_ARCHIVE",
+        }
         and ":" not in f.location
     }
     suspicious_comment_indices = {

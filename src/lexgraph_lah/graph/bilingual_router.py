@@ -137,6 +137,17 @@ BM_TO_EN_PHRASES: dict[str, list[str]] = {
         "mssp",
         "p.u. (a) 221/2024",
     ],
+    "akta setem": ["stamp act 1949", "act 378", "duti setem", "stamp duty"],
+    "akta 378": ["act 378", "stamp act 1949", "akta setem", "sdsas"],
+    "duti setem": ["stamp duty", "act 378", "sdsas", "30 days"],
+    "akta cukai pendapatan": ["income tax act 1967", "act 53", "myinvois"],
+    "akta 53": ["act 53", "income tax act 1967", "myinvois", "82c"],
+    "e-invois": ["e-invoice", "myinvois", "act 53", "82c", "uin"],
+    "invois bil kendiri": ["self-billed e-invoice", "myinvois", "foreign supplier"],
+    "jadual pembayaran": ["billing schedule", "payment schedule", "schedule"],
+    "tadbir urus ai": ["ai governance", "mosti", "aige", "human-in-the-loop"],
+    "penyumberan luar": ["outsourcing", "bnm", "sub-contractor", "cryptographic key"],
+    "kunci kriptografi": ["cryptographic key", "byok", "bnm outsourcing"],
 }
 
 EN_TO_BM_PHRASES: dict[str, list[str]] = {
@@ -232,6 +243,17 @@ EN_TO_BM_PHRASES: dict[str, list[str]] = {
     "data portability": ["kemudahalihan data", "portabiliti data", "seksyen 43a"],
     "penetration testing": ["ujian penembusan", "p.u. (a) 221/2024", "nacsa"],
     "mssp": ["pusat operasi keselamatan", "p.u. (a) 221/2024", "nacsa"],
+    "stamp duty": ["duti setem", "akta setem", "akta 378", "sdsas"],
+    "stamp act": ["akta setem 1949", "akta 378", "duti setem"],
+    "act 378": ["akta 378", "akta setem 1949", "duti setem"],
+    "myinvois": ["myinvois", "e-invois", "akta 53", "seksyen 82c"],
+    "e-invoice": ["e-invois", "myinvois", "akta 53", "82c"],
+    "income tax act": ["akta cukai pendapatan 1967", "akta 53", "myinvois"],
+    "act 53": ["akta 53", "akta cukai pendapatan 1967", "myinvois"],
+    "ai governance": ["tadbir urus ai", "mosti", "aige", "etika ai"],
+    "aige": ["aige", "mosti", "tadbir urus ai", "etika ai"],
+    "outsourcing": ["penyumberan luar", "bnm", "sub-kontrak"],
+    "cryptographic key": ["kunci kriptografi", "bnm", "penyumberan luar"],
 }
 
 STATUTE_CROSSWALK_ALIASES: dict[str, tuple[str, ...]] = {
@@ -329,6 +351,29 @@ STATUTE_CROSSWALK_ALIASES: dict[str, tuple[str, ...]] = {
         "akta 563",
         "computer crimes act 1997",
         "akta jenayah komputer 1997",
+    ),
+    "act 378": (
+        "act 378",
+        "akta 378",
+        "stamp act 1949",
+        "akta setem 1949",
+        "sdsas",
+        "duti setem",
+    ),
+    "act 53": (
+        "act 53",
+        "akta 53",
+        "income tax act 1967",
+        "akta cukai pendapatan 1967",
+        "myinvois",
+        "e-invoice",
+        "e-invois",
+    ),
+    "mosti aige": (
+        "mosti aige",
+        "aige",
+        "national guidelines on ai governance and ethics",
+        "garis panduan tadbir urus dan etika ai",
     ),
 }
 

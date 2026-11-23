@@ -4,12 +4,13 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx
 
 from lexgraph_lah.config import settings
-from lexgraph_lah.schemas.domain import TelemetrySummary
+from lexgraph_lah.schemas.domain import TelemetrySummary, TenantFinOpsUsageResponse
 
 LogicalModelTier = Literal["fast_tier", "reasoning_tier"]
 
@@ -308,6 +309,7 @@ def compute_telemetry_summary(
     cached_prompt_tokens: int = 0,
     cached_input_cost_per_1m_usd: float | None = None,
     model_name: str | None = None,
+    cache_hit: bool = False,
 ) -> TelemetrySummary:
     """
     Deterministically computes USD and MYR token costs from raw usage metadata
@@ -362,7 +364,192 @@ def compute_telemetry_summary(
         is_verified_grounded=is_verified_grounded,
         model_name=model_name,
         trace_id=trace_id,
+        cache_hit=cache_hit,
     )
+
+
+@dataclass(slots=True)
+class _TenantMonthBucket:
+    total_runs: int = 0
+    cache_hit_runs: int = 0
+    deterministic_fallback_runs: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cumulative_cost_usd: float = 0.0
+    cumulative_cost_myr: float = 0.0
+    fx_rate_used: float = 4.40
+    fx_rate_source: str = "fallback"
+
+
+class TenantFinOpsBudgetTracker:
+    """
+    Thread-safe per-tenant cumulative USD/MYR FinOps ledger and monthly budget circuit-breaker.
+    When `LEXGRAPH_TENANT_MONTHLY_BUDGET_MYR` > 0 and cumulative spend reaches/exceeds the
+    ceiling, `check_budget()` signals either `deterministic_fallback` or `reject_429`.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._buckets: dict[tuple[str, str], _TenantMonthBucket] = {}
+
+    @staticmethod
+    def current_billing_month() -> str:
+        return datetime.now(UTC).strftime("%Y-%m")
+
+    def reset(self, tenant_id: str | None = None) -> None:
+        with self._lock:
+            if tenant_id is None:
+                self._buckets.clear()
+            else:
+                to_del = [k for k in self._buckets if k[0] == tenant_id]
+                for k in to_del:
+                    del self._buckets[k]
+
+    def record_usage(
+        self,
+        *,
+        tenant_id: str,
+        telemetry: TelemetrySummary,
+        billing_month: str | None = None,
+        cache_hit: bool = False,
+        deterministic_fallback: bool = False,
+        fx_rate_used: float | None = None,
+        fx_rate_source: str = "fallback",
+    ) -> TenantFinOpsUsageResponse:
+        month = billing_month or self.current_billing_month()
+        key = (tenant_id, month)
+        rate = float(
+            fx_rate_used
+            if fx_rate_used is not None
+            else (
+                settings.lexgraph_usd_myr_fallback
+                if settings.lexgraph_usd_myr_fallback is not None
+                else settings.usd_to_myr_rate
+            )
+        )
+        cost_myr = (
+            telemetry.estimated_cost_myr
+            if fx_rate_used is None
+            else round(telemetry.estimated_cost_usd * rate, 6)
+        )
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                bucket = _TenantMonthBucket(
+                    fx_rate_used=rate, fx_rate_source=fx_rate_source
+                )
+                self._buckets[key] = bucket
+            bucket.total_runs += 1
+            if cache_hit or telemetry.cache_hit:
+                bucket.cache_hit_runs += 1
+            if deterministic_fallback:
+                bucket.deterministic_fallback_runs += 1
+            bucket.prompt_tokens += max(0, telemetry.prompt_tokens)
+            bucket.completion_tokens += max(0, telemetry.completion_tokens)
+            bucket.total_tokens += max(0, telemetry.total_tokens)
+            bucket.cumulative_cost_usd = round(
+                bucket.cumulative_cost_usd + telemetry.estimated_cost_usd, 6
+            )
+            bucket.cumulative_cost_myr = round(bucket.cumulative_cost_myr + cost_myr, 6)
+            bucket.fx_rate_used = rate
+            bucket.fx_rate_source = fx_rate_source
+        return self.get_usage(tenant_id=tenant_id, billing_month=month)
+
+    def check_budget(
+        self,
+        tenant_id: str,
+        *,
+        billing_month: str | None = None,
+        budget_myr: float | None = None,
+        policy: Literal["deterministic_fallback", "reject_429"] | None = None,
+    ) -> tuple[
+        bool, Literal["deterministic_fallback", "reject_429"], TenantFinOpsUsageResponse
+    ]:
+        """Returns `(budget_exceeded, effective_policy, usage_snapshot)`."""
+        usage = self.get_usage(
+            tenant_id=tenant_id,
+            billing_month=billing_month,
+            budget_myr=budget_myr,
+            policy=policy,
+        )
+        return usage.budget_exceeded, usage.budget_policy, usage
+
+    def get_usage(
+        self,
+        tenant_id: str,
+        *,
+        billing_month: str | None = None,
+        budget_myr: float | None = None,
+        policy: Literal["deterministic_fallback", "reject_429"] | None = None,
+    ) -> TenantFinOpsUsageResponse:
+        month = billing_month or self.current_billing_month()
+        configured_budget = float(
+            budget_myr
+            if budget_myr is not None
+            else settings.lexgraph_tenant_monthly_budget_myr
+        )
+        raw_pol = (
+            policy if policy is not None else settings.lexgraph_budget_exceeded_policy
+        )
+        eff_policy: Literal["deterministic_fallback", "reject_429"] = (
+            "reject_429"
+            if str(raw_pol).strip().lower() == "reject_429"
+            else "deterministic_fallback"
+        )
+        default_rate = float(
+            settings.lexgraph_usd_myr_fallback
+            if settings.lexgraph_usd_myr_fallback is not None
+            else settings.usd_to_myr_rate
+        )
+        with self._lock:
+            bucket = self._buckets.get((tenant_id, month))
+            if bucket is None:
+                exceeded = False
+                remaining = (
+                    round(configured_budget, 6) if configured_budget > 0 else None
+                )
+                return TenantFinOpsUsageResponse(
+                    tenant_id=tenant_id,
+                    billing_month=month,
+                    monthly_budget_myr=round(max(0.0, configured_budget), 6),
+                    remaining_budget_myr=remaining,
+                    budget_exceeded=exceeded,
+                    budget_policy=eff_policy,
+                    fx_rate_used=default_rate,
+                    fx_rate_source="fallback",
+                )
+
+            exceeded = (
+                configured_budget > 0.0
+                and bucket.cumulative_cost_myr >= configured_budget
+            )
+            remaining = (
+                round(max(0.0, configured_budget - bucket.cumulative_cost_myr), 6)
+                if configured_budget > 0.0
+                else None
+            )
+            return TenantFinOpsUsageResponse(
+                tenant_id=tenant_id,
+                billing_month=month,
+                total_runs=bucket.total_runs,
+                cache_hit_runs=bucket.cache_hit_runs,
+                deterministic_fallback_runs=bucket.deterministic_fallback_runs,
+                prompt_tokens=bucket.prompt_tokens,
+                completion_tokens=bucket.completion_tokens,
+                total_tokens=bucket.total_tokens,
+                cumulative_cost_usd=bucket.cumulative_cost_usd,
+                cumulative_cost_myr=bucket.cumulative_cost_myr,
+                monthly_budget_myr=round(max(0.0, configured_budget), 6),
+                remaining_budget_myr=remaining,
+                budget_exceeded=exceeded,
+                budget_policy=eff_policy,
+                fx_rate_used=bucket.fx_rate_used,
+                fx_rate_source=bucket.fx_rate_source,
+            )
+
+
+default_tenant_budget_tracker = TenantFinOpsBudgetTracker()
 
 
 def assert_within_budget(

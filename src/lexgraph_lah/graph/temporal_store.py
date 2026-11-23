@@ -93,6 +93,12 @@ def build_upsert_amendment_cypher(
         "territorial_scope": [s.value for s in new_node.territorial_scope],
         "status": new_node.status.value,
         "content_hash": new_node.content_hash,
+        "regime_code": new_node.regime_code,
+        "carve_out_metadata_json": (
+            json.dumps(new_node.carve_out_metadata, sort_keys=True)
+            if new_node.carve_out_metadata is not None
+            else None
+        ),
         "predecessor_id": predecessor_node_id,
     }
 
@@ -116,7 +122,9 @@ def build_upsert_amendment_cypher(
             "    n.authority_tier = $authority_tier,\n"
             "    n.territorial_scope = $territorial_scope,\n"
             "    n.status = $status,\n"
-            "    n.content_hash = $content_hash\n"
+            "    n.content_hash = $content_hash,\n"
+            "    n.regime_code = $regime_code,\n"
+            "    n.carve_out_metadata_json = $carve_out_metadata_json\n"
             "WITH n\n"
             "MATCH (prev:StatutoryNode {node_id: $predecessor_id})\n"
             "SET prev.valid_to = date($valid_from),\n"
@@ -154,7 +162,9 @@ def build_upsert_amendment_cypher(
             "    n.authority_tier = $authority_tier,\n"
             "    n.territorial_scope = $territorial_scope,\n"
             "    n.status = $status,\n"
-            "    n.content_hash = $content_hash\n"
+            "    n.content_hash = $content_hash,\n"
+            "    n.regime_code = $regime_code,\n"
+            "    n.carve_out_metadata_json = $carve_out_metadata_json\n"
             "RETURN n"
         )
 
@@ -4856,6 +4866,919 @@ def _seed_default_corpus(store: TemporalGraphStore) -> TemporalGraphStore:
         "ACT-563-SEC-3-V1",
         effective_date=date(2024, 8, 26),
         gazette_ref="Act 563",
+    )
+
+    # =========================================================================
+    # Phase 5 (Deliverable 2 & 3): Act 388 s. 54, Stamp Act 1949 [Act 378] SDSAS,
+    # Income Tax Act 1967 [Act 53] s. 82C & s. 120(1)(d) MyInvois, MOSTI AIGE,
+    # and BNM Outsourcing + RMiT Cross-Links
+    # =========================================================================
+    act388_s54_en = StatutoryNode(
+        node_id="ACT-388-SEC-54-V1",
+        act_name="Interpretation Acts 1948 and 1967",
+        act_number="Act 388",
+        section_code="SEC-54",
+        version=1,
+        language="en",
+        text=(
+            "Section 54 (Computation of Time - Act 388): In computing time for the purposes of any "
+            "written law, where an act or notice must be done within a number of days from a given "
+            "event, the day on which the event occurs is excluded, and if the last day falls on a "
+            "weekly holiday or public holiday, the period shall include the next following day not being an excluded day."
+        ),
+        valid_from=date(1967, 5, 18),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 388",
+        regime_code="ACT_388",
+    )
+    act388_s54_bm = StatutoryNode(
+        node_id="ACT-388-SEC-54-V1-BM",
+        act_name="Akta Tafsiran 1948 dan 1967",
+        act_number="Act 388",
+        section_code="SEC-54",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 54 (Pengiraan Masa - Akta 388): Dalam mengira masa bagi maksud mana-mana "
+            "undang-undang bertulis, hari berlakunya peristiwa itu hendaklah dikecualikan, dan jika "
+            "hari terakhir jatuh pada hari kelepasan mingguan atau kelepasan am, tempoh itu hendaklah "
+            "merangkumi hari berikutnya yang bukan hari dikecualikan."
+        ),
+        valid_from=date(1967, 5, 18),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 388",
+        regime_code="ACT_388",
+    )
+    _add_bilingual_pair(store, act388_s54_en, act388_s54_bm, authoritative="bm")
+
+    # 1. Stamp Act 1949 [Act 378] & Tax Measures Act 2025 (SDSAS, eff. 2026-01-01)
+    act378_act = StatutoryNode(
+        node_id="ACT-378-ACT",
+        act_name="Stamp Act 1949",
+        act_number="Act 378",
+        section_code="ACT-378",
+        hierarchy_level=HierarchyLevel.ACT,
+        text="Stamp Act 1949 [Act 378]: Consolidated Malaysian law governing stamp duty, admissibility of instruments, and the Stamp Duty Self-Assessment System (SDSAS).",
+        valid_from=date(1949, 12, 5),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 378",
+        regime_code="ACT_378",
+    )
+    store.upsert_node(act378_act)
+
+    act378_s52_en = StatutoryNode(
+        node_id="ACT-378-SEC-52-V1",
+        act_name="Stamp Act 1949",
+        act_number="Act 378",
+        section_code="SEC-52",
+        parent_node_id="ACT-378-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 52 (Instruments Not Duly Stamped Inadmissible in Evidence - Act 378): "
+            "No instrument chargeable with duty shall be admitted in evidence for any purpose by any "
+            "person having by law or consent authority to receive evidence, or acted upon, registered, "
+            "or authenticated, unless such instrument is duly stamped."
+        ),
+        valid_from=date(1949, 12, 5),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 378",
+        regime_code="ACT_378",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT378-S52-STAMPING",
+                regime_id="ACT_378",
+                modality="OBLIGATION",
+                metric_key="stamp_duty_duly_stamped_admissibility",
+                operator="==",
+                threshold_value=True,
+                description="Unstamped chargeable instruments are inadmissible in evidence under Stamp Act 1949 [Act 378] s. 52.",
+            )
+        ],
+    )
+    act378_s52_bm = StatutoryNode(
+        node_id="ACT-378-SEC-52-V1-BM",
+        act_name="Akta Setem 1949",
+        act_number="Act 378",
+        section_code="SEC-52",
+        parent_node_id="ACT-378-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 52 (Surat Cara Tidak Disetemkan dengan Sempurna Tidak Boleh Diterima Sebagai Keterangan - Akta 378): "
+            "Tiada surat cara yang dikenakan duti boleh diterima sebagai keterangan atau didaftarkan "
+            "melainkan surat cara tersebut telah disetemkan dengan sempurna."
+        ),
+        valid_from=date(1949, 12, 5),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 378",
+        regime_code="ACT_378",
+        deontic_constraints=act378_s52_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act378_s52_en, act378_s52_bm, authoritative="en")
+
+    act378_sdsas_en = StatutoryNode(
+        node_id="ACT-378-SDSAS-2026-V1",
+        act_name="Stamp Act 1949 (SDSAS - Tax Measures Act 2025)",
+        act_number="Act 378",
+        section_code="SEC-SDSAS-30D",
+        parent_node_id="ACT-378-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Stamp Duty Self-Assessment System [Act 378 & Tax Measures Act 2025, effective 1 January 2026]: "
+            "A duty payer shall submit a self-assessment stamp duty return and pay assessed stamp duty "
+            "within 30 days from execution of the instrument."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Tax Measures Act 2025 / Act 378 (SDSAS)",
+        regime_code="ACT_378",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT378-SDSAS-RETURN",
+                regime_id="ACT_378",
+                modality="OBLIGATION",
+                metric_key="stamp_duty_self_assessment_required",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory SDSAS self-assessment stamp duty return effective 2026-01-01.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT378-SDSAS-30D",
+                regime_id="ACT_378",
+                modality="OBLIGATION",
+                metric_key="stamp_duty_payment_max_days",
+                operator="<=",
+                threshold_value=30.0,
+                unit="days",
+                recipient="LHDN_STAMP_DUTY",
+                notice_stage="SELF_ASSESSMENT_PAYMENT",
+                description="SDSAS self-assessment return and stamp duty payment due within 30 days from execution.",
+            ),
+        ],
+    )
+    act378_sdsas_bm = StatutoryNode(
+        node_id="ACT-378-SDSAS-2026-V1-BM",
+        act_name="Akta Setem 1949 (SDSAS - Akta Langkah-Langkah Pengiraan dan Pengutipan Cukai 2025)",
+        act_number="Act 378",
+        section_code="SEC-SDSAS-30D",
+        parent_node_id="ACT-378-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Sistem Taksiran Sendiri Duti Setem [Akta 378 & Akta Langkah Cukai 2025, berkuat kuasa 1 Januari 2026]: "
+            "Pembayar duti hendaklah mengemukakan penyata taksiran sendiri dan membayar duti setem "
+            "dalam tempoh 30 hari dari tarikh penyempurnaan surat cara."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 378 (SDSAS)",
+        regime_code="ACT_378",
+        deontic_constraints=act378_sdsas_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act378_sdsas_en, act378_sdsas_bm, authoritative="bm")
+
+    act378_emp_v1_en = StatutoryNode(
+        node_id="ACT-378-EMP-EXEMPT-V1",
+        act_name="Stamp Act 1949",
+        act_number="Act 378",
+        section_code="FIRST-SCHED-ITEM-4",
+        parent_node_id="ACT-378-ACT",
+        version=1,
+        language="en",
+        text=(
+            "First Schedule Item 4 (Pre-2026 Employment Contract Stamp Duty Exemption - Act 378): "
+            "Employment contracts where monthly wages do not exceed RM 300 shall be exempt from stamp duty."
+        ),
+        valid_from=date(1949, 12, 5),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 378",
+        regime_code="ACT_378",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT378-EMP-300",
+                regime_id="ACT_378",
+                modality="OBLIGATION",
+                metric_key="employment_stamp_duty_exempt_monthly_myr",
+                operator="<=",
+                threshold_value=300.0,
+                unit="MYR",
+                description="Pre-2026 employment contract stamp duty exemption ceiling of RM 300/month.",
+            )
+        ],
+    )
+    act378_emp_v1_bm = StatutoryNode(
+        node_id="ACT-378-EMP-EXEMPT-V1-BM",
+        act_name="Akta Setem 1949",
+        act_number="Act 378",
+        section_code="FIRST-SCHED-ITEM-4",
+        parent_node_id="ACT-378-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Jadual Pertama Butiran 4 (Pengecualian Duti Setem Kontrak Pekerjaan Pra-2026 - Akta 378): "
+            "Kontrak perkhidmatan pekerjaan dengan gaji bulanan tidak melebihi RM 300 hendaklah dikecualikan daripada duti setem."
+        ),
+        valid_from=date(1949, 12, 5),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 378",
+        regime_code="ACT_378",
+        deontic_constraints=act378_emp_v1_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act378_emp_v1_en, act378_emp_v1_bm, authoritative="en")
+
+    act378_emp_v2_en = StatutoryNode(
+        node_id="ACT-378-EMP-EXEMPT-V2",
+        act_name="Stamp Act 1949",
+        act_number="Act 378",
+        section_code="FIRST-SCHED-ITEM-4",
+        parent_node_id="ACT-378-ACT",
+        version=2,
+        language="en",
+        text=(
+            "First Schedule Item 4 (2026 Employment Contract Stamp Duty Exemption - Act 378, effective 1 January 2026): "
+            "Employment contracts where monthly salary does not exceed RM 3,000 shall be exempt from stamp duty, "
+            "replacing the legacy RM 300 monthly threshold."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        amendment_act_ref="Finance / Tax Measures Act 2025",
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Tax Measures Act 2025 / Act 378",
+        regime_code="ACT_378",
+        carve_out_metadata={
+            "previous_threshold_myr": 300.0,
+            "new_threshold_myr": 3000.0,
+            "effective_from": "2026-01-01",
+        },
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT378-EMP-3000",
+                regime_id="ACT_378",
+                modality="OBLIGATION",
+                metric_key="employment_stamp_duty_exempt_monthly_myr",
+                operator="<=",
+                threshold_value=3000.0,
+                unit="MYR",
+                description="Employment contract stamp duty exemption threshold raised from RM 300 to RM 3,000/month effective 2026-01-01.",
+            )
+        ],
+    )
+    act378_emp_v2_bm = StatutoryNode(
+        node_id="ACT-378-EMP-EXEMPT-V2-BM",
+        act_name="Akta Setem 1949",
+        act_number="Act 378",
+        section_code="FIRST-SCHED-ITEM-4",
+        parent_node_id="ACT-378-ACT",
+        version=2,
+        language="bm",
+        text=(
+            "Jadual Pertama Butiran 4 (Pengecualian Duti Setem Kontrak Pekerjaan 2026 - Akta 378, berkuat kuasa 1 Januari 2026): "
+            "Kontrak pekerjaan dengan gaji bulanan tidak melebihi RM 3,000 hendaklah dikecualikan daripada duti setem, "
+            "menggantikan had lama RM 300 sebulan."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        amendment_act_ref="Finance / Tax Measures Act 2025",
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta Langkah Cukai 2025 / Akta 378",
+        regime_code="ACT_378",
+        carve_out_metadata=act378_emp_v2_en.carve_out_metadata,
+        deontic_constraints=act378_emp_v2_en.deontic_constraints,
+    )
+    _add_bilingual_pair(
+        store,
+        act378_emp_v2_en,
+        act378_emp_v2_bm,
+        authoritative="bm",
+        amends_en_id="ACT-378-EMP-EXEMPT-V1",
+        amends_bm_id="ACT-378-EMP-EXEMPT-V1-BM",
+    )
+
+    act378_foreign_8_en = StatutoryNode(
+        node_id="ACT-378-FOREIGN-RES-8PCT-V1",
+        act_name="Stamp Act 1949",
+        act_number="Act 378",
+        section_code="FIRST-SCHED-ITEM-32AB",
+        parent_node_id="ACT-378-ACT",
+        version=1,
+        language="en",
+        text=(
+            "First Schedule Item 32AB (Foreign Residential Property Transfer Stamp Duty - Act 378, effective 1 January 2026): "
+            "Instruments of transfer for residential property acquired by non-citizens or foreign companies "
+            "shall bear a flat 8% ad valorem stamp duty rate."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Tax Measures Act 2025 / Act 378",
+        regime_code="ACT_378",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT378-FOREIGN-RES-8PCT",
+                regime_id="ACT_378",
+                modality="OBLIGATION",
+                metric_key="foreign_residential_transfer_stamp_duty_pct",
+                operator="==",
+                threshold_value=8.0,
+                unit="percent",
+                description="8% ad valorem stamp duty tier on foreign residential property transfers effective 2026-01-01.",
+            )
+        ],
+    )
+    act378_foreign_8_bm = StatutoryNode(
+        node_id="ACT-378-FOREIGN-RES-8PCT-V1-BM",
+        act_name="Akta Setem 1949",
+        act_number="Act 378",
+        section_code="FIRST-SCHED-ITEM-32AB",
+        parent_node_id="ACT-378-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Jadual Pertama Butiran 32AB (Duti Setem Pindah Milik Hartanah Kediaman Warga Asing - Akta 378, berkuat kuasa 1 Januari 2026): "
+            "Surat cara pindah milik harta tanah kediaman oleh bukan warganegara atau syarikat asing "
+            "hendaklah dikenakan kadar duti setem ad valorem sebanyak 8%."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta Langkah Cukai 2025 / Akta 378",
+        regime_code="ACT_378",
+        deontic_constraints=act378_foreign_8_en.deontic_constraints,
+    )
+    _add_bilingual_pair(
+        store, act378_foreign_8_en, act378_foreign_8_bm, authoritative="bm"
+    )
+
+    # 2. Income Tax Act 1967 [Act 53] s. 82C & s. 120(1)(d) — LHDN MyInvois
+    act53_act = StatutoryNode(
+        node_id="ACT-53-ACT",
+        act_name="Income Tax Act 1967",
+        act_number="Act 53",
+        section_code="ACT-53",
+        hierarchy_level=HierarchyLevel.ACT,
+        text="Income Tax Act 1967 [Act 53]: Principal Malaysian income tax legislation governing LHDN MyInvois e-Invoicing under s. 82C and offences under s. 120(1)(d).",
+        valid_from=date(1967, 9, 28),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 53",
+        regime_code="ACT_53",
+    )
+    store.upsert_node(act53_act)
+
+    act53_s82c_en = StatutoryNode(
+        node_id="ACT-53-SEC-82C-P1-V1",
+        act_name="Income Tax Act 1967",
+        act_number="Act 53",
+        section_code="SEC-82C",
+        parent_node_id="ACT-53-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 82C (LHDN MyInvois Electronic Invoice Validation, 72-Hour Cancellation & Self-Billed Imports - Act 53, eff. 2024-08-01): "
+            "A person shall issue an electronic invoice validated with a Unique Identifier Number (UIN) via MyInvois, "
+            "complete any buyer rejection or supplier cancellation within 72 hours of validation, and issue a "
+            "self-billed e-invoice for cross-border foreign supplier imports."
+        ),
+        valid_from=date(2024, 8, 1),
+        gazette_date=date(2023, 12, 29),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 53 s. 82C / LHDN MyInvois Guideline",
+        regime_code="ACT_53",
+        carve_out_metadata={
+            "phased_commencement": {
+                "phase_1": "2024-08-01",
+                "phase_2": "2025-01-01",
+                "phase_3": "2025-07-01",
+                "phase_4": "2026-01-01",
+            }
+        },
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT53-UIN-VALID",
+                regime_id="ACT_53",
+                modality="OBLIGATION",
+                metric_key="myinvois_uin_validation_required",
+                operator="==",
+                threshold_value=True,
+                description="Real-time LHDN MyInvois UIN validation and TIN/SST/UBL cooperation required under Act 53 s. 82C.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT53-72H-CANCEL",
+                regime_id="ACT_53",
+                modality="OBLIGATION",
+                metric_key="myinvois_cancellation_rejection_max_hours",
+                operator="<=",
+                threshold_value=72.0,
+                unit="hours",
+                recipient="LHDN_MYINVOIS",
+                notice_stage="CANCELLATION_OR_REJECTION",
+                description="72-hour LHDN MyInvois buyer rejection / supplier cancellation window after UIN validation.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT53-SELF-BILLED-FOREIGN",
+                regime_id="ACT_53",
+                modality="OBLIGATION",
+                metric_key="myinvois_self_billed_foreign_import_required",
+                operator="==",
+                threshold_value=True,
+                description="Malaysian buyer must issue self-billed e-invoice for cross-border foreign supplier goods/services.",
+            ),
+        ],
+    )
+    act53_s82c_bm = StatutoryNode(
+        node_id="ACT-53-SEC-82C-P1-V1-BM",
+        act_name="Akta Cukai Pendapatan 1967",
+        act_number="Act 53",
+        section_code="SEC-82C",
+        parent_node_id="ACT-53-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 82C (Pengesahan e-Invois MyInvois LHDN, Pembatalan 72 Jam & Invois Bil Kendiri Import - Akta 53, berkuat kuasa 1 Ogos 2024): "
+            "Seseorang hendaklah mengeluarkan e-Invois yang disahkan melalui MyInvois dengan Nombor Pengenalan Unik, "
+            "melaksanakan penolakan pembeli atau pembatalan pembekal dalam tempoh 72 jam selepas pengesahan, serta "
+            "mengeluarkan e-Invois bil kendiri bagi import pembekal luar negara."
+        ),
+        valid_from=date(2024, 8, 1),
+        gazette_date=date(2023, 12, 29),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 53 s. 82C / Garis Panduan MyInvois LHDN",
+        regime_code="ACT_53",
+        carve_out_metadata=act53_s82c_en.carve_out_metadata,
+        deontic_constraints=act53_s82c_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act53_s82c_en, act53_s82c_bm, authoritative="en")
+
+    act53_10k_en = StatutoryNode(
+        node_id="ACT-53-MYINVOIS-10K-V1",
+        act_name="Income Tax Act 1967",
+        act_number="Act 53",
+        section_code="SEC-82C-CONSOL-10K",
+        parent_node_id="ACT-53-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 82C & LHDN MyInvois Mandatory Individual e-Invoice Rule (effective 1 January 2026): "
+            "Suppliers shall NOT issue a consolidated e-invoice for any single transaction exceeding RM 10,000; "
+            "an individual validated e-invoice must be issued for every transaction above RM 10,000."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 6, 5),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="LHDN MyInvois Specific Guideline (2026-01-01)",
+        regime_code="ACT_53",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT53-CONSOL-10K-CAP",
+                regime_id="ACT_53",
+                modality="OBLIGATION",
+                metric_key="myinvois_consolidated_max_single_tx_myr",
+                operator="<=",
+                threshold_value=10_000.0,
+                unit="MYR",
+                description="Consolidated e-invoices prohibited for single transactions above RM 10,000 effective 2026-01-01.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT53-NO-CONSOL-10K",
+                regime_id="ACT_53",
+                modality="PROHIBITION",
+                metric_key="myinvois_consolidated_over_10k_prohibited",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="consolidated_einvoice_single_tx_over_rm10000",
+                description="Contractual billing schedules cannot mandate consolidated e-invoicing for single transactions > RM 10,000.",
+            ),
+        ],
+    )
+    act53_10k_bm = StatutoryNode(
+        node_id="ACT-53-MYINVOIS-10K-V1-BM",
+        act_name="Akta Cukai Pendapatan 1967",
+        act_number="Act 53",
+        section_code="SEC-82C-CONSOL-10K",
+        parent_node_id="ACT-53-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 82C & Peraturan e-Invois Individu Wajib MyInvois LHDN (berkuat kuasa 1 Januari 2026): "
+            "Pembekal tidak boleh mengeluarkan e-Invois disatukan bagi mana-mana transaksi tunggal melebihi RM 10,000; "
+            "e-Invois individu yang disahkan wajib dikeluarkan bagi setiap transaksi melebihi RM 10,000."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 6, 5),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Garis Panduan Khusus MyInvois LHDN (2026-01-01)",
+        regime_code="ACT_53",
+        deontic_constraints=act53_10k_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act53_10k_en, act53_10k_bm, authoritative="bm")
+
+    act53_exempt_v1_en = StatutoryNode(
+        node_id="ACT-53-MYINVOIS-EXEMPT-V1",
+        act_name="Income Tax Act 1967",
+        act_number="Act 53",
+        section_code="SEC-82C-EXEMPT",
+        parent_node_id="ACT-53-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 82C LHDN MyInvois Micro-Enterprise Exemption (Pre-2026-08-30 Baseline): "
+            "Taxpayers with annual turnover or revenue below RM 500,000 are exempt from mandatory MyInvois e-Invoicing."
+        ),
+        valid_from=date(2025, 1, 1),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="LHDN MyInvois Guideline (2025-01-01)",
+        regime_code="ACT_53",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT53-EXEMPT-500K",
+                regime_id="ACT_53",
+                modality="OBLIGATION",
+                metric_key="myinvois_annual_revenue_exemption_myr",
+                operator="<=",
+                threshold_value=500_000.0,
+                unit="MYR",
+                description="Initial MyInvois annual revenue exemption threshold of RM 500,000 prior to 2026-08-30.",
+            )
+        ],
+    )
+    act53_exempt_v1_bm = StatutoryNode(
+        node_id="ACT-53-MYINVOIS-EXEMPT-V1-BM",
+        act_name="Akta Cukai Pendapatan 1967",
+        act_number="Act 53",
+        section_code="SEC-82C-EXEMPT",
+        parent_node_id="ACT-53-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 82C Pengecualian Perusahaan Mikro MyInvois LHDN (Asas Pra-2026-08-30): "
+            "Pembayar cukai dengan perolehan atau pendapatan tahunan di bawah RM 500,000 dikecualikan daripada e-Invois MyInvois wajib."
+        ),
+        valid_from=date(2025, 1, 1),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Garis Panduan MyInvois LHDN (2025-01-01)",
+        regime_code="ACT_53",
+        deontic_constraints=act53_exempt_v1_en.deontic_constraints,
+    )
+    _add_bilingual_pair(
+        store, act53_exempt_v1_en, act53_exempt_v1_bm, authoritative="en"
+    )
+
+    act53_exempt_v2_en = StatutoryNode(
+        node_id="ACT-53-MYINVOIS-EXEMPT-V2",
+        act_name="Income Tax Act 1967",
+        act_number="Act 53",
+        section_code="SEC-82C-EXEMPT",
+        parent_node_id="ACT-53-ACT",
+        version=2,
+        language="en",
+        text=(
+            "Section 82C LHDN MyInvois Exemption Threshold Revision (effective 30 August 2026): "
+            "Annual revenue exemption threshold is raised from RM 500,000 to RM 3,000,000; however, "
+            "subsidiaries, related companies, or entities with a corporate shareholder/holding company "
+            "whose turnover exceeds RM 3,000,000 shall NOT qualify for this exemption."
+        ),
+        valid_from=date(2026, 8, 30),
+        gazette_date=date(2026, 8, 28),
+        amendment_act_ref="LHDN MyInvois Revised Guideline (2026-08-30)",
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="LHDN MyInvois Revised Guideline (2026-08-30)",
+        regime_code="ACT_53",
+        carve_out_metadata={
+            "previous_exemption_myr": 500_000.0,
+            "new_exemption_myr": 3_000_000.0,
+            "related_company_holding_carve_out": True,
+            "effective_from": "2026-08-30",
+        },
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT53-EXEMPT-3M",
+                regime_id="ACT_53",
+                modality="OBLIGATION",
+                metric_key="myinvois_annual_revenue_exemption_myr",
+                operator="<=",
+                threshold_value=3_000_000.0,
+                unit="MYR",
+                description="Updated MyInvois annual revenue exemption threshold of RM 3,000,000 effective 2026-08-30.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-ACT53-RELATED-CO-NONEXEMPT",
+                regime_id="ACT_53",
+                modality="OBLIGATION",
+                metric_key="myinvois_related_company_non_exempt",
+                operator="==",
+                threshold_value=True,
+                description="Related-company and holding-company carve-out: entities linked to group revenue > RM 3,000,000 remain non-exempt.",
+            ),
+        ],
+    )
+    act53_exempt_v2_bm = StatutoryNode(
+        node_id="ACT-53-MYINVOIS-EXEMPT-V2-BM",
+        act_name="Akta Cukai Pendapatan 1967",
+        act_number="Act 53",
+        section_code="SEC-82C-EXEMPT",
+        parent_node_id="ACT-53-ACT",
+        version=2,
+        language="bm",
+        text=(
+            "Seksyen 82C Semakan Ambang Pengecualian MyInvois LHDN (berkuat kuasa 30 Ogos 2026): "
+            "Ambang pengecualian hasil tahunan dinaikkan daripada RM 500,000 kepada RM 3,000,000; namun "
+            "anak syarikat, syarikat berkaitan, atau entiti dengan syarikat pemegang yang melebihi "
+            "RM 3,000,000 tidak boleh menikmati pengecualian ini."
+        ),
+        valid_from=date(2026, 8, 30),
+        gazette_date=date(2026, 8, 28),
+        amendment_act_ref="LHDN MyInvois Revised Guideline (2026-08-30)",
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Garis Panduan MyInvois Disemak (2026-08-30)",
+        regime_code="ACT_53",
+        carve_out_metadata=act53_exempt_v2_en.carve_out_metadata,
+        deontic_constraints=act53_exempt_v2_en.deontic_constraints,
+    )
+    _add_bilingual_pair(
+        store,
+        act53_exempt_v2_en,
+        act53_exempt_v2_bm,
+        authoritative="bm",
+        amends_en_id="ACT-53-MYINVOIS-EXEMPT-V1",
+        amends_bm_id="ACT-53-MYINVOIS-EXEMPT-V1-BM",
+    )
+
+    act53_s120_en = StatutoryNode(
+        node_id="ACT-53-SEC-120-1D-V1",
+        act_name="Income Tax Act 1967",
+        act_number="Act 53",
+        section_code="SEC-120(1)(d)",
+        parent_node_id="ACT-53-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 120(1)(d) (Penalty for Failure to Issue Electronic Invoice - Act 53): "
+            "Any person who without reasonable excuse fails to issue an electronic invoice under "
+            "Section 82C shall be guilty of an offence and liable to a fine of not less than RM 200 "
+            "and not more than RM 20,000 or imprisonment for a term not exceeding 6 months or both."
+        ),
+        valid_from=date(2024, 8, 1),
+        gazette_date=date(2023, 12, 29),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 53 s. 120(1)(d)",
+        regime_code="ACT_53",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT53-S120-PENALTY",
+                regime_id="ACT_53",
+                modality="OBLIGATION",
+                metric_key="myinvois_non_compliance_max_fine_myr",
+                operator=">=",
+                threshold_value=20_000.0,
+                unit="MYR",
+                description="Statutory penalty RM 200 to RM 20,000 fine and/or up to 6 months imprisonment under Act 53 s. 120(1)(d).",
+            )
+        ],
+    )
+    act53_s120_bm = StatutoryNode(
+        node_id="ACT-53-SEC-120-1D-V1-BM",
+        act_name="Akta Cukai Pendapatan 1967",
+        act_number="Act 53",
+        section_code="SEC-120(1)(d)",
+        parent_node_id="ACT-53-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 120(1)(d) (Penalti Kegagalan Mengeluarkan e-Invois - Akta 53): "
+            "Mana-mana orang yang tanpa alasan munasabah gagal mengeluarkan e-Invois di bawah "
+            "Seksyen 82C hendaklah didenda tidak kurang daripada RM 200 dan tidak melebihi RM 20,000 "
+            "atau dipenjarakan tidak melebihi 6 bulan atau kedua-duanya."
+        ),
+        valid_from=date(2024, 8, 1),
+        gazette_date=date(2023, 12, 29),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 53 s. 120(1)(d)",
+        regime_code="ACT_53",
+        deontic_constraints=act53_s120_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act53_s120_en, act53_s120_bm, authoritative="en")
+
+    store.add_citation(
+        "ACT-53-SEC-82C-P1-V1",
+        "ACT-53-MYINVOIS-10K-V1",
+        effective_date=date(2026, 1, 1),
+        gazette_ref="LHDN MyInvois Specific Guideline (2026-01-01)",
+    )
+    store.add_citation(
+        "ACT-53-SEC-82C-P1-V1",
+        "ACT-53-SEC-120-1D-V1",
+        effective_date=date(2024, 8, 1),
+        gazette_ref="Act 53 s. 120(1)(d)",
+    )
+
+    # 3. MOSTI National Guidelines on AI Governance & Ethics (AIGE, eff. 2024-09-20)
+    aige_en = StatutoryNode(
+        node_id="MOSTI-AIGE-2024-PRINCIPLES-V1",
+        act_name="MOSTI National Guidelines on AI Governance & Ethics (AIGE)",
+        act_number="MOSTI AIGE 2024",
+        section_code="AIGE-7-PRINCIPLES",
+        version=1,
+        language="en",
+        text=(
+            "MOSTI National Guidelines on AI Governance & Ethics (AIGE, issued 20 September 2024 — Voluntary Governance Framework): "
+            "Public-sector and enterprise AI deployments should align with the 7 Responsible AI Principles "
+            "(Fairness; Reliability, Safety and Control; Privacy and Security; Inclusiveness; Transparency; Accountability; "
+            "Pursuit of Human Benefit and Happiness), maintain human-in-the-loop or human-on-the-loop oversight, "
+            "preserve AI decision audit trails, and cross-comply with PDPA Act 709 s. 9 and s. 129."
+        ),
+        valid_from=date(2024, 9, 20),
+        gazette_date=date(2024, 9, 20),
+        authority_tier=AuthorityTier.TIER_5_AGENCY_CIRCULAR,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="MOSTI AIGE (2024-09-20)",
+        regime_code="MOSTI_AIGE",
+        carve_out_metadata={
+            "is_mandatory_statute": False,
+            "governance_regime": "VOLUNTARY_GUIDELINE",
+            "seven_principles": [
+                "Fairness",
+                "Reliability, Safety and Control",
+                "Privacy and Security",
+                "Inclusiveness",
+                "Transparency",
+                "Accountability",
+                "Pursuit of Human Benefit and Happiness",
+            ],
+        },
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-AIGE-7-PRINCIPLES",
+                regime_id="MOSTI_AIGE",
+                modality="VOLUNTARY_GUIDELINE",
+                metric_key="aige_seven_principles_alignment",
+                operator="==",
+                threshold_value=True,
+                description="Voluntary alignment with MOSTI AIGE 7 Responsible AI Principles.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-AIGE-HITL",
+                regime_id="MOSTI_AIGE",
+                modality="VOLUNTARY_GUIDELINE",
+                metric_key="aige_human_in_the_loop_controls",
+                operator="==",
+                threshold_value=True,
+                description="Voluntary human-in-the-loop / human-on-the-loop oversight controls for high-impact AI decisions.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-AIGE-AUDIT-TRAIL",
+                regime_id="MOSTI_AIGE",
+                modality="VOLUNTARY_GUIDELINE",
+                metric_key="aige_ai_audit_trail_retention",
+                operator="==",
+                threshold_value=True,
+                description="Voluntary AI decision logging and audit trail retention under MOSTI AIGE.",
+            ),
+        ],
+    )
+    aige_bm = StatutoryNode(
+        node_id="MOSTI-AIGE-2024-PRINCIPLES-V1-BM",
+        act_name="Garis Panduan Tadbir Urus dan Etika AI Kebangsaan MOSTI (AIGE)",
+        act_number="MOSTI AIGE 2024",
+        section_code="AIGE-7-PRINCIPLES",
+        version=1,
+        language="bm",
+        text=(
+            "Garis Panduan Tadbir Urus dan Etika AI Kebangsaan MOSTI (AIGE, 20 September 2024 — Rangka Kerja Tadbir Urus Sukarela): "
+            "Penggunaan AI sektor awam dan perusahaan digalakkan mematuhi 7 Prinsip AI Bertanggungjawab, "
+            "mengekalkan kawalan manusia dalam gelung, menyimpan jejak audit keputusan AI, serta mematuhi "
+            "Akta 709 Seksyen 9 dan Seksyen 129."
+        ),
+        valid_from=date(2024, 9, 20),
+        gazette_date=date(2024, 9, 20),
+        authority_tier=AuthorityTier.TIER_5_AGENCY_CIRCULAR,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="MOSTI AIGE (2024-09-20)",
+        regime_code="MOSTI_AIGE",
+        carve_out_metadata=aige_en.carve_out_metadata,
+        deontic_constraints=aige_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, aige_en, aige_bm, authoritative="en")
+    store.add_citation(
+        "MOSTI-AIGE-2024-PRINCIPLES-V1",
+        "PDPA-2010-SEC-9-V2",
+        effective_date=date(2025, 1, 1),
+        gazette_ref="MOSTI AIGE -> Act 709 s. 9",
+    )
+    store.add_citation(
+        "MOSTI-AIGE-2024-PRINCIPLES-V1",
+        "PDPA-2010-SEC-129-V2",
+        effective_date=date(2025, 4, 1),
+        gazette_ref="MOSTI AIGE -> Act 709 s. 129",
+    )
+
+    # 4. BNM Outsourcing Policy Document + RMiT Enhancements (Crypto Key Ownership, Sub-Contractors, Audit)
+    bnm_outsource_en = StatutoryNode(
+        node_id="BNM-OUTSOURCING-2019-V1",
+        act_name="BNM Outsourcing Policy Document & RMiT Controls",
+        act_number="BNM/RH/PD 028-99",
+        section_code="PARA-11.2",
+        version=1,
+        language="en",
+        text=(
+            "BNM Outsourcing Policy Document & RMiT Cloud Controls: Financial institutions shall retain "
+            "exclusive cryptographic key ownership (BYOK/customer-managed keys), prohibit sub-contracting "
+            "of material outsourced functions without prior written approval, and preserve unrestricted "
+            "Bank Negara Malaysia and internal right-of-audit over outsourced service providers."
+        ),
+        valid_from=date(2019, 10, 23),
+        gazette_date=date(2019, 10, 23),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="BNM/RH/PD 028-99 (Outsourcing)",
+        regime_code="BNM_RMIT",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-BNM-CRYPTO-KEY-OWNERSHIP",
+                regime_id="BNM_RMIT",
+                modality="OBLIGATION",
+                metric_key="bnm_crypto_key_ownership_fi_retained",
+                operator="==",
+                threshold_value=True,
+                description="Financial institution must retain exclusive cryptographic key ownership under BNM Outsourcing + RMiT.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-BNM-SUBCONTRACTOR-APPROVAL",
+                regime_id="BNM_RMIT",
+                modality="OBLIGATION",
+                metric_key="bnm_subcontractor_prior_approval_required",
+                operator="==",
+                threshold_value=True,
+                description="Material sub-contracting requires prior written financial-institution approval under BNM Outsourcing.",
+            ),
+            DeonticConstraint(
+                constraint_id="DC-BNM-OUTSOURCE-AUDIT",
+                regime_id="BNM_RMIT",
+                modality="OBLIGATION",
+                metric_key="bnm_outsourcing_regulator_audit_rights",
+                operator="==",
+                threshold_value=True,
+                description="Outsourced provider agreements must grant unrestricted BNM & internal regulator right-of-audit.",
+            ),
+        ],
+    )
+    bnm_outsource_bm = StatutoryNode(
+        node_id="BNM-OUTSOURCING-2019-V1-BM",
+        act_name="Dokumen Polisi Penyumberan Luar BNM & Kawalan RMiT",
+        act_number="BNM/RH/PD 028-99",
+        section_code="PARA-11.2",
+        version=1,
+        language="bm",
+        text=(
+            "Dokumen Polisi Penyumberan Luar BNM & Kawalan Awan RMiT: Institusi kewangan hendaklah mengekalkan "
+            "pemilikan eksklusif kunci kriptografi, melarang sub-kontrak fungsi material tanpa kelulusan "
+            "bertulis terdahulu, dan mengekalkan hak audit Bank Negara Malaysia tanpa sekatan."
+        ),
+        valid_from=date(2019, 10, 23),
+        gazette_date=date(2019, 10, 23),
+        authority_tier=AuthorityTier.TIER_3_SUBSIDIARY_LEGISLATION,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="BNM/RH/PD 028-99 (Outsourcing)",
+        regime_code="BNM_RMIT",
+        deontic_constraints=bnm_outsource_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, bnm_outsource_en, bnm_outsource_bm, authoritative="en")
+    store.add_citation(
+        "BNM-RMIT-SEC-10-32-V1",
+        "BNM-OUTSOURCING-2019-V1",
+        effective_date=date(2020, 6, 19),
+        gazette_ref="BNM/RH/PD 028-99",
+    )
+    store.add_citation(
+        "BNM-OUTSOURCING-2019-V1",
+        "MOSTI-AIGE-2024-PRINCIPLES-V1",
+        effective_date=date(2024, 9, 20),
+        gazette_ref="MOSTI AIGE (2024-09-20)",
     )
 
     return store

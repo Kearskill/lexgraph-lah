@@ -709,7 +709,24 @@ def _segment_scrubbed_text(
     return segments
 
 
-def _extract_clause_metrics(clause_text: str) -> dict[str, float | str | bool]:
+_RM_AMOUNT_RE = re.compile(r"\bRM\s*([0-9][0-9,]*(?:\.\d+)?)\b", re.IGNORECASE)
+_PCT_AMOUNT_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*%")
+
+
+def _extract_rm_amounts(text: str) -> list[float]:
+    amounts: list[float] = []
+    for m in _RM_AMOUNT_RE.finditer(text):
+        try:
+            amounts.append(float(m.group(1).replace(",", "")))
+        except ValueError:
+            continue
+    return amounts
+
+
+def _extract_clause_metrics(
+    clause_text: str,
+    table_rows: list[list[str]] | None = None,
+) -> dict[str, float | str | bool]:
     metrics: dict[str, float | str | bool] = {}
     low = clause_text.lower()
     notice_h, report_d = extract_numeric_sla_from_text(clause_text)
@@ -750,6 +767,7 @@ def _extract_clause_metrics(clause_text: str) -> dict[str, float | str | bool]:
             "no audit",
             "prohibits regulatory audit",
             "menolak hak audit",
+            "waives regulatory audit",
         )
     ):
         metrics["regulator_audit_access"] = False
@@ -757,6 +775,265 @@ def _extract_clause_metrics(clause_text: str) -> dict[str, float | str | bool]:
         kw in low for kw in ("audit access", "bnm audit", "nacsa audit", "hak audit")
     ):
         metrics["regulator_audit_access"] = True
+
+    # Act 378 Stamp Act & SDSAS metrics
+    has_stamp_kw = any(
+        kw in low
+        for kw in (
+            "stamp duty",
+            "duti setem",
+            "act 378",
+            "akta setem",
+            "sdsas",
+            "stamping",
+            "penyeteman",
+        )
+    )
+    if has_stamp_kw:
+        metrics["stamp_duty_mentioned"] = True
+        if any(
+            kw in low
+            for kw in (
+                "need not be stamped",
+                "shall not be stamped",
+                "unstamped",
+                "no stamp duty",
+                "waives stamp duty",
+                "tidak perlu disetemkan",
+                "tanpa duti setem",
+            )
+        ):
+            metrics["stamp_duty_excluded"] = True
+        if any(
+            kw in low
+            for kw in ("exempt", "exemption", "pengecualian", "threshold", "ambang")
+        ):
+            rm_vals = _extract_rm_amounts(clause_text)
+            if rm_vals:
+                metrics["stamp_duty_exempt_claimed_myr"] = min(rm_vals)
+        if (
+            "sdsas" in low
+            or "self-assessment" in low
+            or "taksiran sendiri" in low
+            or "stamp" in low
+            or "setem" in low
+        ):
+            for dm in _DAYS_RE.finditer(low):
+                metrics["stamp_duty_payment_days"] = float(dm.group(1))
+        if any(
+            kw in low
+            for kw in (
+                "foreign",
+                "non-citizen",
+                "bukan warganegara",
+                "foreign company",
+                "syarikat asing",
+            )
+        ):
+            pcts = [float(pm.group(1)) for pm in _PCT_AMOUNT_RE.finditer(low)]
+            if pcts:
+                metrics["foreign_residential_stamp_duty_pct"] = pcts[0]
+
+    # Act 53 LHDN MyInvois e-Invoicing metrics (clauses + <w:tbl> schedules)
+    all_rm_amounts = _extract_rm_amounts(clause_text)
+    if table_rows:
+        for row in table_rows:
+            for cell in row:
+                all_rm_amounts.extend(_extract_rm_amounts(cell))
+    if all_rm_amounts:
+        metrics["max_rm_amount"] = max(all_rm_amounts)
+
+    is_billing_ctx = bool(table_rows) or any(
+        kw in low
+        for kw in (
+            "myinvois",
+            "e-invoice",
+            "e-invois",
+            "einvoice",
+            "jadual pembayaran",
+            "billing schedule",
+            "payment schedule",
+            "invoice",
+            "invois",
+            "act 53",
+            "82c",
+        )
+    )
+    if is_billing_ctx:
+        if any(
+            kw in low
+            for kw in (
+                "consolidated e-invoice",
+                "consolidated einvoice",
+                "consolidated invoice",
+                "consolidated billing",
+                "consolidated monthly",
+                "monthly consolidated",
+                "e-invois disatukan",
+                "bil disatukan",
+            )
+        ) or (
+            "consolidated" in low
+            and any(
+                kw in low for kw in ("e-invoice", "einvoice", "e-invois", "invoice")
+            )
+        ):
+            metrics["myinvois_consolidated_billing"] = True
+        if all_rm_amounts:
+            metrics["myinvois_max_single_tx_myr"] = max(all_rm_amounts)
+        if any(
+            kw in low
+            for kw in (
+                "cancel",
+                "cancellation",
+                "reject",
+                "rejection",
+                "batal",
+                "pembatalan",
+                "tolak",
+            )
+        ):
+            for hm in _HOURS_RE.finditer(low):
+                metrics["myinvois_cancellation_hours"] = float(hm.group(1))
+            for dm in _DAYS_RE.finditer(low):
+                metrics["myinvois_cancellation_hours"] = max(
+                    float(metrics.get("myinvois_cancellation_hours", 0.0)),
+                    float(dm.group(1)) * 24.0,
+                )
+            if any(
+                kw in low
+                for kw in (
+                    "at any time",
+                    "unilaterally",
+                    "after 72",
+                    "selepas 72",
+                    "bila-bila masa",
+                )
+            ):
+                metrics["myinvois_unilateral_post72h_cancel"] = True
+        if any(
+            kw in low
+            for kw in (
+                "without uin",
+                "no uin",
+                "refuse to provide tin",
+                "no tin",
+                "omit sst",
+                "without tin",
+                "need not validate",
+                "no ubl",
+                "tiada tin",
+                "tanpa uin",
+                "tidak perlu myinvois",
+            )
+        ):
+            metrics["myinvois_validation_omitted"] = True
+        if any(
+            kw in low
+            for kw in (
+                "no self-billed",
+                "waives self-billed",
+                "exempt from self-billed",
+                "need not issue self-billed",
+                "tiada bil kendiri",
+                "tanpa e-invois bil kendiri",
+            )
+        ):
+            metrics["myinvois_self_billed_omitted"] = True
+        if (
+            any(
+                kw in low
+                for kw in (
+                    "exempt",
+                    "exemption",
+                    "revenue threshold",
+                    "pengecualian",
+                    "turnover",
+                    "perolehan",
+                )
+            )
+            and all_rm_amounts
+        ):
+            metrics["myinvois_claimed_exemption_myr"] = max(all_rm_amounts)
+        if any(
+            kw in low
+            for kw in (
+                "subsidiary",
+                "related company",
+                "holding company",
+                "anak syarikat",
+                "syarikat berkaitan",
+                "syarikat pemegang",
+            )
+        ):
+            metrics["myinvois_related_company_flag"] = True
+
+    # MOSTI AIGE AI governance metrics (voluntary framework)
+    if re.search(
+        r"\b(?:ai|aige|artificial\s+intelligence|machine\s+learning|generative\s+ai|"
+        r"ai\s+model|ai\s+system|automated\s+decision|kecerdasan\s+buatan|sistem\s+ai)\b",
+        low,
+    ):
+        metrics["aige_ai_system_present"] = True
+        if any(
+            kw in low
+            for kw in (
+                "no human oversight",
+                "omits human oversight",
+                "excludes human oversight",
+                "without human oversight",
+                "without human-in-the-loop",
+                "without human review",
+                "no human-in-the-loop",
+                "fully autonomous without human",
+                "tanpa pengawasan manusia",
+            )
+        ):
+            metrics["aige_hitl_omitted"] = True
+        if any(
+            kw in low
+            for kw in (
+                "no ai audit trail",
+                "no audit trail",
+                "omits ai audit trail",
+                "without decision logs",
+                "no logging of ai",
+                "delete ai logs",
+                "tiada jejak audit",
+            )
+        ):
+            metrics["aige_audit_trail_omitted"] = True
+
+    # BNM Outsourcing + RMiT Crypto Key Ownership & Sub-contractor metrics
+    if any(
+        kw in low
+        for kw in (
+            "vendor owns all cryptographic key",
+            "vendor retains sole ownership of encryption key",
+            "exclusive ownership of all encryption key",
+            "sole ownership of all encryption key",
+            "vendor holds exclusive ownership",
+            "no byok",
+            "provider holds sole encryption key",
+            "kunci kriptografi dimiliki vendor",
+        )
+    ):
+        metrics["bnm_crypto_key_owned_by_vendor"] = True
+    if any(
+        kw in low
+        for kw in (
+            "sub-contract without prior approval",
+            "subcontract without prior approval",
+            "sub-contractors without prior",
+            "subcontractors without prior",
+            "sub-contractor without prior",
+            "subcontractor without prior",
+            "sub-contract at its sole discretion",
+            "subcontractor without written consent",
+            "sub-kontrak tanpa kelulusan",
+        )
+    ):
+        metrics["bnm_subcontractor_unrestricted"] = True
 
     return metrics
 
@@ -976,7 +1253,9 @@ def build_contract_ast(
             source_span=t_span,
             defined_terms=[],
             referenced_clauses=[],
-            extracted_metrics=_extract_clause_metrics(scrubbed_tbl_text),
+            extracted_metrics=_extract_clause_metrics(
+                scrubbed_tbl_text, table_rows=scrubbed_rows
+            ),
             table_rows=scrubbed_rows,
         )
         clauses.append(sched_node)

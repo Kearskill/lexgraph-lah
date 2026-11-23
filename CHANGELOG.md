@@ -2,6 +2,30 @@
 
 All notable changes to `lexgraph-lah` are documented in this file using [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions.
 
+## [0.3.0] - 2026-11-23
+
+### Added
+- **Counterparty OOXML Track-Changes & Comment-Thread Negotiation Engine (`doc_firewall.py`, `docx_redline_critic.py`, `routes.py`, `mcp/tools.py`)**:
+  - Extended `doc_firewall.py` to inspect `word/comments.xml`, `word/commentsExtended.xml`, `word/footnotes.xml`, and `word/endnotes.xml` for bilingual EN/BM IPI, XML comments, statutory spoofing, hidden/vanished runs, and `DOCX_MAX_XML_PART_BYTES` per-part ceilings before AST parsing.
+  - Added `src/lexgraph_lah/negotiation/docx_redline_critic.py` parsing `<w:ins>`, `<w:del>`, `<w:moveFrom>`, `<w:moveTo>`, and comment threads (`word/comments.xml`, `word/commentsExtended.xml`) into `CounterpartyRedlineDiff`, reconstructing PII-scrubbed baseline vs proposed clauses, running `DeonticEnvelopeResolver` + `ContractASTGraph`, and classifying deltas as `COMPLIANT_ACCEPT`, `DEONTIC_REGRESSION`, `COMMENT_CONFLICT`, or `NEUTRAL_EDIT` in `0` LLM tokens with Ed25519 attestation.
+  - Exposed `POST /api/v1/negotiation/diff-docx` (multipart `.docx` or JSON, RBAC `auditor`/`admin`) and MCP tool `audit_counterparty_docx_redlines`.
+- **2026 Malaysian Commercial Fiscal & AI Governance Statutory Pack (`temporal_store.py`, `fiscal_aige_scanner.py`, `deontic_solver.py`, `bilingual_router.py`, `contract_ast.py`, `diff_engine.py`)**:
+  - Seeded bi-temporal bilingual EN/BM pairs (`135` total nodes, `520` total edges, all newly seeded pairs verified `ALIGNED` under Act 388 s. 63) across both `InMemoryGraphBackend` and parameterized Cypher (`Neo4jGraphBackend` including `$regime_code` & `$carve_out_metadata_json`):
+    - **Stamp Act 1949 [Act 378] & SDSAS (eff. `2026-01-01`):** Section 52 evidentiary inadmissibility, 30-day self-assessment payment window, `RM300` -> `RM3,000/month` employment contract exemption transition, and `8%` foreign residential transfer tier.
+    - **Income Tax Act 1967 [Act 53] s. 82C & s. 120(1)(d) (`MyInvois`):** Phased dates (`2024-08-01`..`2026-01-01`), `> RM10,000` single-tx consolidated e-invoice prohibition (including `<w:tbl>` `Jadual Pembayaran` schedule rules), `RM3,000,000` exemption update (`2026-08-30` w/ related/holding-company carve-out), `72h` UIN cancel/reject window, cross-border self-billed foreign imports, and `s. 120(1)(d)` penalties.
+    - **MOSTI National Guidelines on AI Governance & Ethics (`AIGE`, eff. `2024-09-20`):** Modeled distinctly with `VOLUNTARY_GUIDELINE` deontic modality, 7 principles, HITL/AI audit trail controls, PDPA s. 9 / s. 129 cross-links, plus **BNM Outsourcing + RMiT** cryptographic key ownership (BYOK), sub-contractor prior-approval, and regulator right-of-audit enhancements.
+- **Sub-Processor SLA Cascade Verifier & Multi-Regulator Incident Playbook (`sla_cascade.py`, `routes.py`, `mcp/tools.py`)**:
+  - Added `verify_sla_cascade()` evaluating vendor/sub-processor breach windows across `DATA_USER_CONTROLLER`, `NCII_ENTITY`, `BNM_FINANCIAL_INSTITUTION`, and `PUBLIC_SECTOR_AGENCY_ACT_864`, flagging `SLA_CASCADE_BREACH` on impossible windows or `< 25%` operational triage buffers with exact slack/deficit hours and bilingual EN/BM replacement clauses.
+  - Added `POST /api/v1/deontic/incident-playbook` and MCP tool `compile_incident_playbook` generating chronological UTC + `Asia/Kuala_Lumpur` deadline milestones with `Act 388 s. 54` computation-of-time / weekly-holiday rollover metadata and Ed25519 attestation.
+- **Air-Gapped `.lexpack.zip` Evidence Bundles, Offline CLI Verifier & SSRF-Safe Signed Webhooks (`attestation/bundle.py`, `attestation/verify_cli.py`, `webhooks.py`, `portfolio_scanner.py`)**:
+  - Exposed `GET /api/v1/attestation/{manifest_id}/bundle` (with tenant-isolated `include_docx=true&audit_session_id=...`) streaming deterministic `.lexpack.zip` archives and added zero-network verifier CLI `python -m lexgraph_lah.attestation.verify_cli --bundle <path> [--pubkey <pub.pem>]`.
+  - Extended `POST /api/v1/portfolio/jobs` with durable backend persistence (`PORTFOLIO_JOB_STORE=memory|sqlite|postgres`), strict SSRF guards (`validate_webhook_url_ssrf` blocking loopback, RFC1918, metadata, non-HTTPS prod, and DNS rebinding), and dual-signed webhook delivery (`X-LexGraph-Signature-256` + `X-LexGraph-Ed25519`) with bounded 3-attempt exponential backoff.
+- **Clause-AST Isomorphic Verdict Cache & Tenant FinOps Budget Guardrail (`clause_cache.py`, `cost_tracker.py`, `agents/graph.py`, `routes.py`)**:
+  - Added zero-token `ClauseASTCache` (`CLAUSE_CACHE_BACKEND=memory|redis`, `cache_bypass=true`) computing canonical SHA-256 digests across normalized scrubbed clause ASTs, edges, dates, scopes, regimes, and statutory graph snapshots in `/compliance/check` and async portfolio jobs with OTel `lexgraph.cache_hit` telemetry.
+  - Added per-tenant monthly MYR budget enforcement (`LEXGRAPH_TENANT_MONTHLY_BUDGET_MYR` + `LEXGRAPH_BUDGET_EXCEEDED_POLICY=deterministic_fallback|reject_429`) and `GET /api/v1/finops/tenant-usage` (`viewer`/`auditor`/`admin` own-tenant scoped).
+- **36-Scenario Benchmark Expansion (`evals/run_benchmark.py`)**:
+  - Expanded golden benchmark from 30 to 36 scenarios (`BENCH-31`..`BENCH-36`, `13` total MCP tools) achieving `100.00%` determinism consistency, `100.00%` cross-trial stability, `100.00%` verbatim grounding, `100.00%` abstention precision, `100.00%` temporal recall, and `0.00%` temporal contamination.
+
 ## [0.2.0] - 2026-11-22
 
 ### Added

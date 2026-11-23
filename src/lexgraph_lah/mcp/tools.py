@@ -6,6 +6,7 @@ from typing import Any
 
 from lexgraph_lah.agents.graph import build_compliance_graph
 from lexgraph_lah.compliance.pdpa_scanner import scan_pdpa_compliance
+from lexgraph_lah.compliance.sla_cascade import compile_incident_playbook
 from lexgraph_lah.graph.bilingual_critic import audit_bilingual_divergence
 from lexgraph_lah.graph.deontic_solver import DeonticEnvelopeResolver, normalize_regimes
 from lexgraph_lah.graph.diff_engine import (
@@ -16,13 +17,19 @@ from lexgraph_lah.graph.portfolio_scanner import scan_portfolio_blast_radius
 from lexgraph_lah.graph.temporal_store import get_default_temporal_store
 from lexgraph_lah.ingestion.contract_ast import build_contract_ast
 from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
+from lexgraph_lah.negotiation.docx_redline_critic import (
+    analyze_counterparty_docx_redlines,
+)
 from lexgraph_lah.schemas.domain import (
+    CommentAnnotation,
     ComplianceAttestationManifest,
     ContractDeltaAuditRequest,
+    IncidentPlaybookRequest,
     OutputPersona,
     PDPAComplianceScanRequest,
     PortfolioBlastRadiusRequest,
     PortfolioContractInput,
+    RedlineRevisionInput,
     RiskSeverity,
     TerritorialScope,
 )
@@ -287,6 +294,80 @@ MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "audit_counterparty_docx_redlines",
+        "description": (
+            "Zero-token counterparty OOXML track-changes (<w:ins>, <w:del>, <w:moveFrom>, <w:moveTo>) "
+            "and comment-thread (<w:commentRangeStart>, word/comments.xml) negotiation critic. "
+            "Detects IPI spoofing/hidden runs, evaluates baseline vs proposed clauses via DeonticEnvelopeResolver, "
+            "and returns CounterpartyRedlineDiff + Ed25519 AttestationManifest."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "docx_base64": {
+                    "type": "string",
+                    "description": "Base64-encoded counterparty redlined .docx binary.",
+                },
+                "filename": {"type": "string"},
+                "baseline_text": {"type": "string"},
+                "proposed_text": {"type": "string"},
+                "revisions": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+                "comments": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+                "as_of_date": {"type": "string", "format": "date"},
+                "regimes": {"type": "array", "items": {"type": "string"}},
+                "territorial_scope": {
+                    "type": "string",
+                    "enum": [s.value for s in TerritorialScope],
+                },
+                "audit_session_id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "compile_incident_playbook",
+        "description": (
+            "Zero-token multi-regulator incident timeline compiler (UTC + Asia/Kuala_Lumpur with "
+            "Act 388 s. 54 computation-of-time metadata) and sub-processor SLA cascade verifier across "
+            "BNM RMiT (1h), NACSA (6h/14d), PDPA (72h/7d), and Act 864 regimes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "discovery_timestamp": {
+                    "type": "string",
+                    "description": "ISO-8601 incident discovery timestamp (normalized to Asia/Kuala_Lumpur).",
+                },
+                "party_role": {
+                    "type": "string",
+                    "enum": [
+                        "DATA_USER_CONTROLLER",
+                        "NCII_ENTITY",
+                        "BNM_FINANCIAL_INSTITUTION",
+                        "PUBLIC_SECTOR_AGENCY_ACT_864",
+                    ],
+                    "default": "DATA_USER_CONTROLLER",
+                },
+                "triggered_regimes": {"type": "array", "items": {"type": "string"}},
+                "territorial_scope": {
+                    "type": "string",
+                    "enum": [s.value for s in TerritorialScope],
+                },
+                "as_of_date": {"type": "string", "format": "date"},
+                "contract_text": {"type": "string"},
+                "clauses": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["discovery_timestamp"],
+        },
+    },
 ]
 
 _SEVERITY_RANK: dict[RiskSeverity, int] = {
@@ -489,6 +570,55 @@ def _dispatch_sync_only(
             manifest=manifest_obj,
         )
         return verify_res.model_dump(mode="json")
+
+    if tool_name == "audit_counterparty_docx_redlines":
+        raw_b64 = arguments.get("docx_base64")
+        docx_bytes = base64.b64decode(raw_b64, validate=True) if raw_b64 else None
+        raw_revs = arguments.get("revisions") or []
+        rev_objs = [
+            RedlineRevisionInput(**r) if isinstance(r, dict) else r for r in raw_revs
+        ]
+        raw_comments = arguments.get("comments") or []
+        comment_objs = [
+            CommentAnnotation(**c) if isinstance(c, dict) else c for c in raw_comments
+        ]
+        redline_as_of = (
+            date.fromisoformat(arguments["as_of_date"])
+            if arguments.get("as_of_date")
+            else None
+        )
+        redline_diff = analyze_counterparty_docx_redlines(
+            document_id=arguments.get("document_id", "MCP-NEG-001"),
+            docx_bytes=docx_bytes,
+            filename=arguments.get("filename"),
+            revisions=rev_objs or None,
+            baseline_text=arguments.get("baseline_text"),
+            proposed_text=arguments.get("proposed_text"),
+            comments=comment_objs or None,
+            as_of_date=redline_as_of,
+            regimes=arguments.get("regimes"),
+            territorial_scope=arguments.get("territorial_scope"),
+            audit_session_id=arguments.get("audit_session_id"),
+        )
+        return redline_diff.model_dump(mode="json")
+
+    if tool_name == "compile_incident_playbook":
+        req_payload: dict[str, Any] = {
+            "discovery_timestamp": arguments["discovery_timestamp"],
+        }
+        for key in (
+            "document_id",
+            "party_role",
+            "triggered_regimes",
+            "territorial_scope",
+            "as_of_date",
+            "contract_text",
+            "clauses",
+        ):
+            if arguments.get(key) is not None:
+                req_payload[key] = arguments[key]
+        playbook_req = IncidentPlaybookRequest.model_validate(req_payload)
+        return compile_incident_playbook(playbook_req).model_dump(mode="json")
 
     return None
 

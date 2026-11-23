@@ -2,8 +2,9 @@ import time
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lexgraph_lah.schemas.domain import TelemetrySummary
 
@@ -17,8 +18,29 @@ class ComplianceSpanRecord(BaseModel):
     active_statute_count: int = 0
     model_tier: str | None = None
     model_routing_reason: str | None = None
+    cache_hit: bool | None = None
+    tenant_id: str | None = None
+    extra_attributes: dict[str, Any] = Field(default_factory=dict)
     telemetry: TelemetrySummary
     timestamp_epoch: float
+
+
+def emit_otel_attributes(attrs: dict[str, Any]) -> None:
+    """Forwards `lexgraph.*` attributes to the active OpenTelemetry span when recording."""
+    if not attrs:
+        return
+    try:
+        from opentelemetry import trace as otel_trace
+
+        span = otel_trace.get_current_span()
+        if span is not None and span.is_recording():
+            for key, val in attrs.items():
+                if val is None:
+                    continue
+                otel_key = key if key.startswith("lexgraph.") else f"lexgraph.{key}"
+                span.set_attribute(otel_key, val)
+    except (ImportError, RuntimeError, AttributeError):
+        pass
 
 
 class TelemetryRegistry:
@@ -51,22 +73,27 @@ class TelemetryRegistry:
 
     def record_span(self, record: ComplianceSpanRecord) -> None:
         self._records.append(record)
-        try:
-            from opentelemetry import trace as otel_trace
-
-            span = otel_trace.get_current_span()
-            if span is not None and span.is_recording():
-                model_tier = record.model_tier or record.telemetry.model_name
-                if model_tier:
-                    span.set_attribute("lexgraph.model_tier", model_tier)
-                if record.model_routing_reason:
-                    span.set_attribute(
-                        "lexgraph.model_routing_reason", record.model_routing_reason
-                    )
-                span.set_attribute("lexgraph.span_id", record.span_id)
-                span.set_attribute("lexgraph.document_id", record.document_id)
-        except (ImportError, RuntimeError, AttributeError):
-            pass
+        attrs: dict[str, Any] = {
+            "span_id": record.span_id,
+            "document_id": record.document_id,
+            "total_tokens": record.telemetry.total_tokens,
+            "estimated_cost_usd": record.telemetry.estimated_cost_usd,
+            "estimated_cost_myr": record.telemetry.estimated_cost_myr,
+        }
+        model_tier = record.model_tier or record.telemetry.model_name
+        if model_tier:
+            attrs["model_tier"] = model_tier
+        if record.model_routing_reason:
+            attrs["model_routing_reason"] = record.model_routing_reason
+        if record.cache_hit is not None:
+            attrs["cache_hit"] = record.cache_hit
+        elif record.telemetry.cache_hit:
+            attrs["cache_hit"] = True
+        if record.tenant_id:
+            attrs["tenant_id"] = record.tenant_id
+        for k, v in record.extra_attributes.items():
+            attrs[k] = v
+        emit_otel_attributes(attrs)
 
     def list_spans(self) -> list[ComplianceSpanRecord]:
         return list(self._records)

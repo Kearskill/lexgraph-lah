@@ -551,11 +551,27 @@ def compute_statutory_window_context(
                     seen_gazettes.add(g)
                     newly_commenced_gazettes.append(g)
 
+    active_nodes_from = store.query_point_in_time(
+        as_of_date=from_date,
+        include_citations=True,
+        include_translations=True,
+        territorial_scope=territorial_scope,
+    )
+    active_nodes_to = store.query_point_in_time(
+        as_of_date=to_date,
+        include_citations=True,
+        include_translations=True,
+        territorial_scope=territorial_scope,
+    )
+
     return {
         "env_from": env_from,
         "env_to": env_to,
         "intervening_diffs": intervening_diffs,
         "newly_commenced_gazettes": newly_commenced_gazettes,
+        "active_nodes_from": active_nodes_from,
+        "active_nodes_to": active_nodes_to,
+        "bilingual_cache": {},
     }
 
 
@@ -586,6 +602,14 @@ def evaluate_contract_delta_impact(
         pii_scrub = scrub_malaysian_pii(req.raw_text)
         safe_text = pii_scrub.masked_text
 
+        win = precomputed_window or compute_statutory_window_context(
+            from_date=req.from_date,
+            to_date=req.to_date,
+            regimes=req.regimes,
+            act_filter=req.act_filter,
+            territorial_scope=req.territorial_scope,
+            store=store,
+        )
         scan_from = scan_pdpa_compliance(
             PDPAComplianceScanRequest(
                 document_id=f"{req.document_id}-FROM",
@@ -596,6 +620,8 @@ def evaluate_contract_delta_impact(
             ),
             store=store,
             record_telemetry=False,
+            precomputed_active_nodes=win.get("active_nodes_from"),
+            precomputed_bilingual_cache=win.get("bilingual_cache"),
         )
         scan_to = scan_pdpa_compliance(
             PDPAComplianceScanRequest(
@@ -607,15 +633,8 @@ def evaluate_contract_delta_impact(
             ),
             store=store,
             record_telemetry=False,
-        )
-
-        win = precomputed_window or compute_statutory_window_context(
-            from_date=req.from_date,
-            to_date=req.to_date,
-            regimes=req.regimes,
-            act_filter=req.act_filter,
-            territorial_scope=req.territorial_scope,
-            store=store,
+            precomputed_active_nodes=win.get("active_nodes_to"),
+            precomputed_bilingual_cache=win.get("bilingual_cache"),
         )
         env_from = win["env_from"]
         env_to = win["env_to"]
@@ -989,6 +1008,70 @@ def evaluate_contract_delta_impact(
                 "Data breach register retention is below the mandatory 2-year minimum effective 2025-06-01.",
                 "Companies must keep a personal data breach log for at least 2 years.",
             )
+
+        # Act 378 Stamp Act SDSAS (eff. 2026-01-01): RM300 -> RM3,000 employment exemption & 30d SDSAS
+        if (
+            "employment_stamp_duty_exempt_monthly_myr" in env_to.resolved_bounds
+            and "employment" in low_safe
+            and re.search(r"\brm\s*300\b", low_safe)
+            and not re.search(r"\brm\s*3,?000\b", low_safe)
+        ):
+            b_from = env_from.resolved_bounds.get(
+                "employment_stamp_duty_exempt_monthly_myr"
+            )
+            b_to = env_to.resolved_bounds["employment_stamp_duty_exempt_monthly_myr"]
+            if b_from is None or float(b_from.strictest_value) < float(
+                b_to.strictest_value
+            ):
+                dom_node = store.nodes.get(b_to.dominating_node_id)
+                to_max_rank = max(to_max_rank, _SEVERITY_RANK[RiskSeverity.HIGH])
+                delta_findings.append(
+                    ContractDeltaFinding(
+                        rule_id="DELTA-ACT_378-EMP-EXEMPT-3000",
+                        section_ref=b_to.dominating_citation,
+                        impact_type="NEW_STATUTORY_MANDATE",
+                        from_status="COMPLIANT",
+                        to_status="NON_COMPLIANT",
+                        from_severity=RiskSeverity.LOW,
+                        to_severity=RiskSeverity.HIGH,
+                        exact_quote=safe_text,
+                        triggering_statute_ids=[b_to.dominating_node_id],
+                        triggering_gazettes=[
+                            g for g in [dom_node.gazette_ref if dom_node else None] if g
+                        ],
+                        source_spans=list(dom_node.source_spans) if dom_node else [],
+                        explanation_practitioner=(
+                            "Employment stamp duty exemption ceiling increased from RM 300 to RM 3,000/month "
+                            "effective 2026-01-01 under Stamp Act 1949 [Act 378]."
+                        ),
+                        explanation_rakyat=(
+                            "From 2026, employment contracts at or below RM 3,000/month are exempt from stamp duty."
+                        ),
+                    )
+                )
+
+        # Act 53 LHDN MyInvois: > RM10,000 consolidated e-Invoice rule (eff. 2026-01-01)
+        if any(
+            kw in low_safe
+            for kw in (
+                "consolidated e-invoice",
+                "consolidated einvoice",
+                "consolidated billing",
+                "e-invois disatukan",
+            )
+        ):
+            rm_hits = [
+                float(m.group(1).replace(",", ""))
+                for m in re.finditer(r"\brm\s*([0-9][0-9,]*(?:\.\d+)?)\b", low_safe)
+            ]
+            if rm_hits and max(rm_hits) > 10_000.0:
+                _append_regime_mandate_delta(
+                    "myinvois_consolidated_over_10k_prohibited",
+                    "DELTA-ACT_53-MYINVOIS-10K",
+                    RiskSeverity.HIGH,
+                    "Consolidated e-invoicing for single transactions > RM 10,000 is prohibited from 2026-01-01 under Income Tax Act 1967 [Act 53] s. 82C.",
+                    "Transactions above RM 10,000 require an individual validated MyInvois e-invoice.",
+                )
 
         inv_rank_to_sev = {v: k for k, v in _SEVERITY_RANK.items()}
         from_overall = inv_rank_to_sev[from_max_rank]
