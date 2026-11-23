@@ -394,6 +394,12 @@ def _extract_bearer_token(headers: Headers) -> str | None:
     return None
 
 
+_ADMIN_ONLY_PATHS: set[str] = {
+    "/api/v1/portfolio/dlq",
+    "/api/v1/hitl/export-jsonl",
+}
+
+
 def _is_role_authorized(
     *,
     role: AuthRole,
@@ -406,15 +412,22 @@ def _is_role_authorized(
     norm_path = _normalize_path(path)
     upper_method = method.upper()
 
+    if norm_path.startswith("/api/v1/admin") or norm_path in _ADMIN_ONLY_PATHS:
+        return (
+            False,
+            f"Role '{role}' cannot invoke admin-only endpoint {upper_method} {norm_path}.",
+        )
+
     if role == "auditor":
-        if norm_path.startswith("/api/v1/admin"):
-            return False, "Auditor role cannot invoke admin-only endpoints."
         return True, ""
 
-    # Viewer role: read-only GET/HEAD, attestation verification, and read-only MCP methods
+    # Viewer role: read-only GET/HEAD, retrieval explainability, attestation verification, and read-only MCP methods
     if upper_method in {"GET", "HEAD", "OPTIONS"}:
         return True, ""
-    if norm_path == "/api/v1/attestation/verify" and upper_method == "POST":
+    if (
+        norm_path in {"/api/v1/attestation/verify", "/api/v1/retrieval/explain"}
+        and upper_method == "POST"
+    ):
         return True, ""
     if norm_path == "/mcp" and upper_method == "POST":
         if body_bytes is None:

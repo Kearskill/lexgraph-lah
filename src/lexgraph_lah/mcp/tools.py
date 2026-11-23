@@ -15,6 +15,7 @@ from lexgraph_lah.graph.diff_engine import (
 )
 from lexgraph_lah.graph.portfolio_scanner import scan_portfolio_blast_radius
 from lexgraph_lah.graph.temporal_store import get_default_temporal_store
+from lexgraph_lah.hitl.review_store import default_hitl_review_ledger
 from lexgraph_lah.ingestion.contract_ast import build_contract_ast
 from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
 from lexgraph_lah.negotiation.docx_redline_critic import (
@@ -24,6 +25,7 @@ from lexgraph_lah.schemas.domain import (
     CommentAnnotation,
     ComplianceAttestationManifest,
     ContractDeltaAuditRequest,
+    HITLReviewRequest,
     IncidentPlaybookRequest,
     OutputPersona,
     PDPAComplianceScanRequest,
@@ -368,6 +370,52 @@ MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["discovery_timestamp"],
         },
     },
+    {
+        "name": "record_hitl_review",
+        "description": (
+            "Records a practitioner Human-in-the-Loop (HITL) clause adjudication "
+            "(ACCEPT_REDLINE, MODIFY_REDLINE, REJECT_FALSE_POSITIVE, ESCALATE_TO_COUNSEL) "
+            "after mandatory Malaysian PII scrubbing and signs the entry into the Ed25519 "
+            "AttestationLedger for golden regression export."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_id": {"type": "string", "default": "default-tenant"},
+                "audit_session_id": {"type": "string"},
+                "manifest_id": {"type": "string"},
+                "document_id": {"type": "string"},
+                "clause_id": {"type": "string"},
+                "decision": {
+                    "type": "string",
+                    "enum": [
+                        "ACCEPT_REDLINE",
+                        "MODIFY_REDLINE",
+                        "REJECT_FALSE_POSITIVE",
+                        "ESCALATE_TO_COUNSEL",
+                    ],
+                },
+                "original_clause_text": {"type": "string"},
+                "recommended_redline": {"type": "string"},
+                "counsel_modified_text": {"type": "string"},
+                "rationale": {"type": "string"},
+                "statutory_node_ids": {"type": "array", "items": {"type": "string"}},
+                "regimes": {"type": "array", "items": {"type": "string"}},
+                "as_of_date": {"type": "string", "format": "date"},
+                "territorial_scope": {
+                    "type": "string",
+                    "enum": [s.value for s in TerritorialScope],
+                },
+                "reviewer_id": {"type": "string"},
+            },
+            "required": [
+                "clause_id",
+                "decision",
+                "original_clause_text",
+                "rationale",
+            ],
+        },
+    },
 ]
 
 _SEVERITY_RANK: dict[RiskSeverity, int] = {
@@ -619,6 +667,34 @@ def _dispatch_sync_only(
                 req_payload[key] = arguments[key]
         playbook_req = IncidentPlaybookRequest.model_validate(req_payload)
         return compile_incident_playbook(playbook_req).model_dump(mode="json")
+
+    if tool_name == "record_hitl_review":
+        hitl_payload: dict[str, Any] = {
+            "clause_id": arguments["clause_id"],
+            "decision": arguments["decision"],
+            "original_clause_text": arguments["original_clause_text"],
+            "rationale": arguments["rationale"],
+        }
+        for key in (
+            "audit_session_id",
+            "manifest_id",
+            "document_id",
+            "recommended_redline",
+            "counsel_modified_text",
+            "statutory_node_ids",
+            "regimes",
+            "as_of_date",
+            "territorial_scope",
+            "expected_overall_risk",
+            "reviewer_id",
+        ):
+            if arguments.get(key) is not None:
+                hitl_payload[key] = arguments[key]
+        hitl_req = HITLReviewRequest.model_validate(hitl_payload)
+        tenant = str(arguments.get("tenant_id") or "default-tenant")
+        return default_hitl_review_ledger.record_review(
+            hitl_req, tenant_id=tenant
+        ).model_dump(mode="json")
 
     return None
 

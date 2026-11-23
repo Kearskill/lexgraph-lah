@@ -8,11 +8,16 @@ import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pydantic import BaseModel, Field
 
+from evals.calibration import (
+    CalibrationReport,
+    evaluate_oblique_stress_suite,
+    format_calibration_markdown,
+)
 from lexgraph_lah.agents.graph import build_compliance_graph
 from lexgraph_lah.attestation.bundle import (
     build_lexpack_bundle,
@@ -146,6 +151,7 @@ class BenchmarkCase(BaseModel):
         "counterparty_docx_redline",
         "sla_cascade_playbook",
         "lexpack_cache_finops",
+        "hitl_golden",
     ] = "langgraph"
     contract_text: str
     expected_overall_risk: RiskSeverity
@@ -200,6 +206,8 @@ class BenchmarkSummary(BaseModel):
     abstention_precision_pct: float = 100.0
     fx_rate_used: float = 4.40
     fx_rate_source: str = "fallback"
+    suite: str = "canonical"
+    calibration_report: dict[str, Any] | None = None
     results_artifact_path: str | None = None
     case_results: list[CaseTrialResult] = Field(default_factory=list)
 
@@ -1794,7 +1802,7 @@ async def _run_single_trial(
             == "lexgraph-lah"
             and isinstance(ping_res, dict)
             and ping_res.get("result") == {}
-            and len(tools_payload) == 13
+            and len(tools_payload) == 14
             and rpc_sec.get("passed") is False
             and sec_rep.telemetry.total_tokens == 0
         )
@@ -2691,6 +2699,80 @@ async def _run_single_trial(
             signature=f"LEXPACK_CACHE|{verify_ok['status']}|{verify_tampered['status']}|{d1 == d2}|{exceeded}|{ok}",
         )
 
+    if case.check_kind == "hitl_golden":
+        store = get_default_temporal_store()
+        hitl_graph = build_compliance_graph()
+        hitl_init = {
+            "document_id": f"{case.case_id}-T{trial_index}",
+            "raw_text": case.contract_text,
+            "reference_date": case.reference_date.isoformat(),
+            "act_filter": case.act_filter,
+            "regimes": case.regimes,
+            "territorial_scope": case.territorial_scope,
+            "extracted_clauses": [],
+            "auditor_feedback": "",
+            "is_grounded": False,
+            "retry_count": 0,
+            "hallucination_rejections": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
+        with measure_latency_ms() as elapsed_holder:
+            hitl_state = await hitl_graph.ainvoke(hitl_init)
+        hitl_retrieved = hitl_state.get("retrieved_statutes", [])
+        hitl_clauses: list[ClauseAudit] = hitl_state.get("extracted_clauses", [])
+        hitl_risk = _compute_overall_risk(hitl_clauses)
+        hitl_abstained = bool(hitl_state.get("is_abstained", False))
+        hitl_pii_dict = hitl_state.get("pii_scrub") or {}
+        hitl_masked = (
+            str(hitl_pii_dict.get("masked_text", case.contract_text))
+            if isinstance(hitl_pii_dict, dict)
+            else case.contract_text
+        )
+        hitl_recall, hitl_contam = evaluate_temporal_context(
+            retrieved_statutes=hitl_retrieved,
+            expected_ids=case.expected_active_statute_ids,
+            forbidden_ids=case.forbidden_statute_ids,
+        )
+        hitl_c_recall, hitl_g_prec = evaluate_entity_and_citation_grounding(
+            extracted_clauses=hitl_clauses,
+            raw_contract_text=hitl_masked,
+            expected_clause_ids=case.expected_clause_ids,
+        )
+        hitl_grounded = bool(hitl_state.get("is_grounded", False) or hitl_abstained)
+        hitl_verdict_ok = (hitl_abstained == case.expect_abstained) and (
+            hitl_risk == case.expected_overall_risk
+            if case.expected_overall_risk is not None
+            else True
+        )
+        hitl_tel = compute_telemetry_summary(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=elapsed_holder[0],
+            retry_count=int(hitl_state.get("retry_count", 0)),
+            is_verified_grounded=hitl_grounded,
+            usd_to_myr_rate=usd_to_myr_rate,
+        )
+        return CaseTrialResult(
+            case_id=case.case_id,
+            trial_index=trial_index,
+            overall_risk=hitl_risk,
+            verdict_correct=hitl_verdict_ok,
+            is_grounded=hitl_grounded,
+            retry_count=hitl_tel.retry_count,
+            temporal_recall=hitl_recall,
+            temporal_contamination=hitl_contam,
+            clause_recall=hitl_c_recall,
+            grounding_precision=hitl_g_prec,
+            total_tokens=0,
+            cost_usd=0.0,
+            cost_myr=0.0,
+            latency_ms=hitl_tel.latency_ms,
+            signature=f"HITL|{case.case_id}|{hitl_risk.value}|{hitl_abstained}|{hitl_grounded}",
+            abstained=hitl_abstained,
+            expected_abstained=case.expect_abstained,
+        )
+
     graph = build_compliance_graph()
     initial_state = {
         "document_id": f"{case.case_id}-T{trial_index}",
@@ -2845,14 +2927,106 @@ def write_benchmark_results(
     return json_path, md_path
 
 
+def load_extra_jsonl_cases(path: Path) -> list[BenchmarkCase]:
+    """
+    Loads HITL-exported JSONL regression test cases (`GET /api/v1/hitl/export-jsonl`)
+    into executable `BenchmarkCase` objects (`check_kind="hitl_golden"`).
+    """
+    raw_lines = path.read_text(encoding="utf-8").splitlines()
+    loaded: list[BenchmarkCase] = []
+    for idx, raw_line in enumerate(raw_lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        case_id = str(obj.get("case_id") or f"HITL-EXTRA-{idx:03d}")
+        ref_raw = str(obj.get("reference_date") or date.today().isoformat())
+        risk_raw = str(obj.get("expected_overall_risk") or RiskSeverity.HIGH.value)
+        loaded.append(
+            BenchmarkCase(
+                case_id=case_id,
+                title=str(obj.get("title") or f"HITL Regression Case {case_id}"),
+                reference_date=date.fromisoformat(ref_raw),
+                act_filter=obj.get("act_filter"),
+                regimes=list(obj.get("regimes") or ["ACT_709"]),
+                territorial_scope=obj.get("territorial_scope"),
+                expect_abstained=bool(obj.get("expect_abstained", False)),
+                check_kind="hitl_golden",
+                contract_text=str(obj.get("contract_text") or ""),
+                expected_overall_risk=RiskSeverity(risk_raw),
+                expected_active_statute_ids=set(
+                    obj.get("expected_active_statute_ids") or []
+                ),
+                forbidden_statute_ids=set(obj.get("forbidden_statute_ids") or []),
+                expected_clause_ids=set(obj.get("expected_clause_ids") or []),
+                mock_attempts=[],
+            )
+        )
+    return loaded
+
+
 async def run_benchmark_async(
     mode: str = "mock",
     trials: int = 3,
     *,
     output_dir: Path | None = None,
     write_results: bool | None = None,
+    suite: Literal["canonical", "oblique_stress", "all"] = "canonical",
+    include_calibration: bool = False,
+    extra_jsonl: Path | None = None,
 ) -> BenchmarkSummary:
+    if suite == "oblique_stress":
+        cal_only = evaluate_oblique_stress_suite()
+        cal_dict = cal_only.model_dump(mode="json")
+        if mode == "live":
+            fx_rate, fx_source = await default_bnm_fx_provider.get_usd_to_myr_rate()
+        else:
+            fx_rate = settings.usd_to_myr_rate
+            fx_source = "fallback"
+        summary_oblique = BenchmarkSummary(
+            mode=mode,
+            suite=suite,
+            total_cases=cal_only.total_samples,
+            trials_per_case=1,
+            total_runs=cal_only.total_samples,
+            determinism_consistency_pct=100.0,
+            verdict_accuracy_pct=round(cal_only.accuracy * 100.0, 2),
+            verbatim_grounding_pct=100.0,
+            temporal_recall_pct=round(cal_only.recall_at_3 * 100.0, 2),
+            temporal_contamination_pct=cal_only.temporal_contamination_rate,
+            latency_p50_ms=0.0,
+            latency_p95_ms=0.0,
+            mean_tokens_per_audit=0.0,
+            mean_cost_usd=0.0,
+            mean_cost_myr=0.0,
+            total_cost_usd=0.0,
+            total_cost_myr=0.0,
+            cross_trial_verdict_stability_pct=100.0,
+            counterfactual_retry_recovery_rate_pct=100.0,
+            citation_hallucination_rejection_count=0,
+            abstention_precision_pct=round(cal_only.abstention_precision * 100.0, 2),
+            fx_rate_used=fx_rate,
+            fx_rate_source=fx_source,
+            calibration_report=cal_dict,
+            case_results=[],
+        )
+        should_write = (
+            write_results
+            if write_results is not None
+            else (mode == "live" or output_dir is not None)
+        )
+        if should_write:
+            json_path, _ = write_benchmark_results(
+                summary_oblique, output_dir=output_dir
+            )
+            summary_oblique = summary_oblique.model_copy(
+                update={"results_artifact_path": str(json_path)}
+            )
+        return summary_oblique
+
     dataset = get_benchmark_dataset()
+    if extra_jsonl is not None:
+        dataset = dataset + load_extra_jsonl_cases(extra_jsonl)
     safe_trials = max(1, trials)
     if mode == "live":
         fx_rate, fx_source = await default_bnm_fx_provider.get_usd_to_myr_rate()
@@ -2935,8 +3109,13 @@ async def run_benchmark_async(
     mean_myr = round(total_myr / total_runs, 6)
     mean_tokens = round(sum(r.total_tokens for r in all_results) / total_runs, 1)
 
+    cal_payload: dict[str, Any] | None = None
+    if suite == "all" or include_calibration:
+        cal_payload = evaluate_oblique_stress_suite().model_dump(mode="json")
+
     summary = BenchmarkSummary(
         mode=mode,
+        suite=suite,
         total_cases=len(dataset),
         trials_per_case=safe_trials,
         total_runs=total_runs,
@@ -2958,6 +3137,7 @@ async def run_benchmark_async(
         abstention_precision_pct=abstention_precision_pct,
         fx_rate_used=fx_rate,
         fx_rate_source=fx_source,
+        calibration_report=cal_payload,
         case_results=all_results,
     )
 
@@ -3013,6 +3193,11 @@ def format_markdown_report(summary: BenchmarkSummary) -> str:
             f"| `{r.retry_count}` | `{r.total_tokens}` | `${r.cost_usd:.6f}` | `RM {r.cost_myr:.6f}` |"
         )
 
+    if summary.calibration_report is not None:
+        cal_model = CalibrationReport.model_validate(summary.calibration_report)
+        lines.append("")
+        lines.append(format_calibration_markdown(cal_model))
+
     return "\n".join(lines)
 
 
@@ -3033,6 +3218,23 @@ def main() -> None:
         help="Number of repeated trials per golden scenario to measure determinism consistency.",
     )
     parser.add_argument(
+        "--suite",
+        choices=["canonical", "oblique_stress", "all"],
+        default="canonical",
+        help="Evaluation suite to execute: 'canonical' (36-case state machine), 'oblique_stress' (18 adversarial/OCR cases), or 'all'.",
+    )
+    parser.add_argument(
+        "--calibration-report",
+        action="store_true",
+        help="Compute and include ECE / Brier / Recall@K / threshold sweep calibration tables.",
+    )
+    parser.add_argument(
+        "--extra-jsonl",
+        type=Path,
+        default=None,
+        help="Optional JSONL file exported from GET /api/v1/hitl/export-jsonl to append as regression cases.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -3045,6 +3247,9 @@ def main() -> None:
             mode=args.mode,
             trials=args.trials,
             output_dir=args.output_dir,
+            suite=args.suite,
+            include_calibration=args.calibration_report,
+            extra_jsonl=args.extra_jsonl,
         )
     )
     print(format_markdown_report(summary))

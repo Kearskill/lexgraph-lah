@@ -37,6 +37,7 @@ from lexgraph_lah.schemas.domain import (
     PointInTimeResearchResponse,
     ProvisionLineageResponse,
     RetrievalSearchResponse,
+    ScoredSourceSpan,
     SourceSpan,
     StatutoryEdge,
     StatutoryNode,
@@ -1001,6 +1002,54 @@ class TemporalGraphStore:
             abstention_threshold=abstention_threshold,
             territorial_scope=territorial_scope,
         )
+
+        if is_abstained:
+            from lexgraph_lah.retrieval.hybrid_retriever import default_hybrid_retriever
+
+            hybrid_resp = default_hybrid_retriever.explain(
+                query=query,
+                as_of_date=effective_date,
+                territorial_scope=territorial_scope,
+                top_k=5,
+                abstention_threshold=abstention_threshold,
+                candidate_nodes=active_nodes,
+                store=self,
+            )
+            if not hybrid_resp.is_abstained and hybrid_resp.candidates:
+                from lexgraph_lah.graph.reranker import AUTHORITY_LABELS
+
+                hybrid_spans: list[ScoredSourceSpan] = []
+                for cand in hybrid_resp.candidates:
+                    if cand.calibrated_score < abstention_threshold:
+                        continue
+                    node = self._nodes.get(cand.node_id)
+                    if node is None:
+                        continue
+                    for sp in node.source_spans:
+                        hybrid_spans.append(
+                            ScoredSourceSpan(
+                                span=sp,
+                                node_id=node.node_id,
+                                act_name=node.act_name,
+                                authority_tier=node.authority_tier,
+                                authority_label=AUTHORITY_LABELS.get(
+                                    node.authority_tier,
+                                    f"Tier {int(node.authority_tier)}",
+                                ),
+                                territorial_scope=node.territorial_scope,
+                                gazette_ref=node.gazette_ref,
+                                vector_score=cand.calibrated_score,
+                                authority_weight=AUTHORITY_WEIGHTS.get(
+                                    node.authority_tier, 0.70
+                                ),
+                                final_score=cand.calibrated_score,
+                                bilingual_node_id=node.translation_node_id,
+                            )
+                        )
+                if hybrid_spans:
+                    ranked_spans = hybrid_spans
+                    max_score = hybrid_resp.max_score
+                    is_abstained = False
 
         if is_abstained:
             return RetrievalSearchResponse(

@@ -41,6 +41,9 @@ SecurityCategory = Literal[
     "HIDDEN_PDF_LAYER",
     "INDIRECT_PROMPT_INJECTION",
     "STATUTORY_SPOOF_OVERRIDE",
+    "UNICODE_BIDI_OVERRIDE",
+    "ZERO_WIDTH_STEGANOGRAPHY",
+    "UNICODE_HOMOGLYPH_SPOOFING",
 ]
 
 _SEVERITY_ORDER: dict[RiskSeverity, int] = {
@@ -124,6 +127,171 @@ _COMPILED_IPI_RULES = [
 # genuine visible contract obligations residing in the same paragraph.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+")
 
+# Unicode Trojan-Source bidi controls, zero-width steganography, and Cyrillic/Greek
+# confusables in Latin text (expressed purely via ASCII \uXXXX escapes).
+_ZERO_WIDTH_RE = re.compile(r"[\u200B-\u200F\u2060\uFEFF]")
+_BIDI_OVERRIDE_RE = re.compile(r"[\u202A-\u202E\u2066-\u2069]")
+_CONFUSABLE_MAP: dict[str, str] = {
+    "\u0410": "A",
+    "\u0430": "a",
+    "\u0415": "E",
+    "\u0435": "e",
+    "\u041e": "O",
+    "\u043e": "o",
+    "\u0420": "P",
+    "\u0440": "p",
+    "\u0421": "C",
+    "\u0441": "c",
+    "\u0422": "T",
+    "\u0442": "t",
+    "\u0425": "X",
+    "\u0445": "x",
+    "\u0406": "I",
+    "\u0456": "i",
+    "\u041a": "K",
+    "\u043a": "k",
+    "\u041c": "M",
+    "\u043c": "m",
+    "\u041d": "H",
+    "\u043d": "h",
+    "\u0412": "B",
+    "\u0432": "b",
+    "\u0405": "S",
+    "\u0455": "s",
+    "\u0408": "J",
+    "\u0458": "j",
+    "\u0423": "Y",
+    "\u0443": "y",
+    "\u0391": "A",
+    "\u0392": "B",
+    "\u0395": "E",
+    "\u0396": "Z",
+    "\u0397": "H",
+    "\u0399": "I",
+    "\u039a": "K",
+    "\u039c": "M",
+    "\u039d": "N",
+    "\u039f": "O",
+    "\u03a1": "P",
+    "\u03a4": "T",
+    "\u03a5": "Y",
+    "\u03a7": "X",
+    "\u03b1": "a",
+    "\u03b5": "e",
+    "\u03b9": "i",
+    "\u03ba": "k",
+    "\u03bd": "v",
+    "\u03bf": "o",
+    "\u03c1": "p",
+    "\u03c4": "t",
+    "\u03c5": "u",
+    "\u03c7": "x",
+}
+_CONFUSABLE_TRANS = str.maketrans(_CONFUSABLE_MAP)
+_HOMOGLYPH_TRIGGER_RE = re.compile(
+    r"(?i)\b(?:act|akta|pdpa|bnm|rmit|section|seksyen|ignore|override|bypass|compliant|patuh|instructions?)\b"
+)
+
+
+def _format_unicode_excerpt(raw: str, *, strip_controls: bool = True) -> str:
+    cleaned = raw
+    if strip_controls:
+        cleaned = _BIDI_OVERRIDE_RE.sub("[BIDI]", cleaned)
+        cleaned = _ZERO_WIDTH_RE.sub("[ZW]", cleaned)
+    return _safe_excerpt(cleaned)
+
+
+def normalize_and_scan_unicode(
+    text: str,
+    *,
+    source_format: Literal["docx", "pdf", "text"],
+    location: str,
+    findings: list[DocumentSecurityFinding],
+    quarantined: list[str],
+) -> str:
+    """
+    Detects and neutralizes:
+      1. Trojan-Source Bidirectional (Bidi) override controls (`U+202A`..`U+202E`, `U+2066`..`U+2069`)
+      2. Zero-width steganographic joiners/marks (`U+200B`..`U+200F`, `U+2060`, `U+FEFF`)
+      3. Mixed-script Cyrillic/Greek-in-Latin homoglyph spoofing
+    Returns canonical ASCII-skeleton-normalized text for downstream IPI and AST evaluation.
+    """
+    working = text
+
+    if _BIDI_OVERRIDE_RE.search(working):
+        excerpt = _format_unicode_excerpt(working)
+        findings.append(
+            DocumentSecurityFinding(
+                finding_id=f"SEC-{len(findings) + 1:03d}",
+                category="UNICODE_BIDI_OVERRIDE",
+                severity=RiskSeverity.CRITICAL,
+                source_format=source_format,
+                location=location,
+                excerpt=excerpt,
+                rationale=(
+                    "Trojan-Source bidirectional override/isolate control characters detected "
+                    "and stripped to prevent visual text reordering attacks."
+                ),
+                quarantined=True,
+            )
+        )
+        quarantined.append(excerpt)
+        working = _BIDI_OVERRIDE_RE.sub("", working)
+
+    if _ZERO_WIDTH_RE.search(working):
+        excerpt = _format_unicode_excerpt(working)
+        findings.append(
+            DocumentSecurityFinding(
+                finding_id=f"SEC-{len(findings) + 1:03d}",
+                category="ZERO_WIDTH_STEGANOGRAPHY",
+                severity=RiskSeverity.HIGH,
+                source_format=source_format,
+                location=location,
+                excerpt=excerpt,
+                rationale=(
+                    "Zero-width steganographic characters detected and stripped to defeat "
+                    "token-splitting evasion."
+                ),
+                quarantined=True,
+            )
+        )
+        quarantined.append(excerpt)
+        working = _ZERO_WIDTH_RE.sub("", working)
+
+    if any(ch in _CONFUSABLE_MAP for ch in working):
+        despoofed = working.translate(_CONFUSABLE_TRANS)
+        has_ascii_alnum = bool(re.search(r"[A-Za-z0-9]", working))
+        ipi_after_skeleton = _extract_matching_ipi(despoofed)
+        if (
+            has_ascii_alnum
+            or ipi_after_skeleton is not None
+            or _HOMOGLYPH_TRIGGER_RE.search(despoofed)
+        ):
+            excerpt = _safe_excerpt(working)
+            findings.append(
+                DocumentSecurityFinding(
+                    finding_id=f"SEC-{len(findings) + 1:03d}",
+                    category="UNICODE_HOMOGLYPH_SPOOFING",
+                    severity=(
+                        RiskSeverity.CRITICAL
+                        if ipi_after_skeleton is not None
+                        else RiskSeverity.HIGH
+                    ),
+                    source_format=source_format,
+                    location=location,
+                    excerpt=excerpt,
+                    rationale=(
+                        "Mixed-script Cyrillic/Greek homoglyph spoofing detected and normalized "
+                        "to ASCII skeleton prior to IPI and statutory inspection."
+                    ),
+                    quarantined=True,
+                )
+            )
+            quarantined.append(excerpt)
+            working = despoofed
+
+    return working
+
 
 def _safe_excerpt(raw: str, max_len: int = 240) -> str:
     scrubbed = scrub_malaysian_pii(raw).masked_text.strip()
@@ -175,7 +343,13 @@ def _filter_visible_line_for_ipi(
     Removes adversarial IPI / statutory-spoofing spans from a visible line while
     retaining benign (or genuinely auditable non-compliant) contractual clauses.
     """
-    working = line
+    working = normalize_and_scan_unicode(
+        line,
+        source_format=source_format,
+        location=location,
+        findings=findings,
+        quarantined=quarantined,
+    )
     finding_idx_base = len(findings) + 1
 
     # Step 1: Strip bracketed system tags inline first (e.g., "[SYSTEM: ...]")
@@ -504,6 +678,13 @@ def _inspect_docx_security(
                     ).strip()
                     if not c_text:
                         continue
+                    c_text = normalize_and_scan_unicode(
+                        c_text,
+                        source_format="docx",
+                        location=f"{name}:comment[{c_idx}]",
+                        findings=findings,
+                        quarantined=quarantined,
+                    )
                     ipi_hit = _extract_matching_ipi(c_text)
                     hidden_reason = next(
                         (
@@ -574,6 +755,14 @@ def _inspect_docx_security(
                     if str(v).strip()
                 ]
                 joined_ext = " ".join(ext_texts + ext_attr_vals + xml_comments).strip()
+                if joined_ext:
+                    joined_ext = normalize_and_scan_unicode(
+                        joined_ext,
+                        source_format="docx",
+                        location=name,
+                        findings=findings,
+                        quarantined=quarantined,
+                    )
                 tag_signal = any(
                     kw in elem.tag.lower()
                     for elem in part_root.iter()
@@ -617,6 +806,14 @@ def _inspect_docx_security(
                     if elem.text and elem.text.strip()
                 ]
                 joined_custom = " ".join(custom_texts).strip()
+                if joined_custom:
+                    joined_custom = normalize_and_scan_unicode(
+                        joined_custom,
+                        source_format="docx",
+                        location=name,
+                        findings=findings,
+                        quarantined=quarantined,
+                    )
                 tag_signal = any(
                     kw in elem.tag.lower()
                     for elem in part_root.iter()
@@ -759,6 +956,24 @@ def _decode_pdf_literal(raw_lit: str) -> str:
     )
 
 
+def _decode_pdf_hex(raw_hex: str) -> str:
+    cleaned = re.sub(r"\s+", "", raw_hex)
+    if len(cleaned) % 2 == 1:
+        cleaned += "0"
+    try:
+        raw_bytes = bytes.fromhex(cleaned)
+    except ValueError:
+        return ""
+    if raw_bytes.startswith(b"\xfe\xff"):
+        return raw_bytes[2:].decode("utf-16-be", errors="ignore")
+    if raw_bytes.startswith(b"\xff\xfe"):
+        return raw_bytes[2:].decode("utf-16-le", errors="ignore")
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw_bytes.decode("latin-1", errors="ignore")
+
+
 _PDF_OP_TOKEN_RE = re.compile(
     r"(?P<bt>\bBT\b)|"
     r"(?P<et>\bET\b)|"
@@ -771,6 +986,7 @@ _PDF_OP_TOKEN_RE = re.compile(
     r"(?P<rgb>(?P<r>[+-]?\d*\.?\d+)\s+(?P<g>[+-]?\d*\.?\d+)\s+(?P<b>[+-]?\d*\.?\d+)\s+rg\b)|"
     r"(?P<gray>(?P<gr>[+-]?\d*\.?\d+)\s+g\b)|"
     r"(?P<tj_arr>\[(?P<arr_body>.*?)\]\s*TJ)|"
+    r"(?P<tj_hex><(?P<hex>[0-9A-Fa-f\s]+)>\s*Tj)|"
     r"(?P<tj>\((?P<lit>(?:\\.|[^()\\])*)\)\s*Tj)",
     re.DOTALL,
 )
@@ -793,7 +1009,10 @@ def _inspect_pdf_security(
 
     had_pdf_text_ops = False
     for s_idx, stream_bytes in enumerate(streams, start=1):
-        text_str = stream_bytes.decode("latin-1", errors="ignore")
+        try:
+            text_str = stream_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            text_str = stream_bytes.decode("latin-1", errors="ignore")
         state_stack: list[tuple[int, float, bool, float, float, bool]] = []
         render_mode = 0
         font_size = 12.0
@@ -874,17 +1093,23 @@ def _inspect_pdf_security(
                     is_near_white = gr >= 0.94
                 except ValueError:
                     pass
-            elif m.group("tj") or m.group("tj_arr"):
+            elif m.group("tj") or m.group("tj_hex") or m.group("tj_arr"):
                 had_pdf_text_ops = True
                 if m.group("tj"):
                     piece = _decode_pdf_literal(m.group("lit"))
+                elif m.group("tj_hex"):
+                    piece = _decode_pdf_hex(m.group("hex"))
                 else:
-                    piece = "".join(
-                        _decode_pdf_literal(lit_m.group(1))
-                        for lit_m in re.finditer(
-                            r"\(((?:\\.|[^()\\])*)\)", m.group("arr_body")
-                        )
-                    )
+                    parts: list[str] = []
+                    for item_m in re.finditer(
+                        r"\((?P<l>(?:\\.|[^()\\])*)\)|<(?P<h>[0-9A-Fa-f\s]+)>",
+                        m.group("arr_body"),
+                    ):
+                        if item_m.group("l") is not None:
+                            parts.append(_decode_pdf_literal(item_m.group("l")))
+                        elif item_m.group("h") is not None:
+                            parts.append(_decode_pdf_hex(item_m.group("h")))
+                    piece = "".join(parts)
                 if not piece.strip():
                     continue
 
@@ -998,16 +1223,9 @@ def _strip_hidden_runs_from_elem(elem: ET.Element, parent_hidden: bool = False) 
             if is_hidden:
                 elem.remove(child)
             else:
-                # Neutralize inline IPI tokens inside visible runs if present
+                # Neutralize inline IPI tokens and Unicode steganography/homoglyphs in visible runs
                 for t_elem in child.iter():
-                    if (
-                        t_elem.tag in {f"{_W_NS}t", f"{_W_NS}delText"}
-                        and t_elem.text
-                        and (
-                            _extract_matching_ipi(t_elem.text) is not None
-                            or _COMPILED_IPI_RULES[0][0].search(t_elem.text)
-                        )
-                    ):
+                    if t_elem.tag in {f"{_W_NS}t", f"{_W_NS}delText"} and t_elem.text:
                         tmp_findings: list[DocumentSecurityFinding] = []
                         tmp_quar: list[str] = []
                         cleaned_txt = _filter_visible_line_for_ipi(
@@ -1017,7 +1235,8 @@ def _strip_hidden_runs_from_elem(elem: ET.Element, parent_hidden: bool = False) 
                             findings=tmp_findings,
                             quarantined=tmp_quar,
                         )
-                        t_elem.text = cleaned_txt
+                        if tmp_findings or cleaned_txt != t_elem.text:
+                            t_elem.text = cleaned_txt
         else:
             _strip_hidden_runs_from_elem(child, parent_hidden=parent_hidden)
 

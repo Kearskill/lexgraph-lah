@@ -2,6 +2,26 @@
 
 All notable changes to `lexgraph-lah` are documented in this file using [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions.
 
+## [0.4.0] - 2026-11-23
+
+### Added
+- **Bilingual Hybrid Retriever (`src/lexgraph_lah/retrieval/hybrid_retriever.py`, `agents/graph.py`, `temporal_store.py`, `routes.py`)**:
+  - Added 6-field bilingual EN/BM field-weighted `BM25FIndex` (`title`, `section`, `text_en`, `text_bm`, `obligations`, `synonyms`) with Bahasa Melayu morphological affix/circumfix stemming (`stem_bm_token`), OCR noise normalization (`normalize_ocr_text`), and euphemistic legal concept expansion (`Act 709 s. 129`, `Act 873`, `MOSTI AIGE`, `Act 53`, `Act 378`, `BNM Outsourcing`).
+  - Added `EmbeddingProvider` protocol with zero-network `DeterministicSubwordEmbedder` (`blake2b` subword + concept hashing) and configurable `LiveHTTPEmbeddingAdapter` (OpenAI / Gemini embeddings), fused with 1-hop graph neighborhood expansion via Reciprocal Rank Fusion (`RRF`, `k=60`) after strict pre-scoring bi-temporal and 5-tier territorial filtering.
+  - Integrated hybrid retrieval fallback into `deontic_temporal_retriever_node` / `search_with_abstention` and exposed `POST /api/v1/retrieval/explain` (`viewer`/`auditor`/`admin`).
+- **Statistical Calibration & Adversarial Oblique Stress Suite (`evals/calibration.py`, `evals/run_benchmark.py`, `docs/EVALUATION_AND_LIMITATIONS.md`)**:
+  - Added 18-scenario `oblique_stress` suite spanning euphemistic EN/BM/Manglish clauses, OCR noise, hidden Malaysian nexus, and near-threshold foreign governing-law cases.
+  - Computed `Recall@1/3/5`, `MRR`, Macro/Micro P/R/F1, `Abstention Precision`, `False-Confidence Rate`, `0.50..0.95` threshold sweep, `10-bin ECE`, and `Brier Score` via `--suite canonical|oblique_stress|all` and `--calibration-report`.
+- **Crash-Recoverable Lease-Based Portfolio Queue, `Idempotency-Key` & `DLQ` (`portfolio_scanner.py`, `portfolio/worker.py`, `routes.py`, `auth.py`)**:
+  - Extended `InMemoryPortfolioJobStore`, `SQLitePortfolioJobStore`, and `PostgresPortfolioJobStore` with tenant-scoped `Idempotency-Key` deduplication (`202` / `200` / `409 Conflict`), atomic worker leases/heartbeats, per-contract crash checkpoints (zero duplicate re-evaluation on mid-batch recovery), stale-lease reaping, and `DEAD_LETTER` transition after `max_attempts`.
+  - Added standalone worker CLI `python -m lexgraph_lah.portfolio.worker --once | --poll-interval 2.0`, `GET /api/v1/portfolio/dlq` (`admin`), and `POST /api/v1/portfolio/jobs/{job_id}/requeue` (`admin`/`auditor`).
+- **HITL Counsel Adjudication Flywheel & 1-Click Web UI Workbench (`src/lexgraph_lah/hitl/review_store.py`, `mcp/tools.py`, `routes.py`)**:
+  - Added `POST /api/v1/hitl/reviews` (`auditor`/`admin`), `GET /api/v1/hitl/export-jsonl` (`admin`), MCP tool #14 `record_hitl_review`, and `evals/run_benchmark.py --extra-jsonl` ingestion with mandatory Malaysian PII scrubbing and Ed25519 attestation signing.
+  - Upgraded `/demo` SPA with 4 1-click "Load Sample Scenario" presets, 2026 fiscal/AIGE regime chips, and per-finding interactive Accept/Modify/Reject/Escalate HITL controls.
+- **Unicode Homoglyph/Bidi Firewall Hardening, Staff ADRs & README Top-Fold (`doc_firewall.py`, `docs/ARCHITECTURE_DECISIONS.md`, `README.md`)**:
+  - Added `UNICODE_BIDI_OVERRIDE`, `ZERO_WIDTH_STEGANOGRAPHY`, and `UNICODE_HOMOGLYPH_SPOOFING` detection and canonical normalization across plain text, PDF text/hex streams, and OOXML body/tables/comments/customXml/footnotes.
+  - Added `docs/ARCHITECTURE_DECISIONS.md` (ADR-001..006), `docs/EVALUATION_AND_LIMITATIONS.md`, and 60-Second Executive Architecture Summary in `README.md`.
+
 ## [0.3.0] - 2026-11-23
 
 ### Added

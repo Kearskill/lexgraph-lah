@@ -83,6 +83,20 @@ class Settings(BaseSettings):
         "deterministic_fallback"
     )
 
+    # Phase 6: Hybrid retrieval embeddings, lease-based portfolio worker & HITL ledger
+    embedding_provider: str = "subword"
+    embedding_api_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = "text-embedding-004"
+    embedding_dim: int = 256
+    embedding_timeout_seconds: float = 10.0
+
+    portfolio_worker_mode: Literal["embedded", "external"] = "embedded"
+    portfolio_job_lease_seconds: float = 60.0
+    portfolio_job_max_attempts: int = 3
+
+    hitl_db_path: str = ":memory:"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

@@ -996,6 +996,7 @@ def _compute_text_relevance(
     active_statutes: list[StatutoryNode],
     threshold: float,
     territorial_scope: str | None,
+    as_of_date: date | None = None,
 ) -> tuple[bool, float]:
     chunks = [
         c.strip()
@@ -1029,6 +1030,20 @@ def _compute_text_relevance(
     is_abstained = (
         (not any_passed) and (best_score < threshold) and (not has_legal_anchor)
     )
+    if best_score < threshold and active_statutes:
+        from lexgraph_lah.retrieval.hybrid_retriever import default_hybrid_retriever
+
+        hybrid_resp = default_hybrid_retriever.explain(
+            query=safe_text,
+            as_of_date=as_of_date or date.today(),
+            territorial_scope=territorial_scope,
+            top_k=5,
+            abstention_threshold=threshold,
+            candidate_nodes=active_statutes,
+        )
+        best_score = max(best_score, hybrid_resp.max_score)
+        if not hybrid_resp.is_abstained:
+            is_abstained = False
     return is_abstained, round(best_score, 4)
 
 
@@ -1079,6 +1094,7 @@ async def deontic_temporal_retriever_node(state: AgentState) -> dict[str, Any]:
         active_statutes=active_statutes,
         threshold=threshold,
         territorial_scope=territorial_scope,
+        as_of_date=as_of_date,
     )
 
     resolved_regimes = normalize_regimes(regimes) if regimes else ["ACT_709"]

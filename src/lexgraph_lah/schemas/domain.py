@@ -808,6 +808,9 @@ class DocumentSecurityFinding(BaseModel):
         "INDIRECT_PROMPT_INJECTION",
         "STATUTORY_SPOOF_OVERRIDE",
         "ZIP_BOMB_OR_MALFORMED_ARCHIVE",
+        "UNICODE_BIDI_OVERRIDE",
+        "ZERO_WIDTH_STEGANOGRAPHY",
+        "UNICODE_HOMOGLYPH_SPOOFING",
     ]
     severity: RiskSeverity
     source_format: Literal["docx", "pdf", "text"]
@@ -1431,7 +1434,7 @@ class WebhookDeliveryStatus(BaseModel):
 class PortfolioJobStatusResponse(BaseModel):
     job_id: str
     tenant_id: str = "default-tenant"
-    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED"]
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "DEAD_LETTER"]
     total_contracts: int = 0
     processed_contracts: int = 0
     max_workers: int = 4
@@ -1444,6 +1447,21 @@ class PortfolioJobStatusResponse(BaseModel):
     cache_hits: int = 0
     cache_misses: int = 0
     result: PortfolioBlastRadiusResponse | None = None
+    idempotency_key: str | None = None
+    payload_fingerprint: str | None = None
+    worker_id: str | None = None
+    lease_expires_at: str | None = None
+    heartbeat_at: str | None = None
+    attempt_count: int = 0
+    max_attempts: int = 3
+    last_error_code: str | None = None
+    requeued_at: str | None = None
+
+
+class PortfolioDLQListResponse(BaseModel):
+    tenant_id: str
+    total: int = 0
+    jobs: list[PortfolioJobStatusResponse] = Field(default_factory=list)
 
 
 class AttestationLedgerRecord(BaseModel):
@@ -1737,3 +1755,101 @@ class TenantFinOpsUsageResponse(BaseModel):
     )
     fx_rate_used: float = 4.40
     fx_rate_source: str = "fallback"
+
+
+# =============================================================================
+# Phase 6: Bilingual Hybrid Retrieval Explainability & HITL Counsel Ledger
+# =============================================================================
+
+
+class RetrievalExplainRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    as_of_date: date | None = None
+    territorial_scope: str | None = None
+    top_k: int = Field(default=5, ge=1, le=25)
+    abstention_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    regimes: list[str] | None = None
+
+
+class RetrievalExplainCandidate(BaseModel):
+    node_id: str
+    act_name: str
+    act_number: str
+    section_code: str
+    language: str
+    bm25_score: float
+    vector_score: float
+    graph_boost_score: float = 0.0
+    rrf_score: float
+    calibrated_score: float
+    temporal_valid: bool = True
+    territorial_tier: Literal["Sabah", "Sarawak", "Labuan", "Peninsular", "Federal"]
+    authority_tier: int
+    matched_fields: list[str] = Field(default_factory=list)
+    source_span_ids: list[str] = Field(default_factory=list)
+
+
+class RetrievalExplainResponse(BaseModel):
+    query: str
+    detected_language: str
+    as_of_date: date
+    territorial_scope: str | None = None
+    abstention_threshold: float
+    is_abstained: bool
+    abstention_reason: str | None = None
+    max_score: float
+    embedding_provider: str
+    rrf_k: int = 60
+    candidates: list[RetrievalExplainCandidate] = Field(default_factory=list)
+
+
+HITLDecision = Literal[
+    "ACCEPT_REDLINE",
+    "MODIFY_REDLINE",
+    "REJECT_FALSE_POSITIVE",
+    "ESCALATE_TO_COUNSEL",
+]
+
+
+class HITLReviewRequest(BaseModel):
+    audit_session_id: str | None = None
+    manifest_id: str | None = None
+    document_id: str = Field(default="HITL-DOC-001", min_length=1)
+    clause_id: str = Field(..., min_length=1)
+    decision: HITLDecision
+    original_clause_text: str = Field(..., min_length=1)
+    recommended_redline: str | None = None
+    counsel_modified_text: str | None = None
+    rationale: str = Field(..., min_length=1)
+    statutory_node_ids: list[str] = Field(default_factory=list)
+    regimes: list[str] = Field(default_factory=lambda: ["ACT_709"])
+    as_of_date: date | None = None
+    territorial_scope: str = TerritorialScope.ALL_MALAYSIA.value
+    expected_overall_risk: RiskSeverity | None = None
+    reviewer_id: str | None = None
+
+
+class HITLReviewRecord(BaseModel):
+    review_id: str
+    tenant_id: str = "default-tenant"
+    audit_session_id: str | None = None
+    manifest_id: str | None = None
+    document_id: str
+    clause_id: str
+    decision: HITLDecision
+    scrubbed_clause_text: str
+    scrubbed_recommended_redline: str | None = None
+    scrubbed_counsel_modified_text: str | None = None
+    scrubbed_rationale: str
+    pii_redaction_count: int = 0
+    statutory_node_ids: list[str] = Field(default_factory=list)
+    regimes: list[str] = Field(default_factory=list)
+    as_of_date: date
+    territorial_scope: str
+    expected_overall_risk: RiskSeverity
+    reviewer_id: str
+    attestation_manifest_id: str
+    attestation_signature_b64: str
+    attestation_chain_hash: str
+    signing_key_id: str
+    recorded_at: str

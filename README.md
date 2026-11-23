@@ -8,6 +8,20 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-1C3C3C?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
+## 60-Second Executive Architecture Summary
+
+- **The Problem:** Auditing Malaysian commercial contracts across overlapping 2025–2026 statutes (`Act 709` PDPA A1727, `Act 854` Cyber Security, `BNM RMiT`, `Act 378` Stamp SDSAS, `Act 53` MyInvois `>RM10k`, `Act 873` Consumer Credit, `MOSTI AIGE`) breaks flat vector RAG: pre/post-amendment provisions leak across dates, stochastic LLMs fail numeric deadline arithmetic (`1h` vs `6h` vs `72h` vs `7d`), and hidden OOXML/PDF prompt injections or Unicode bidi overrides bypass naive parsers.
+- **Neuro-Symbolic Unit Economics:** Deterministic $O(V + E)$ symbolic engines handle document firewalling, PII scrubbing (`<50ms`, AES-256-GCM AAD vault), Contract AST trap detection, deontic envelope solving, OOXML track-changes diffing, and SLA cascades at **`$0.00 USD` (`0` LLM tokens)**, keeping full multi-node benchmark audits at **`$0.000120 USD` (`RM 0.000528 MYR`)** mean spend with `ClauseASTCache` hits dropping repeat clauses to **`$0.00`**.
+- **Zero Temporal Leakage & Calibrated Retrieval:** Bi-temporal (`as_of_date`) and 5-tier territorial (`Sabah`, `Sarawak`, `Labuan`, `Peninsular`, `Federal`) filters execute **before** bilingual `BM25F + Subword/Dense + RRF (k=60)` retrieval (`0.00%` temporal contamination, `0.78` calibrated abstention gate).
+- **3-Line Zero-Config Quickstart:**
+  ```bash
+  uv sync --all-extras --dev --frozen && uv run lexgraph-lah
+  # Open http://localhost:8000/demo -> click any 1-click "Load Sample Scenario" preset
+  ```
+- **Deep Dives:** [Staff Architecture Decisions (ADR-001..006)](./docs/ARCHITECTURE_DECISIONS.md) &bull; [Evaluation, Calibration (`ECE`/Brier/`Recall@K`) & Limitations](./docs/EVALUATION_AND_LIMITATIONS.md)
+
+---
+
 **`lexgraph-lah`** is a deterministic multi-agent regulatory compliance, bi-temporal statutory redline diffing, Act 388 bilingual divergence auditing, contract AST trap-detection, and Track-Changes `.docx` redline compiler engineered for overlapping 2025–2026 Malaysian statutory regimes:
 
 - **PDPA 2010 [Act 709], PDPA (Amendment) Act 2024 [Act A1727] & 2025 PDPD Guidelines:** All three phased commencement tranches via `P.U. (B) 522/2024` (`2025-01-01`, `2025-04-01`, `2025-06-01`), including direct Data Processor s. 9 obligations (`RM1M / 3y`), biometric sensitive personal data, s. 129 adequacy/CBPDT Guidelines `No. 03/2025`, s. 43A data portability, mandatory DPO (`No. 01/2025`), **72-hour Commissioner breach notice**, **7-day affected data-subject notice**, and **2-year breach register** (`No. 02/2025`).
@@ -92,6 +106,14 @@ uv run python -m lexgraph_lah.attestation.verify_cli \
   --pubkey path/to/public_key.pem
 ```
 
+### Crash-Recoverable Portfolio Queue Worker CLI
+
+```bash
+uv run python -m lexgraph_lah.portfolio.worker --once
+# Or run continuously with stale-lease reaping & per-contract checkpoints:
+uv run python -m lexgraph_lah.portfolio.worker --poll-interval 2.0
+```
+
 ---
 
 ## API Contracts & MCP Tool Catalog
@@ -113,15 +135,21 @@ uv run python -m lexgraph_lah.attestation.verify_cli \
 | `/api/v1/compliance/scan` | `POST` | Deterministic pre-flight PII-scrubbed Act 709 gap scanner with Act 388 warnings. |
 | `/api/v1/research/point-in-time` | `POST` | 4-stage bilingual point-in-time research with 7-tier court/statute breakdown. |
 | `/api/v1/portfolio/blast-radius` | `POST` | Zero-token synchronous Gazette Blast-Radius Scanner (`<= 50` contracts). |
-| `/api/v1/portfolio/jobs` | `POST` | Submits async portfolio job (`202 Accepted`) for `500–2,000+` contracts (JSON/zip) with durable store & SSRF-guarded webhook support. |
-| `/api/v1/portfolio/jobs/{job_id}` | `GET` | Polls tenant-scoped async portfolio job progress, `cache_hits`/`cache_misses`, and webhook delivery telemetry. |
+| `/api/v1/portfolio/jobs` | `POST` | Submits async portfolio job (`202` new / `200` `Idempotency-Key` replay / `409` conflict) with durable leases, checkpoints, & webhooks. |
+| `/api/v1/portfolio/jobs/{job_id}` | `GET` | Polls tenant-scoped async portfolio job progress, lease metadata, `cache_hits`/`cache_misses`, and webhook telemetry. |
+| `/api/v1/portfolio/dlq` | `GET` | Lists tenant-scoped `DEAD_LETTER` portfolio jobs (`admin` role only). |
+| `/api/v1/portfolio/jobs/{job_id}/requeue` | `POST` | Requeues a `DEAD_LETTER` or `FAILED` portfolio job (`admin`/`auditor`). |
+| `/api/v1/retrieval/search` | `GET` | Bilingual statutory span search with 5-tier authority reranking, territorial scope filter, and `0.78` abstention gate. |
+| `/api/v1/retrieval/explain` | `POST` | Bilingual hybrid `BM25F + Subword/Dense + RRF (k=60)` retrieval explainability (`viewer`/`auditor`/`admin`). |
+| `/api/v1/hitl/reviews` | `POST` | Records PII-scrubbed counsel HITL adjudication (`ACCEPT_REDLINE`, `MODIFY_REDLINE`, `REJECT_FALSE_POSITIVE`, `ESCALATE_TO_COUNSEL`) signed in Ed25519 ledger (`auditor`/`admin`). |
+| `/api/v1/hitl/export-jsonl` | `GET` | Exports tenant-scoped PII-free counsel adjudications as deterministic JSONL golden regression cases (`admin`). |
 | `/api/v1/attestation/public-key` | `GET` | Returns Ed25519 PEM/raw public key and SHA-256 fingerprint for offline attestation verification. |
 | `/api/v1/attestation/{manifest_id}` | `GET` | Retrieves an immutable hash-chained & Ed25519-signed `AttestationLedgerRecord`. |
 | `/api/v1/attestation/{manifest_id}/bundle` | `GET` | Streams a deterministic air-gapped `.lexpack.zip` evidence bundle (`include_docx=true` supports tenant-isolated DOCX attachment). |
 | `/api/v1/attestation/verify` | `POST` | Cryptographically verifies digest, `as_of_date`, citations, SHA-256 chain, and Ed25519 signature. |
 | `/api/v1/finops/tenant-usage` | `GET` | Returns tenant-scoped cumulative USD/MYR FinOps telemetry, cache hits, fallback runs, and budget guardrail status. |
-| `/api/v1/security/scan` | `POST` | Zero-token OOXML `.docx` / `.pdf` / raw-text IPI, `comments.xml`/`footnotes.xml`/`endnotes.xml`, and zip-bomb firewall scanner. |
-| `/mcp` | `POST` | Streamable HTTP JSON-RPC 2.0 MCP server (`13` tools including `audit_counterparty_docx_redlines` & `compile_incident_playbook`; stdio via `python -m lexgraph_lah.mcp.jsonrpc --stdio`). |
+| `/api/v1/security/scan` | `POST` | Zero-token OOXML `.docx` / `.pdf` / raw-text IPI, Unicode bidi/zero-width/homoglyph, `comments.xml`/`footnotes.xml`, and zip-bomb firewall scanner. |
+| `/mcp` | `POST` | Streamable HTTP JSON-RPC 2.0 MCP server (`14` tools including `record_hitl_review`; stdio via `python -m lexgraph_lah.mcp.jsonrpc --stdio`). |
 
 ---
 
@@ -132,14 +160,18 @@ uv run python -m lexgraph_lah.attestation.verify_cli \
 ```bash
 uv run ruff check src tests evals
 uv run ruff format --check src tests evals
-uv run mypy src
+uv run mypy src tests evals
 uv run pytest -q
 ```
 
-### 2. Run the 36-Scenario Determinism & FinOps Benchmark
+### 2. Run the 36-Scenario Determinism, Oblique Stress & Calibration Benchmarks
 
 ```bash
 uv run python -m evals.run_benchmark --mode mock --trials 3
+# Oblique Stress + Calibration (ECE, Brier, Recall@K, MRR, 0.50..0.95 Sweep):
+uv run python -m evals.run_benchmark --suite all --mode mock --trials 3 --calibration-report
+# Include HITL-exported golden JSONL regression cases:
+uv run python -m evals.run_benchmark --suite all --mode mock --trials 3 --extra-jsonl hitl_golden.jsonl
 # Live Gemini evaluation (writes JSON & Markdown artifacts to evals/results/):
 uv run python -m evals.run_benchmark --mode live --trials 3
 ```
