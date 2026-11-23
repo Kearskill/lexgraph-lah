@@ -2435,7 +2435,7 @@ async def _run_single_trial(
         isolated_ledger = AttestationLedger(":memory:")
         isolated_pii = EncryptedPIISessionStore(backend="memory")
         with measure_latency_ms() as elapsed_holder:
-            diff_res = analyze_counterparty_docx_redlines(
+            redline_res = analyze_counterparty_docx_redlines(
                 document_id=case.case_id,
                 docx_bytes=buf.getvalue(),
                 filename="counterparty.docx",
@@ -2447,14 +2447,14 @@ async def _run_single_trial(
                 ledger=isolated_ledger,
                 pii_store=isolated_pii,
             )
-        classes = [d.classification for d in diff_res.clause_deltas]
+        classes = [d.classification for d in redline_res.clause_deltas]
         ok = (
-            diff_res.regression_count >= 1
+            redline_res.regression_count >= 1
             and "DEONTIC_REGRESSION" in classes
-            and diff_res.security_report is not None
-            and diff_res.security_report.blocked_injection_count >= 1
-            and diff_res.attestation_manifest is not None
-            and diff_res.telemetry.total_tokens == 0
+            and redline_res.security_report is not None
+            and redline_res.security_report.blocked_injection_count >= 1
+            and redline_res.attestation_manifest is not None
+            and redline_res.telemetry.total_tokens == 0
         )
         active_nodes = store.query_point_in_time(as_of_date=case.reference_date)
         ctx_recall, ctx_contamination = evaluate_temporal_context(
@@ -2485,7 +2485,7 @@ async def _run_single_trial(
             cost_usd=0.0,
             cost_myr=0.0,
             latency_ms=telemetry.latency_ms,
-            signature=f"DOCX_REDLINE|{sorted(classes)}|{diff_res.regression_count}|{ok}",
+            signature=f"DOCX_REDLINE|{sorted(classes)}|{redline_res.regression_count}|{ok}",
         )
 
     if case.check_kind == "sla_cascade_playbook":
