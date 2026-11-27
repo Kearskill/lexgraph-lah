@@ -1,0 +1,138 @@
+/* ==========================================================================
+   lexgraph-lah Institutional Legal Workbench — Authoritative Design Tokens
+   Strict 4pt/8pt spacing, 6-step type ramp, Light Paper + Dark Slate themes.
+   Zero purple, zero neon, two radii only (--radius-sm, --radius-md).
+   ========================================================================== */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Fonts */
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-legal: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Strict 6-step type ramp */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+
+  /* Locked weights */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Strict 4pt / 8pt spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* Shell layout dimensions */
+  --topbar-h: 48px;
+  --footer-h: 28px;
+  --rail-w: 220px;
+  --inspector-w: 380px;
+  --control-h: 32px;
+
+  /* Only TWO standardized border radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+
+  /* Surfaces & Ink (Light Legal Paper) */
+  --bg-canvas: #F8F9FA;
+  --surface-elevated: #FFFFFF;
+  --surface-subtle: #F1F5F9;
+  --surface-hover: #E9EEF5;
+  --ink-primary: #0F172A;
+  --ink-secondary: #475569;
+  --ink-muted: #64748B;
+  --border-subtle: #E2E8F0;
+  --border-strong: #CBD5E1;
+
+  /* Single Brand Accent: Deep Judicial Navy */
+  --accent: #0F4C81;
+  --accent-hover: #0B3A63;
+  --accent-tint: #EFF6FC;
+  --accent-border: #B8D4EE;
+  --accent-ink: #FFFFFF;
+  --focus-ring: 0 0 0 2px rgba(15, 76, 129, 0.25);
+
+  /* Semantic Deontic Status Tokens */
+  --status-compliant-ink: #166534;
+  --status-compliant-bg: #F0FDF4;
+  --status-compliant-border: #BBF7D0;
+
+  --status-breach-ink: #991B1B;
+  --status-breach-bg: #FEF2F2;
+  --status-breach-border: #FECACA;
+
+  --status-warning-ink: #92400E;
+  --status-warning-bg: #FFFBEB;
+  --status-warning-border: #FDE68A;
+
+  --status-voluntary-ink: #1E40AF;
+  --status-voluntary-bg: #EFF6FF;
+  --status-voluntary-border: #BFDBFE;
+
+  --status-neutral-ink: #334155;
+  --status-neutral-bg: #F1F5F9;
+  --status-neutral-border: #CBD5E1;
+
+  /* Elevation (strictly overlay drawers/modals/dropdowns only) */
+  --shadow-none: none;
+  --shadow-overlay: 0 12px 28px -6px rgba(15, 23, 42, 0.14), 0 4px 10px -2px rgba(15, 23, 42, 0.08);
+
+  /* Motion */
+  --transition-fast: 120ms ease-out;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-canvas: #0B0F17;
+  --surface-elevated: #111827;
+  --surface-subtle: #182132;
+  --surface-hover: #1E293B;
+  --ink-primary: #F1F5F9;
+  --ink-secondary: #94A3B8;
+  --ink-muted: #64748B;
+  --border-subtle: #1E293B;
+  --border-strong: #334155;
+
+  --accent: #3B82C4;
+  --accent-hover: #4F94D4;
+  --accent-tint: rgba(59, 130, 196, 0.16);
+  --accent-border: rgba(59, 130, 196, 0.40);
+  --accent-ink: #FFFFFF;
+  --focus-ring: 0 0 0 2px rgba(59, 130, 196, 0.35);
+
+  --status-compliant-ink: #86EFAC;
+  --status-compliant-bg: rgba(22, 101, 52, 0.22);
+  --status-compliant-border: rgba(134, 239, 172, 0.35);
+
+  --status-breach-ink: #FCA5A5;
+  --status-breach-bg: rgba(153, 27, 27, 0.24);
+  --status-breach-border: rgba(252, 165, 165, 0.35);
+
+  --status-warning-ink: #FCD34D;
+  --status-warning-bg: rgba(146, 64, 14, 0.24);
+  --status-warning-border: rgba(252, 211, 77, 0.35);
+
+  --status-voluntary-ink: #93C5FD;
+  --status-voluntary-bg: rgba(30, 64, 175, 0.24);
+  --status-voluntary-border: rgba(147, 197, 253, 0.35);
+
+  --status-neutral-ink: #CBD5E1;
+  --status-neutral-bg: #1E293B;
+  --status-neutral-border: #334155;
+
+  --shadow-overlay: 0 12px 28px -6px rgba(0, 0, 0, 0.45), 0 4px 10px -2px rgba(0, 0, 0, 0.3);
+}
