@@ -19,6 +19,12 @@ let LAST_MODE = 'audit';
 let LAST_DRAWER_NODE_ID = 'PDPA-2010-SEC-9-V2';
 let LAST_FINDINGS_BY_IDX = [];
 let LAST_NEG_DELTAS = [];
+let LAST_NEG_SESSION_ID = null;
+let LAST_NEG_DOCX_BASE64 = null;
+let NEG_DISPOSITIONS = {};
+let LAST_INSPECTOR_TAB = 'bilingual';
+let LAST_RETRIEVAL_EXPLAIN = null;
+let TOAST_TIMER = null;
 let ACTIVE_CLAUSE_CONTEXT = null;
 
 let DUAL_LAYER_MODE = false;
@@ -198,11 +204,15 @@ function statusBadgeClass(value) {
     v === 'BREACH' ||
     v === 'DEONTIC_REGRESSION' ||
     v === 'SLA_CASCADE_BREACH' ||
+    v === 'DEAD_LETTER' ||
     v === 'TAMPERED' ||
     v === 'PROHIBITION' ||
     v === 'TRAP'
   ) {
     return 'status-badge status-breach';
+  }
+  if (v === 'PRE_COMMENCEMENT_ADVISORY') {
+    return 'status-badge status-advisory';
   }
   if (
     v === 'MEDIUM' ||
@@ -220,6 +230,24 @@ function statusBadgeClass(value) {
     return 'status-badge status-accent';
   }
   return 'status-badge status-neutral';
+}
+
+function showWorkbenchToast(title, detail, variant) {
+  const el = document.getElementById('workbenchToast');
+  if (!el) return;
+  if (TOAST_TIMER) {
+    clearTimeout(TOAST_TIMER);
+    TOAST_TIMER = null;
+  }
+  el.className = `workbench-toast ${variant === 'breach' ? 'is-breach' : 'is-compliant'}`;
+  el.innerHTML = `
+    <div style="font-size:var(--text-xs);font-weight:var(--weight-semibold);">${escapeHtml(title)}</div>
+    <div class="mono caption-text">${escapeHtml(detail)}</div>
+  `;
+  el.classList.remove('hidden');
+  TOAST_TIMER = setTimeout(() => {
+    el.classList.add('hidden');
+  }, 5500);
 }
 
 function riskBadgeClasses(risk) {
@@ -298,6 +326,8 @@ function switchView(viewName) {
     }
   } else if (target === 'portfolio') {
     refreshPortfolioAndTelemetry();
+    loadPortfolioDlq();
+    loadTenantPlaybook();
     if (!WORKSPACE_LOADED.portfolio) {
       WORKSPACE_LOADED.portfolio = true;
       runPortfolioBlastRadius();
@@ -504,7 +534,7 @@ async function toggleRegime(regime) {
 }
 
 async function applyAllDeonticRegimesPreset() {
-  CURRENT_REGIMES = ['ACT_709', 'ACT_854', 'BNM_RMIT', 'MOSTI_AIGE'];
+  CURRENT_REGIMES = ['ACT_709', 'ACT_854', 'BNM_RMIT', 'ACT_872', 'ACT_882', 'MOSTI_AIGE'];
   syncRegimeChipStyles();
   await updateEnvelopePreview();
   await runIncidentPlaybook();
@@ -1059,6 +1089,12 @@ function renderAuditResponse(data) {
     const shadowBadge = c.overriding_clause_id
       ? `<span class="status-badge status-breach">Shadow Override: ${escapeHtml(c.overriding_clause_id)}</span>`
       : '';
+    const advisoryBadge = c.is_pre_commencement_advisory
+      ? '<span class="status-badge status-advisory">PRE-COMMENCEMENT ADVISORY</span>'
+      : '';
+    const playbookBadge = c.playbook_rule_id
+      ? `<span class="status-badge status-compliant">Playbook ${escapeHtml(c.playbook_rule_id)} (${escapeHtml(c.playbook_tier_applied || 'TIER_2_FALLBACK')})</span>`
+      : '';
 
     card.innerHTML = `
       <div class="kv-row" style="flex-wrap:wrap;">
@@ -1067,6 +1103,8 @@ function renderAuditResponse(data) {
           <span class="muted-text">&middot; ${escapeHtml(c.category)}</span>
         </div>
         <div class="btn-toolbar">
+          ${advisoryBadge}
+          ${playbookBadge}
           ${shadowBadge}
           ${violatedPills}
           ${spanPills}
@@ -1085,12 +1123,13 @@ function renderAuditResponse(data) {
       </div>
       <div style="padding-top:var(--space-2);border-top:1px solid var(--border-subtle);display:flex;flex-direction:column;gap:var(--space-2);">
         <div class="kv-row" style="flex-wrap:wrap;">
-          <span class="mono caption-text">COUNSEL HITL ADJUDICATION &rarr; ED25519 LEDGER + GOLDEN EVAL</span>
+          <span class="mono caption-text">COUNSEL HITL ADJUDICATION &rarr; ED25519 LEDGER + HOUSE PLAYBOOK</span>
           <div class="btn-toolbar">
             <button type="button" onclick="submitHitlReview(${fIdx}, 'ACCEPT_REDLINE')" class="hitl-accept-btn btn btn-secondary btn-sm">Accept</button>
             <button type="button" onclick="toggleHitlModifyBox(${fIdx})" class="hitl-modify-btn btn btn-secondary btn-sm">Modify</button>
             <button type="button" onclick="submitHitlReview(${fIdx}, 'REJECT_FALSE_POSITIVE')" class="hitl-reject-btn btn btn-secondary btn-sm">Reject</button>
             <button type="button" onclick="submitHitlReview(${fIdx}, 'ESCALATE_TO_COUNSEL')" class="hitl-escalate-btn btn btn-secondary btn-sm">Escalate</button>
+            <button type="button" onclick="promoteFindingToPlaybook(${fIdx})" class="hitl-promote-btn btn btn-primary btn-sm">Promote to House Playbook</button>
           </div>
         </div>
         <div id="hitlModifyBox_${fIdx}" class="subpanel hidden" style="display:flex;flex-direction:column;gap:var(--space-2);">
@@ -1182,6 +1221,49 @@ async function submitHitlReview(fIdx, decision) {
   }
 }
 
+async function promoteFindingToPlaybook(fIdx) {
+  const finding = LAST_FINDINGS_BY_IDX[fIdx];
+  const statusEl = document.getElementById(`hitlStatus_${fIdx}`);
+  if (!finding || !statusEl) return;
+
+  const modTextEl = document.getElementById(`hitlModifiedText_${fIdx}`);
+  const ratEl = document.getElementById(`hitlRationale_${fIdx}`);
+  const fallbackText = (modTextEl && modTextEl.value.trim()) ? modTextEl.value.trim() : (finding.recommended_redline || finding.exact_quote);
+  const rationale = (ratEl && ratEl.value.trim()) ? ratEl.value.trim() : `Counsel promoted ${finding.clause_id} to house precedent playbook.`;
+
+  statusEl.textContent = 'Validating against DeonticEnvelopeResolver statutory floor & promoting...';
+  try {
+    const res = await apiFetch('/api/v1/hitl/playbook/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        original_clause_text: finding.exact_quote,
+        tier_1_preferred: finding.recommended_redline || fallbackText,
+        tier_2_fallback: fallbackText,
+        regimes: CURRENT_REGIMES,
+        territorial_scope: CURRENT_SCOPE,
+        as_of_date: document.getElementById('refDateInput').value || null,
+        rationale
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const d = data.detail;
+      const errMsg = (d && typeof d === 'object')
+        ? `${d.error_code || res.status}: ${d.message || JSON.stringify(d)}`
+        : String(d || res.status);
+      statusEl.innerHTML = `<span class="status-badge status-breach">${escapeHtml(errMsg)}</span>`;
+      showWorkbenchToast('Playbook Promotion Blocked', errMsg, 'breach');
+      return;
+    }
+    statusEl.innerHTML = `<span class="status-badge status-compliant">Promoted ${escapeHtml(data.rule_id)} (${escapeHtml(data.clause_archetype)}) &middot; Ed25519 ${escapeHtml(data.attestation_manifest_id)}</span>`;
+    showWorkbenchToast('House Playbook Updated', `${data.rule_id} (${data.clause_archetype}) signed in Ed25519 ledger.`, 'compliant');
+    loadTenantPlaybook();
+  } catch (err) {
+    statusEl.textContent = `Playbook promotion error: ${err}`;
+  }
+}
+
 function renderPdpaScanResponse(data) {
   renderTelemetryCommon(data.telemetry || {});
   renderPiiSummary(data.pii_scrub);
@@ -1257,6 +1339,17 @@ async function uploadCounterpartyDocx(evt) {
   if (!file) return;
   const statusEl = document.getElementById('negUploadStatus');
   statusEl.textContent = `Parsing track-changes in ${file.name}...`;
+  try {
+    const arrBuf = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrBuf);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    LAST_NEG_DOCX_BASE64 = btoa(binary);
+  } catch (_) {
+    LAST_NEG_DOCX_BASE64 = null;
+  }
   const formData = new FormData();
   formData.append('file', file);
   formData.append('document_id', file.name.replace(/\.[^.]+$/, ''));
@@ -1266,6 +1359,8 @@ async function uploadCounterpartyDocx(evt) {
   try {
     const res = await apiFetch('/api/v1/negotiation/diff-docx', { method: 'POST', body: formData });
     const data = await res.json();
+    LAST_NEG_SESSION_ID = data.audit_session_id || null;
+    NEG_DISPOSITIONS = {};
     statusEl.textContent = `Parsed ${file.name}: ${data.regression_count} regression(s), ${data.comment_conflict_count} comment conflict(s)`;
     renderCounterpartyDiff(data);
   } catch (err) {
@@ -1277,6 +1372,7 @@ async function runCounterpartyDiff() {
   const btn = document.getElementById('runNegotiationDiffBtn');
   setButtonLoading(btn, true, 'Analyzing Redlines...');
   renderSkeleton('negDeltasContainer', 2);
+  LAST_NEG_DOCX_BASE64 = null;
 
   try {
     const res = await apiFetch('/api/v1/negotiation/diff-docx', {
@@ -1292,12 +1388,20 @@ async function runCounterpartyDiff() {
       })
     });
     const data = await res.json();
+    LAST_NEG_SESSION_ID = data.audit_session_id || null;
+    NEG_DISPOSITIONS = {};
     renderCounterpartyDiff(data);
   } catch (err) {
     document.getElementById('negDeltasContainer').innerHTML = `<div class="trap-alert">${escapeHtml(String(err))}</div>`;
   } finally {
     setButtonLoading(btn, false);
   }
+}
+
+function setNegDisposition(idx, dispositionValue) {
+  const d = LAST_NEG_DELTAS[idx];
+  if (!d) return;
+  NEG_DISPOSITIONS[d.clause_id] = dispositionValue;
 }
 
 function renderCounterpartyDiff(data) {
@@ -1317,6 +1421,11 @@ function renderCounterpartyDiff(data) {
     const statBtns = (d.violated_statute_ids || []).map(sid =>
       `<button type="button" class="status-badge status-accent" style="cursor:pointer;" onclick="inspectNegDelta(${idx}, '${escapeHtml(sid)}')">${escapeHtml(sid)}</button>`
     ).join(' ');
+    const defaultDisp = (d.classification === 'COMPLIANT_ACCEPT' || d.classification === 'NEUTRAL_EDIT')
+      ? 'ACCEPT_COUNTERPARTY'
+      : 'COUNTER_PROPOSE_FALLBACK';
+    const selectedDisp = NEG_DISPOSITIONS[d.clause_id] || defaultDisp;
+    NEG_DISPOSITIONS[d.clause_id] = selectedDisp;
     return `
       <div class="finding-card severity-${escapeHtml(d.classification)}">
         <div class="kv-row" style="flex-wrap:wrap;">
@@ -1324,6 +1433,12 @@ function renderCounterpartyDiff(data) {
           <div class="btn-toolbar">
             ${breached}
             ${statBtns}
+            <select id="negDispositionSelect_${idx}" class="disposition-select" aria-label="Disposition for ${escapeHtml(d.clause_id)}" onchange="setNegDisposition(${idx}, this.value)">
+              <option value="COUNTER_PROPOSE_FALLBACK" ${selectedDisp === 'COUNTER_PROPOSE_FALLBACK' ? 'selected' : ''}>COUNTER_PROPOSE_FALLBACK</option>
+              <option value="ACCEPT_COUNTERPARTY" ${selectedDisp === 'ACCEPT_COUNTERPARTY' ? 'selected' : ''}>ACCEPT_COUNTERPARTY</option>
+              <option value="REJECT_REVERT_BASELINE" ${selectedDisp === 'REJECT_REVERT_BASELINE' ? 'selected' : ''}>REJECT_REVERT_BASELINE</option>
+              <option value="ESCALATE_COMMENT_ONLY" ${selectedDisp === 'ESCALATE_COMMENT_ONLY' ? 'selected' : ''}>ESCALATE_COMMENT_ONLY</option>
+            </select>
             <span class="${statusBadgeClass(d.classification)}">${escapeHtml(d.classification)}</span>
           </div>
         </div>
@@ -1342,6 +1457,91 @@ function renderCounterpartyDiff(data) {
       </div>
     `;
   }).join('');
+}
+
+async function compileCounterRedlineDocx() {
+  const btn = document.getElementById('compileCounterDocxBtn');
+  const receiptBox = document.getElementById('negCompileReceiptBox');
+  setButtonLoading(btn, true, 'Compiling .docx...');
+  try {
+    const authorEl = document.getElementById('negCounselAuthorInput');
+    const rehydEl = document.getElementById('negRehydratePiiCheckbox');
+    const payload = {
+      document_id: 'NEG-COUNTERPARTY-01',
+      audit_session_id: LAST_NEG_SESSION_ID,
+      docx_base64: LAST_NEG_DOCX_BASE64,
+      baseline_text: LAST_NEG_DOCX_BASE64 ? null : document.getElementById('negBaselineInput').value.trim(),
+      proposed_text: LAST_NEG_DOCX_BASE64 ? null : document.getElementById('negProposedInput').value.trim(),
+      dispositions: NEG_DISPOSITIONS,
+      counsel_author: (authorEl && authorEl.value.trim()) ? authorEl.value.trim() : 'LexGraph Counsel',
+      counsel_initials: 'LGC',
+      as_of_date: document.getElementById('refDateInput').value || '2026-03-15',
+      regimes: CURRENT_REGIMES,
+      territorial_scope: CURRENT_SCOPE,
+      rehydrate_pii: rehydEl ? rehydEl.checked : true,
+      use_tenant_playbook: true
+    };
+    const res = await apiFetch('/api/v1/negotiation/compile-counter-docx?response_format=json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = String(data.detail || res.status);
+      if (receiptBox) {
+        receiptBox.classList.remove('hidden');
+        receiptBox.textContent = `Compile error: ${msg}`;
+      }
+      showWorkbenchToast('Counter-Markup Compile Failed', msg, 'breach');
+      return;
+    }
+
+    if (receiptBox) {
+      receiptBox.classList.remove('hidden');
+      const manifestId = data.attestation_manifest ? data.attestation_manifest.manifest_id : '-';
+      receiptBox.innerHTML = `
+        <span class="status-badge status-compliant">COMPILED ${escapeHtml(data.filename)}</span>
+        &middot; Counter: <strong>${data.counter_proposed_count}</strong>
+        &middot; Accepted: <strong>${data.accepted_count}</strong>
+        &middot; Reverted: <strong>${data.reverted_count}</strong>
+        &middot; Comments: <strong>${data.comments_appended}</strong>
+        &middot; PII Rehydrated: <strong>${data.rehydrated_pii_count}</strong>
+        &middot; Tokens: <strong>0 ($0.00)</strong>
+        &middot; SHA-256: <span class="mono">${escapeHtml((data.output_docx_sha256 || '').slice(0, 16))}...</span>
+        &middot; Manifest: <span class="mono">${escapeHtml(manifestId)}</span>
+      `;
+    }
+
+    if (data.docx_base64) {
+      const binStr = atob(data.docx_base64);
+      const len = binStr.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binStr.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = data.filename || 'counter_redline.docx';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    }
+    showWorkbenchToast(
+      `Compiled ${data.filename}`,
+      `${data.comments_appended} margin comment(s), ${data.rehydrated_pii_count} PII rehydrated, 0 LLM tokens ($0.00).`,
+      'compliant'
+    );
+  } catch (err) {
+    showWorkbenchToast('Counter-Markup Compile Error', String(err), 'breach');
+  } finally {
+    setButtonLoading(btn, false);
+  }
 }
 
 function inspectNegDelta(idx, statuteId) {
@@ -1409,6 +1609,9 @@ function renderBilingualDivergenceBlock(report) {
 async function openBilingualDrawer(nodeId) {
   if (nodeId) LAST_DRAWER_NODE_ID = nodeId;
   openInspector();
+  if (LAST_INSPECTOR_TAB === 'retrieval') {
+    loadRetrievalExplainability();
+  }
   const content = document.getElementById('drawerContent');
   if (!content) return;
   renderSkeleton(content, 2);
@@ -1518,6 +1721,121 @@ async function openBilingualDrawer(nodeId) {
   }).join('');
 
   content.innerHTML = clauseSectionHtml + pairsHtml;
+}
+
+function switchInspectorTab(tabName) {
+  const isRet = tabName === 'retrieval';
+  LAST_INSPECTOR_TAB = isRet ? 'retrieval' : 'bilingual';
+  const bContent = document.getElementById('drawerContent');
+  const rContent = document.getElementById('drawerRetrievalContent');
+  const btnBil = document.getElementById('inspectorTabBilingualBtn');
+  const btnRet = document.getElementById('inspectorTabRetrievalBtn');
+  if (bContent && rContent) {
+    bContent.classList.toggle('hidden', isRet);
+    rContent.classList.toggle('hidden', !isRet);
+  }
+  if (btnBil && btnRet) {
+    btnBil.classList.toggle('is-active', !isRet);
+    btnBil.setAttribute('aria-selected', String(!isRet));
+    btnRet.classList.toggle('is-active', isRet);
+    btnRet.setAttribute('aria-selected', String(isRet));
+  }
+  if (isRet) {
+    loadRetrievalExplainability();
+  }
+}
+
+async function loadRetrievalExplainability() {
+  const container = document.getElementById('drawerRetrievalContent');
+  if (!container) return;
+  openInspector();
+  renderSkeleton(container, 2);
+
+  const rawBox = document.getElementById('rawTextInput');
+  const pitBox = document.getElementById('statutorySearchInput');
+  const refBox = document.getElementById('refDateInput');
+  const query = (
+    (ACTIVE_CLAUSE_CONTEXT && ACTIVE_CLAUSE_CONTEXT.exact_quote)
+    || (pitBox && pitBox.value.trim())
+    || (rawBox && rawBox.value.trim())
+    || 'Personal Data Protection Act 2010 Section 9 security safeguards 72 hours breach notice'
+  ).slice(0, 600);
+
+  try {
+    const res = await apiFetch('/api/v1/retrieval/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query,
+        as_of_date: (refBox && refBox.value) ? refBox.value : '2026-03-15',
+        territorial_scope: CURRENT_SCOPE,
+        top_k: 5
+      })
+    });
+    const data = await res.json();
+    LAST_RETRIEVAL_EXPLAIN = data;
+    if (!res.ok) {
+      container.innerHTML = `<div class="trap-alert mono">${escapeHtml(String(data.detail || res.status))}</div>`;
+      return;
+    }
+    const thresh = Number(data.abstention_threshold ?? 0.78);
+    const maxS = Number(data.max_score ?? 0);
+    const margin = maxS - thresh;
+    const marginStr = `${margin >= 0 ? '+' : ''}${margin.toFixed(3)}`;
+    const gateBadge = data.is_abstained
+      ? `<span class="status-badge status-breach">ABSTAINED (${marginStr})</span>`
+      : `<span class="status-badge status-compliant">PASSED 0.78 GATE (${marginStr})</span>`;
+
+    const headerHtml = `
+      <div class="subpanel" style="display:flex;flex-direction:column;gap:var(--space-2);">
+        <div class="kv-row" style="flex-wrap:wrap;">
+          <span class="mono caption-text" style="font-weight:var(--weight-semibold);">RRF (k=${escapeHtml(String(data.rrf_k || 60))}) &middot; ${escapeHtml((data.detected_language || 'en').toUpperCase())}</span>
+          ${gateBadge}
+        </div>
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">Max Calibrated Score</span><span class="kv-val">${maxS.toFixed(4)}</span></div>
+          <div class="kv-row"><span class="kv-key">Abstention Threshold</span><span class="kv-val">${thresh.toFixed(2)}</span></div>
+          <div class="kv-row"><span class="kv-key">Gate Margin</span><span class="kv-val">${marginStr}</span></div>
+        </div>
+        <div class="caption-text">${escapeHtml(data.query.slice(0, 140))}${data.query.length > 140 ? '...' : ''}</div>
+      </div>
+    `;
+
+    const cands = data.candidates || [];
+    const barsHtml = cands.map(c => {
+      const bmPct = Math.max(2, Math.min(100, Math.round((Number(c.bm25_score || 0) / 1.0) * 100)));
+      const denPct = Math.max(2, Math.min(100, Math.round(Number(c.vector_score || 0) * 100)));
+      const rrfPct = Math.max(2, Math.min(100, Math.round(Number(c.calibrated_score || 0) * 100)));
+      return `
+        <div class="retrieval-score-card">
+          <div class="kv-row" style="flex-wrap:wrap;">
+            <span class="mono" style="font-size:var(--text-xs);font-weight:var(--weight-semibold);">${escapeHtml(c.node_id)}</span>
+            <span class="status-badge status-neutral">${escapeHtml(c.territorial_tier)} T${c.authority_tier}</span>
+          </div>
+          <div class="caption-text">${escapeHtml(c.act_number)} ${escapeHtml(c.section_code)}</div>
+          <div class="retrieval-bar-row">
+            <span class="retrieval-bar-label">BM25F Lexical</span>
+            <div class="retrieval-bar-track"><div class="retrieval-bar-fill" style="width:${bmPct}%;"></div></div>
+            <span class="retrieval-bar-val">${Number(c.bm25_score || 0).toFixed(3)}</span>
+          </div>
+          <div class="retrieval-bar-row">
+            <span class="retrieval-bar-label">Subword/Dense</span>
+            <div class="retrieval-bar-track"><div class="retrieval-bar-fill is-dense" style="width:${denPct}%;"></div></div>
+            <span class="retrieval-bar-val">${Number(c.vector_score || 0).toFixed(3)}</span>
+          </div>
+          <div class="retrieval-bar-row">
+            <span class="retrieval-bar-label">RRF k=60 Fusion</span>
+            <div class="retrieval-bar-track"><div class="retrieval-bar-fill is-rrf" style="width:${rrfPct}%;"></div></div>
+            <span class="retrieval-bar-val">${Number(c.calibrated_score || 0).toFixed(3)}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.innerHTML = headerHtml + (barsHtml || '<div class="muted-text">No retrieval candidates scored.</div>');
+  } catch (err) {
+    container.innerHTML = `<div class="trap-alert mono">Retrieval explain error: ${escapeHtml(String(err))}</div>`;
+  }
 }
 
 /* ==========================================================================
@@ -2247,6 +2565,28 @@ function renderDeonticEnvelope(env) {
     </tr>
   `).join('');
 
+  const advisoryBox = document.getElementById('preCommencementAdvisoryBox');
+  if (advisoryBox) {
+    const advMap = env.pre_commencement_advisories || {};
+    const advKeys = Object.keys(advMap);
+    if (advKeys.length === 0) {
+      advisoryBox.innerHTML = '';
+      advisoryBox.classList.add('hidden');
+    } else {
+      advisoryBox.classList.remove('hidden');
+      const itemsHtml = advKeys.map(k => {
+        const b = advMap[k];
+        return `<div class="kv-row mono caption-text"><span>${escapeHtml(k)} (${escapeHtml(b.dominating_citation)} / ${escapeHtml(b.dominating_node_id)})</span><span class="status-badge status-advisory">GAZETTED_PENDING_COMMENCEMENT</span></div>`;
+      }).join('');
+      advisoryBox.innerHTML = `
+        <div class="subpanel" style="display:flex;flex-direction:column;gap:var(--space-1);border-left:3px solid var(--status-warning-ink);">
+          <div class="mono" style="font-size:var(--text-xs);font-weight:var(--weight-semibold);color:var(--status-warning-ink);">PRE_COMMENCEMENT_ADVISORY (Uncommenced Gazette Watch &mdash; Never Conflated with Active Breaches)</div>
+          ${itemsHtml}
+        </div>
+      `;
+    }
+  }
+
   if (conflictBox) {
     const conflicts = env.inter_regime_conflicts || [];
     if (conflicts.length === 0) {
@@ -2379,7 +2719,101 @@ async function refreshPortfolioAndTelemetry() {
     const metricsRes = await apiFetch('/telemetry/metrics').then(r => r.json());
     updateMetricsDom(metricsRes);
   } catch (_) {}
-  await Promise.all([loadTenantUsage(), loadAttestationPublicKey()]);
+  await Promise.all([
+    loadTenantUsage(),
+    loadAttestationPublicKey(),
+    loadPortfolioDlq(),
+    loadTenantPlaybook()
+  ]);
+}
+
+async function loadPortfolioDlq() {
+  const tbody = document.getElementById('portfolioDlqBody');
+  const badge = document.getElementById('dlqStatusBadge');
+  if (!tbody) return;
+  try {
+    const res = await apiFetch('/api/v1/portfolio/dlq');
+    if (res.status === 403) {
+      if (badge) {
+        badge.textContent = 'ADMIN ONLY';
+        badge.className = 'status-badge status-neutral';
+      }
+      tbody.innerHTML = '<tr><td colspan="5" class="muted-text">DLQ inspection requires admin role.</td></tr>';
+      return;
+    }
+    const data = await res.json();
+    const jobs = data.jobs || [];
+    if (badge) {
+      badge.textContent = `${jobs.length} DLQ`;
+      badge.className = jobs.length > 0 ? 'status-badge status-breach' : 'status-badge status-compliant';
+    }
+    if (jobs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="muted-text">Zero dead-letter jobs. All worker leases healthy.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = jobs.map(j => `
+      <tr>
+        <td class="mono">${escapeHtml(j.job_id)}</td>
+        <td><span class="${statusBadgeClass(j.status)}">${escapeHtml(j.status)}</span></td>
+        <td class="mono">${j.attempt_count}/${j.max_attempts}</td>
+        <td class="mono caption-text">${escapeHtml(j.lease_expires_at || 'EXPIRED')}</td>
+        <td><button type="button" class="btn btn-secondary btn-sm" onclick="requeueDlqJob('${escapeHtml(j.job_id)}')">Requeue</button></td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted-text">DLQ fetch error: ${escapeHtml(String(err))}</td></tr>`;
+  }
+}
+
+async function requeueDlqJob(jobId) {
+  try {
+    const res = await apiFetch(`/api/v1/portfolio/jobs/${encodeURIComponent(jobId)}/requeue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_checkpoints: false })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showWorkbenchToast('Requeue Failed', String(data.detail || res.status), 'breach');
+      return;
+    }
+    showWorkbenchToast('DLQ Job Requeued', `${jobId} returned to worker queue (${data.status}).`, 'compliant');
+    await loadPortfolioDlq();
+  } catch (err) {
+    showWorkbenchToast('Requeue Error', String(err), 'breach');
+  }
+}
+
+async function loadTenantPlaybook() {
+  const tbody = document.getElementById('tenantPlaybookBody');
+  const digestEl = document.getElementById('tenantPlaybookDigest');
+  if (!tbody) return;
+  try {
+    const res = await apiFetch('/api/v1/hitl/playbook');
+    const data = await res.json();
+    if (!res.ok) {
+      tbody.innerHTML = `<tr><td colspan="4" class="muted-text">Playbook fetch error (${res.status}).</td></tr>`;
+      return;
+    }
+    if (digestEl) {
+      digestEl.textContent = `Tenant: ${data.tenant_id} · Rules: ${data.total} · Cache Digest: ${(data.playbook_digest || '').slice(0, 16)}...`;
+    }
+    const rules = data.rules || [];
+    if (rules.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="muted-text">No tenant house playbook rules promoted yet. Use Promote to House Playbook on any finding card.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rules.map(r => `
+      <tr>
+        <td class="mono">${escapeHtml(r.rule_id)}</td>
+        <td class="mono caption-text">${escapeHtml(r.clause_archetype)}</td>
+        <td class="caption-text">${escapeHtml((r.tier_2_fallback || r.tier_1_preferred || '').slice(0, 72))}...</td>
+        <td class="mono caption-text" title="${escapeHtml(r.tier_3_statutory_floor || '')}">${escapeHtml((r.tier_3_statutory_floor || '').replace(/^\[TIER_3_STATUTORY_FLOOR[^\]]*\]\s*/, '').slice(0, 64))}...</td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted-text">Playbook load error: ${escapeHtml(String(err))}</td></tr>`;
+  }
 }
 
 function getPortfolioSampleContracts() {

@@ -175,6 +175,20 @@
               </span>
               <span class="mono caption-text">Credit</span>
             </button>
+            <button type="button" data-regime="ACT_872" onclick="toggleRegime('ACT_872')" class="regime-chip">
+              <span class="regime-chip-left">
+                <span class="regime-check-box" aria-hidden="true"></span>
+                <span>Gig Act 872</span>
+              </span>
+              <span class="mono caption-text">PERKESO</span>
+            </button>
+            <button type="button" data-regime="ACT_882" onclick="toggleRegime('ACT_882')" class="regime-chip">
+              <span class="regime-chip-left">
+                <span class="regime-check-box" aria-hidden="true"></span>
+                <span>Proc. Act 882</span>
+              </span>
+              <span class="status-badge status-advisory">PRE</span>
+            </button>
             <button type="button" data-regime="MOSTI_AIGE" onclick="toggleRegime('MOSTI_AIGE')" class="regime-chip">
               <span class="regime-chip-left">
                 <span class="regime-check-box" aria-hidden="true"></span>
@@ -538,9 +552,30 @@
                 </div>
               </div>
 
+              <div class="grid-2" style="align-items:end;">
+                <div class="field">
+                  <label for="negCounselAuthorInput" class="field-label">Counsel Author Identity (Word Track Changes)</label>
+                  <input id="negCounselAuthorInput" type="text" value="LexGraph Counsel" class="input mono" />
+                </div>
+                <div class="kv-row" style="padding-bottom:var(--space-2);">
+                  <label class="checkbox-row">
+                    <input id="negRehydratePiiCheckbox" type="checkbox" checked />
+                    <span>Strict Session-Bound PII Re-Hydration</span>
+                  </label>
+                  <span class="status-badge status-compliant">$0.00 / 0 tok</span>
+                </div>
+              </div>
+
               <div class="btn-toolbar">
                 <button id="runNegotiationDiffBtn" type="button" class="btn btn-primary" onclick="runCounterpartyDiff()">Analyze Counterparty Redlines</button>
+                <button id="compileCounterDocxBtn" type="button" class="btn btn-secondary" onclick="compileCounterRedlineDocx()">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  <span>Compile Counter-Markup .docx</span>
+                </button>
               </div>
+              <div id="negCompileReceiptBox" class="subpanel hidden mono caption-text"></div>
             </div>
 
             <div class="grid-4" id="negSummaryCards">
@@ -755,7 +790,7 @@
               <p class="workspace-subtitle">Zero-token composite statutory bounds matrix and chronological UTC / Asia/Kuala_Lumpur regulator deadlines.</p>
             </div>
             <div class="btn-toolbar">
-              <button type="button" class="btn btn-secondary btn-sm" onclick="applyAllDeonticRegimesPreset()">Select PDPA + CSA 854 + BNM RMiT + MOSTI AIGE</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="applyAllDeonticRegimesPreset()">Select PDPA + CSA 854 + RMiT + Act 872 + Act 882 + AIGE</button>
             </div>
           </div>
 
@@ -764,7 +799,7 @@
             <div class="panel-header">
               <div>
                 <h2 class="panel-title">Multi-Regime Strictest Deontic Envelope</h2>
-                <p class="panel-sub">Mandatory obligations vs. voluntary guidelines (MOSTI AIGE) resolved deterministically in O(V + E).</p>
+                <p class="panel-sub">Mandatory obligations vs. voluntary guidelines (MOSTI AIGE) and gazetted pre-commencement advisories (Act 882) resolved deterministically in O(V + E).</p>
               </div>
               <span id="envelopeHashBadge" class="status-badge status-neutral">O(V + E) Solver</span>
             </div>
@@ -785,6 +820,7 @@
             </div>
 
             <div id="deonticBoundsGrid" class="hidden"></div>
+            <div id="preCommencementAdvisoryBox" class="hidden" style="display:flex;flex-direction:column;gap:var(--space-2);"></div>
             <div id="interRegimeConflictBox" style="display:flex;flex-direction:column;gap:var(--space-2);"></div>
           </div>
 
@@ -956,6 +992,59 @@
             </div>
           </div>
 
+          <!-- Dead-Letter Queue (DLQ) & Lease Monitor + Tenant Playbook Rules -->
+          <div class="grid-2">
+            <div id="portfolioDlqPanel" class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2 class="panel-title">Dead-Letter Queue (DLQ) &amp; Lease Monitor</h2>
+                  <p class="panel-sub">Bounded worker retries, stale lease sweeps, and 1-click job requeue.</p>
+                </div>
+                <div class="btn-toolbar">
+                  <span id="dlqStatusBadge" class="status-badge status-neutral">0 DLQ</span>
+                  <button id="refreshDlqBtn" type="button" class="btn btn-secondary btn-sm" onclick="loadPortfolioDlq()">Refresh DLQ</button>
+                </div>
+              </div>
+              <div class="table-wrap scrollable-matrix">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Job ID</th>
+                      <th>Status</th>
+                      <th>Attempts</th>
+                      <th>Lease Expiry</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="portfolioDlqBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div id="tenantPlaybookPanel" class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2 class="panel-title">Tenant Precedent Playbook (3-Tier)</h2>
+                  <p id="tenantPlaybookDigest" class="mono caption-text">Digest loading...</p>
+                </div>
+                <button id="refreshPlaybookBtn" type="button" class="btn btn-secondary btn-sm" onclick="loadTenantPlaybook()">Refresh Rules</button>
+              </div>
+              <div class="table-wrap scrollable-matrix">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Rule ID</th>
+                      <th>Archetype</th>
+                      <th>Preferred / Fallback Position</th>
+                      <th>Statutory Floor</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tenantPlaybookBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
           <!-- Ed25519 Ledger Verifier & Document Firewall Grid -->
           <div class="grid-2">
             <div class="panel">
@@ -1041,6 +1130,10 @@
               </svg>
             </button>
           </div>
+          <div class="segmented-control" role="tablist" aria-label="Inspector Evidence Mode" style="width:100%;">
+            <button id="inspectorTabBilingualBtn" type="button" class="seg-btn is-active" style="flex:1;" role="tab" aria-selected="true" onclick="switchInspectorTab('bilingual')">Bilingual Crosswalk</button>
+            <button id="inspectorTabRetrievalBtn" type="button" class="seg-btn" style="flex:1;" role="tab" aria-selected="false" onclick="switchInspectorTab('retrieval')">Hybrid Retrieval Scores</button>
+          </div>
           <div class="btn-toolbar">
             <button type="button" class="btn btn-secondary btn-sm mono" onclick="openBilingualDrawer('PDPA-2010-SEC-9-V2')">PDPA s.9 (Aligned)</button>
             <button type="button" class="btn btn-secondary btn-sm mono" onclick="openBilingualDrawer('ACT-574-SEC-420-V1')">Penal Code s.420 (Act 388)</button>
@@ -1068,6 +1161,16 @@
             <div class="caption-text">Awaiting node selection.</div>
           </div>
         </div>
+
+        <div id="drawerRetrievalContent" class="inspector-body hidden">
+          <div class="subpanel" style="display:flex;flex-direction:column;gap:var(--space-2);">
+            <div class="kv-row">
+              <span class="mono caption-text" style="font-weight:var(--weight-semibold);">HYBRID RETRIEVAL + RRF (k=60)</span>
+              <span class="status-badge status-neutral">0.78 GATE</span>
+            </div>
+            <div class="caption-text">Inspecting BM25F lexical, subword/dense similarity, and reciprocal rank fusion score breakdown against the 0.78 abstention threshold.</div>
+          </div>
+        </div>
       </aside>
     </div>
 
@@ -1084,6 +1187,9 @@
       </div>
     </footer>
   </div>
+
+  <!-- Non-Blocking Institutional Toast -->
+  <div id="workbenchToast" class="workbench-toast hidden" role="status" aria-live="polite"></div>
 
   <!-- Tenant & Auth Configuration Modal -->
   <div id="tenantAuthModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="tenantModalTitle">

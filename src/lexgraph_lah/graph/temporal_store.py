@@ -72,6 +72,9 @@ def build_upsert_amendment_cypher(
     eff_to_val = new_node.effective_to or new_node.valid_to
     eff_to = eff_to_val.isoformat() if eff_to_val else None
     prev_eff_to = (eff_from_date - timedelta(days=1)).isoformat()
+    gazette_date_str = (
+        new_node.gazette_date.isoformat() if new_node.gazette_date else None
+    )
 
     params: dict[str, Any] = {
         "node_id": new_node.node_id,
@@ -90,6 +93,7 @@ def build_upsert_amendment_cypher(
         "is_in_force": new_node.is_in_force,
         "amendment_act_ref": new_node.amendment_act_ref or new_node.gazette_ref,
         "gazette_ref": new_node.gazette_ref,
+        "gazette_date": gazette_date_str,
         "authority_tier": int(new_node.authority_tier),
         "territorial_scope": [s.value for s in new_node.territorial_scope],
         "status": new_node.status.value,
@@ -120,6 +124,7 @@ def build_upsert_amendment_cypher(
             "    n.is_in_force = $is_in_force,\n"
             "    n.amendment_act_ref = $amendment_act_ref,\n"
             "    n.gazette_ref = $gazette_ref,\n"
+            "    n.gazette_date = CASE WHEN $gazette_date IS NOT NULL THEN date($gazette_date) ELSE null END,\n"
             "    n.authority_tier = $authority_tier,\n"
             "    n.territorial_scope = $territorial_scope,\n"
             "    n.status = $status,\n"
@@ -160,6 +165,7 @@ def build_upsert_amendment_cypher(
             "    n.is_in_force = $is_in_force,\n"
             "    n.amendment_act_ref = $amendment_act_ref,\n"
             "    n.gazette_ref = $gazette_ref,\n"
+            "    n.gazette_date = CASE WHEN $gazette_date IS NOT NULL THEN date($gazette_date) ELSE null END,\n"
             "    n.authority_tier = $authority_tier,\n"
             "    n.territorial_scope = $territorial_scope,\n"
             "    n.status = $status,\n"
@@ -254,6 +260,36 @@ def build_point_in_time_cypher(
     params: dict[str, Any] = {"as_of_date": as_of_date.isoformat()}
     if act_name:
         params["act_name"] = act_name
+    if territorial_scope and territorial_scope != TerritorialScope.ALL_MALAYSIA.value:
+        params["territorial_scope"] = territorial_scope
+    return CypherQueryBundle(query=query, params=params)
+
+
+def build_pending_commencement_cypher(
+    as_of_date: date,
+    territorial_scope: str | None = None,
+) -> CypherQueryBundle:
+    """
+    Generates a parameterized Cypher query retrieving gazetted statutes with status
+    `GAZETTED_PENDING_COMMENCEMENT` whose gazette_date <= as_of_date < valid_from.
+    """
+    scope_clause = (
+        "AND ($territorial_scope IN s.territorial_scope OR 'All Malaysia' IN s.territorial_scope)\n"
+        if territorial_scope
+        and territorial_scope != TerritorialScope.ALL_MALAYSIA.value
+        else ""
+    )
+    query = (
+        "MATCH (s:StatutoryNode)\n"
+        "WHERE s.status = 'GAZETTED_PENDING_COMMENCEMENT'\n"
+        "  AND s.gazette_date IS NOT NULL\n"
+        "  AND s.gazette_date <= date($as_of_date)\n"
+        "  AND s.valid_from > date($as_of_date)\n"
+        f"  {scope_clause}"
+        "RETURN s\n"
+        "ORDER BY s.authority_tier ASC, s.act_name, s.section_code"
+    )
+    params: dict[str, Any] = {"as_of_date": as_of_date.isoformat()}
     if territorial_scope and territorial_scope != TerritorialScope.ALL_MALAYSIA.value:
         params["territorial_scope"] = territorial_scope
     return CypherQueryBundle(query=query, params=params)
@@ -624,6 +660,19 @@ class TemporalGraphStore:
         )
         return self._backend.execute_cypher(bundle)
 
+    def query_pending_commencement_from_backend(
+        self,
+        as_of_date: date,
+        *,
+        territorial_scope: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Executes the parameterized GAZETTED_PENDING_COMMENCEMENT Cypher query against the backend."""
+        bundle = build_pending_commencement_cypher(
+            as_of_date=as_of_date,
+            territorial_scope=territorial_scope,
+        )
+        return self._backend.execute_cypher(bundle)
+
     def add_citation(
         self,
         source_id: str,
@@ -852,6 +901,49 @@ class TemporalGraphStore:
 
         return sorted(
             resolved.values(),
+            key=lambda n: (
+                int(n.authority_tier),
+                n.act_name,
+                n.section_code,
+                n.version,
+            ),
+        )
+
+    def query_pending_commencement(
+        self,
+        as_of_date: date,
+        *,
+        territorial_scope: TerritorialScope | str | None = None,
+        include_containers: bool = False,
+        include_translations: bool = True,
+    ) -> list[StatutoryNode]:
+        """
+        Returns StatutoryNodes with status `GAZETTED_PENDING_COMMENCEMENT` where
+        `gazette_date <= as_of_date < valid_from` (never conflated with active in-force law).
+        """
+        excluded_levels: set[HierarchyLevel] = set()
+        if not include_containers:
+            excluded_levels.update(
+                {
+                    HierarchyLevel.ACT,
+                    HierarchyLevel.PART,
+                    HierarchyLevel.CHAPTER,
+                    HierarchyLevel.PROVISO,
+                    HierarchyLevel.ILLUSTRATION,
+                    HierarchyLevel.CASE,
+                }
+            )
+        candidates = [
+            node
+            for node in self._nodes.values()
+            if node.is_gazetted_pending_on(as_of_date)
+            and not self._is_repealed_on_or_before(node.node_id, as_of_date)
+            and node.hierarchy_level not in excluded_levels
+            and (include_translations or node.normalized_language == "en")
+        ]
+        scoped = filter_by_territorial_scope(candidates, territorial_scope)
+        return sorted(
+            scoped,
             key=lambda n: (
                 int(n.authority_tier),
                 n.act_name,
@@ -5828,6 +5920,432 @@ def _seed_default_corpus(store: TemporalGraphStore) -> TemporalGraphStore:
         "MOSTI-AIGE-2024-PRINCIPLES-V1",
         effective_date=date(2024, 9, 20),
         gazette_ref="MOSTI AIGE (2024-09-20)",
+    )
+
+    # =========================================================================
+    # Phase 7: 2025-2026 Statutory Readiness Pack
+    #   5. Gig Workers Act 2025 [Act 872] (commenced 2026-01-01)
+    #   6. Government Procurement Act 2026 [Act 882] (GAZETTED_PENDING_COMMENCEMENT)
+    # =========================================================================
+
+    # 5. Gig Workers Act 2025 [Act 872]
+    act872_act = StatutoryNode(
+        node_id="ACT-872-ACT",
+        act_name="Gig Workers Act 2025",
+        act_number="Act 872",
+        section_code="ACT-872",
+        hierarchy_level=HierarchyLevel.ACT,
+        text="Gig Workers Act 2025 [Act 872]: An Act to protect gig workers in Malaysia, mandate written service agreement schedules, regulate algorithmic deactivation, guarantee Gig Workers Tribunal recourse, and enforce PERKESO self-employment social security deductions.",
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 872",
+        regime_code="ACT_872",
+    )
+    store.upsert_node(act872_act)
+
+    act872_s4_en = StatutoryNode(
+        node_id="ACT-872-SEC-4-V1",
+        act_name="Gig Workers Act 2025",
+        act_number="Act 872",
+        section_code="SEC-4",
+        parent_node_id="ACT-872-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 4 (Mandatory Written Service Agreement Schedule - Act 872, commenced 2026-01-01): "
+            "Every contracting entity or digital platform provider shall execute a written service agreement "
+            "with mandatory schedule particulars specifying remuneration rates, payment intervals, scope of "
+            "services, and termination grounds."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 872 s. 4",
+        regime_code="ACT_872",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT872-S4-SCHEDULE",
+                regime_id="ACT_872",
+                modality="OBLIGATION",
+                metric_key="gig_mandatory_service_agreement_schedule",
+                operator="==",
+                threshold_value=True,
+                description="Mandatory written gig worker service agreement schedule under Act 872 s. 4.",
+            )
+        ],
+    )
+    act872_s4_bm = StatutoryNode(
+        node_id="ACT-872-SEC-4-V1-BM",
+        act_name="Akta Pekerja Gig 2025",
+        act_number="Act 872",
+        section_code="SEC-4",
+        parent_node_id="ACT-872-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 4 (Jadual Wajib Perjanjian Perkhidmatan Bertulis - Akta 872, berkuat kuasa 1 Januari 2026): "
+            "Setiap entiti berkontrak atau penyedia platform digital hendaklah melaksanakan perjanjian "
+            "perkhidmatan bertulis dengan butiran jadual wajib bagi kadar bayaran, tempoh pembayaran, "
+            "skop perkhidmatan, dan alasan penamatan."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 872 s. 4",
+        regime_code="ACT_872",
+        deontic_constraints=act872_s4_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act872_s4_en, act872_s4_bm, authoritative="bm")
+
+    act872_s12_en = StatutoryNode(
+        node_id="ACT-872-SEC-12-V1",
+        act_name="Gig Workers Act 2025",
+        act_number="Act 872",
+        section_code="SEC-12",
+        parent_node_id="ACT-872-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 12 (Algorithmic Deactivation & Unilateral Rate Modification Safeguard - Act 872, commenced 2026-01-01): "
+            "A contracting entity shall not unilaterally deactivate a gig worker account or reduce contracted "
+            "remuneration rates via automated algorithmic decision without prior written notice and human review."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 872 s. 12",
+        regime_code="ACT_872",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT872-S12-ALGO",
+                regime_id="ACT_872",
+                modality="PROHIBITION",
+                metric_key="gig_unilateral_algorithmic_deactivation_prohibited",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="unilateral_algorithmic_deactivation_or_rate_cut",
+                description="Prohibits unilateral algorithmic deactivation or rate reduction without prior notice and human review under Act 872 s. 12.",
+            )
+        ],
+    )
+    act872_s12_bm = StatutoryNode(
+        node_id="ACT-872-SEC-12-V1-BM",
+        act_name="Akta Pekerja Gig 2025",
+        act_number="Act 872",
+        section_code="SEC-12",
+        parent_node_id="ACT-872-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 12 (Perlindungan Penyahaktifan Algoritma & Perubahan Kadar Unilateral - Akta 872, berkuat kuasa 1 Januari 2026): "
+            "Entiti berkontrak tidak boleh menyahaktifkan akaun pekerja gig secara unilateral atau "
+            "mengurangkan kadar bayaran melalui keputusan algoritma automatik tanpa notis bertulis awal dan semakan manusia."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 872 s. 12",
+        regime_code="ACT_872",
+        deontic_constraints=act872_s12_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act872_s12_en, act872_s12_bm, authoritative="bm")
+
+    act872_s25_en = StatutoryNode(
+        node_id="ACT-872-SEC-25-V1",
+        act_name="Gig Workers Act 2025",
+        act_number="Act 872",
+        section_code="SEC-25",
+        parent_node_id="ACT-872-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 25 (Non-Waivable Gig Workers Tribunal Recourse - Act 872, commenced 2026-01-01): "
+            "A service agreement shall not waive, exclude, or restrict a gig worker's statutory right to refer "
+            "a remuneration, deactivation, or contractual dispute to the Gig Workers Tribunal."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 872 s. 25",
+        regime_code="ACT_872",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT872-S25-TRIBUNAL",
+                regime_id="ACT_872",
+                modality="PROHIBITION",
+                metric_key="gig_workers_tribunal_waiver_prohibited",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="waiver_of_gig_workers_tribunal",
+                description="Clauses waiving or excluding Gig Workers Tribunal jurisdiction are void under Act 872 s. 25.",
+            )
+        ],
+    )
+    act872_s25_bm = StatutoryNode(
+        node_id="ACT-872-SEC-25-V1-BM",
+        act_name="Akta Pekerja Gig 2025",
+        act_number="Act 872",
+        section_code="SEC-25",
+        parent_node_id="ACT-872-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 25 (Larangan Pengetepian Tribunal Pekerja Gig - Akta 872, berkuat kuasa 1 Januari 2026): "
+            "Perjanjian perkhidmatan tidak boleh mengetepikan, mengecualikan, atau menyekat hak berkanun "
+            "pekerja gig untuk merujuk pertikaian bayaran atau penyahaktifan kepada Tribunal Pekerja Gig."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 872 s. 25",
+        regime_code="ACT_872",
+        deontic_constraints=act872_s25_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act872_s25_en, act872_s25_bm, authoritative="bm")
+
+    act872_s38_en = StatutoryNode(
+        node_id="ACT-872-SEC-38-V1",
+        act_name="Gig Workers Act 2025",
+        act_number="Act 872",
+        section_code="SEC-38",
+        parent_node_id="ACT-872-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 38 (Mandatory PERKESO / SOCSO Self-Employment Social Security Deduction - Act 872, commenced 2026-01-01): "
+            "A contracting entity or platform provider shall deduct and remit mandatory PERKESO self-employment "
+            "social security contributions on behalf of eligible gig workers."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 872 s. 38",
+        regime_code="ACT_872",
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT872-S38-PERKESO",
+                regime_id="ACT_872",
+                modality="OBLIGATION",
+                metric_key="gig_perkeso_deduction_remittance_required",
+                operator="==",
+                threshold_value=True,
+                description="Platform provider must deduct and remit PERKESO social security contributions under Act 872 s. 38.",
+            )
+        ],
+    )
+    act872_s38_bm = StatutoryNode(
+        node_id="ACT-872-SEC-38-V1-BM",
+        act_name="Akta Pekerja Gig 2025",
+        act_number="Act 872",
+        section_code="SEC-38",
+        parent_node_id="ACT-872-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 38 (Potongan & Caruman Wajib PERKESO Keselamatan Sosial Pekerjaan Sendiri - Akta 872, berkuat kuasa 1 Januari 2026): "
+            "Entiti berkontrak atau penyedia platform hendaklah membuat potongan dan meremitkan caruman wajib "
+            "PERKESO keselamatan sosial pekerjaan sendiri bagi pihak pekerja gig yang layak."
+        ),
+        valid_from=date(2026, 1, 1),
+        gazette_date=date(2025, 12, 31),
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 872 s. 38",
+        regime_code="ACT_872",
+        deontic_constraints=act872_s38_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act872_s38_en, act872_s38_bm, authoritative="bm")
+
+    store.add_citation(
+        "ACT-872-SEC-4-V1",
+        "ACT-872-SEC-12-V1",
+        effective_date=date(2026, 1, 1),
+        gazette_ref="Act 872",
+    )
+    store.add_citation(
+        "ACT-872-SEC-4-V1",
+        "ACT-872-SEC-25-V1",
+        effective_date=date(2026, 1, 1),
+        gazette_ref="Act 872",
+    )
+    store.add_citation(
+        "ACT-872-SEC-4-V1",
+        "ACT-872-SEC-38-V1",
+        effective_date=date(2026, 1, 1),
+        gazette_ref="Act 872",
+    )
+
+    # 6. Government Procurement Act 2026 [Act 882] (GAZETTED_PENDING_COMMENCEMENT)
+    act882_act = StatutoryNode(
+        node_id="ACT-882-ACT",
+        act_name="Government Procurement Act 2026",
+        act_number="Act 882",
+        section_code="ACT-882",
+        hierarchy_level=HierarchyLevel.ACT,
+        text=(
+            "Government Procurement Act 2026 [Act 882] (Gazetted May 2026; Ministerial commencement pending/staggered): "
+            "Regulates federal and public-sector procurement transparency, prohibits unauthorized sub-contracting or "
+            "rent-seeking contract transfers, and establishes the Procurement Appeal Tribunal alongside Act 864 s. 17(1)."
+        ),
+        valid_from=date(2027, 1, 1),
+        gazette_date=date(2026, 5, 1),
+        status=StatutoryStatus.GAZETTED_PENDING_COMMENCEMENT,
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 882 (Gazetted May 2026 — Pending Ministerial Commencement)",
+        regime_code="ACT_882",
+        carve_out_metadata={
+            "lifecycle_status": "GAZETTED_PENDING_COMMENCEMENT",
+            "gazetted_month": "2026-05",
+            "commencement_mode": "ministerial_staggered",
+        },
+    )
+    store.upsert_node(act882_act)
+
+    act882_s28_en = StatutoryNode(
+        node_id="ACT-882-SEC-28-V1",
+        act_name="Government Procurement Act 2026",
+        act_number="Act 882",
+        section_code="SEC-28",
+        parent_node_id="ACT-882-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 28 (Prohibition on Unauthorized Sub-Contracting & Rent-Seeking Transfer - Act 882, gazetted 2026-05-01, pending commencement): "
+            "A government procurement contractor shall not assign, sub-contract, or transfer procurement "
+            "obligations or tender proceeds to a third party via rent-seeking arrangements without prior written "
+            "approval of the procuring authority."
+        ),
+        valid_from=date(2027, 1, 1),
+        gazette_date=date(2026, 5, 1),
+        status=StatutoryStatus.GAZETTED_PENDING_COMMENCEMENT,
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 882 s. 28 (Gazetted May 2026)",
+        regime_code="ACT_882",
+        carve_out_metadata={
+            "lifecycle_status": "GAZETTED_PENDING_COMMENCEMENT",
+            "gazetted_month": "2026-05",
+            "commencement_mode": "ministerial_staggered",
+        },
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT882-S28-SUBCONTRACT",
+                regime_id="ACT_882",
+                modality="PROHIBITION",
+                metric_key="gov_procurement_unauthorized_subcontract_prohibited",
+                operator="FORBIDDEN_CLAUSE",
+                threshold_value="unauthorized_procurement_subcontract_rent_seeking",
+                description="Prohibits unauthorized sub-contracting, assignment, or rent-seeking transfer of government procurement contracts under Act 882 s. 28.",
+            )
+        ],
+    )
+    act882_s28_bm = StatutoryNode(
+        node_id="ACT-882-SEC-28-V1-BM",
+        act_name="Akta Perolehan Kerajaan 2026",
+        act_number="Act 882",
+        section_code="SEC-28",
+        parent_node_id="ACT-882-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 28 (Larangan Sub-Kontrak Tanpa Kebenaran & Pemindahan Mengaut Sewa - Akta 882, diwartakan Mei 2026, menunggu permulaan kuat kuasa): "
+            "Kontraktor perolehan kerajaan tidak boleh menyerah hak, mensubkontrak, atau memindahkan obligasi "
+            "perolehan kepada pihak ketiga tanpa kelulusan bertulis terdahulu pihak berkuasa perolehan."
+        ),
+        valid_from=date(2027, 1, 1),
+        gazette_date=date(2026, 5, 1),
+        status=StatutoryStatus.GAZETTED_PENDING_COMMENCEMENT,
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 882 s. 28 (Diwartakan Mei 2026)",
+        regime_code="ACT_882",
+        carve_out_metadata=act882_s28_en.carve_out_metadata,
+        deontic_constraints=act882_s28_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act882_s28_en, act882_s28_bm, authoritative="bm")
+
+    act882_s45_en = StatutoryNode(
+        node_id="ACT-882-SEC-45-V1",
+        act_name="Government Procurement Act 2026",
+        act_number="Act 882",
+        section_code="SEC-45",
+        parent_node_id="ACT-882-ACT",
+        version=1,
+        language="en",
+        text=(
+            "Section 45 (Procurement Appeal Tribunal Jurisdiction & Public-Sector Contractor Accountability - Act 882, gazetted 2026-05-01, pending commencement): "
+            "Procurement contracts shall preserve statutory Procurement Appeal Tribunal review jurisdiction and "
+            "public-sector vendor accountability alongside Data Sharing Act 2025 [Act 864] Section 17(1)."
+        ),
+        valid_from=date(2027, 1, 1),
+        gazette_date=date(2026, 5, 1),
+        status=StatutoryStatus.GAZETTED_PENDING_COMMENCEMENT,
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Act 882 s. 45 (Gazetted May 2026)",
+        regime_code="ACT_882",
+        carve_out_metadata={
+            "lifecycle_status": "GAZETTED_PENDING_COMMENCEMENT",
+            "gazetted_month": "2026-05",
+            "commencement_mode": "ministerial_staggered",
+            "cross_linked_statute": "ACT-864-SEC-17-V1",
+        },
+        deontic_constraints=[
+            DeonticConstraint(
+                constraint_id="DC-ACT882-S45-TRIBUNAL",
+                regime_id="ACT_882",
+                modality="OBLIGATION",
+                metric_key="gov_procurement_appeal_tribunal_jurisdiction",
+                operator="==",
+                threshold_value=True,
+                description="Preserves Procurement Appeal Tribunal jurisdiction and public-sector vendor oversight alongside Act 864 s. 17(1).",
+            )
+        ],
+    )
+    act882_s45_bm = StatutoryNode(
+        node_id="ACT-882-SEC-45-V1-BM",
+        act_name="Akta Perolehan Kerajaan 2026",
+        act_number="Act 882",
+        section_code="SEC-45",
+        parent_node_id="ACT-882-ACT",
+        version=1,
+        language="bm",
+        text=(
+            "Seksyen 45 (Bidang Kuasa Tribunal Rayuan Perolehan & Kebertanggungjawaban Kontraktor Awam - Akta 882, diwartakan Mei 2026, menunggu permulaan kuat kuasa): "
+            "Kontrak perolehan hendaklah mengekalkan bidang kuasa semakan Tribunal Rayuan Perolehan serta "
+            "kebertanggungjawaban vendor sektor awam selaras dengan Akta Perkongsian Data 2025 [Akta 864] Seksyen 17(1)."
+        ),
+        valid_from=date(2027, 1, 1),
+        gazette_date=date(2026, 5, 1),
+        status=StatutoryStatus.GAZETTED_PENDING_COMMENCEMENT,
+        authority_tier=AuthorityTier.TIER_2_PRINCIPAL_ACT,
+        territorial_scope=[TerritorialScope.ALL_MALAYSIA],
+        gazette_ref="Akta 882 s. 45 (Diwartakan Mei 2026)",
+        regime_code="ACT_882",
+        carve_out_metadata=act882_s45_en.carve_out_metadata,
+        deontic_constraints=act882_s45_en.deontic_constraints,
+    )
+    _add_bilingual_pair(store, act882_s45_en, act882_s45_bm, authoritative="bm")
+
+    store.add_citation(
+        "ACT-882-SEC-45-V1",
+        "ACT-864-SEC-17-V1",
+        effective_date=date(2026, 5, 1),
+        gazette_ref="Act 882 s. 45 <-> Act 864 s. 17(1)",
+    )
+    store.add_citation(
+        "ACT-882-SEC-28-V1",
+        "ACT-882-SEC-45-V1",
+        effective_date=date(2026, 5, 1),
+        gazette_ref="Act 882",
     )
 
     return store

@@ -159,7 +159,7 @@ async def test_hitl_reviews_all_decisions_pii_scrub_ed25519_rbac_and_golden_expo
     assert len(extra_cases) == 4
 
     summary = await run_benchmark_async(mode="mock", trials=1, extra_jsonl=jsonl_path)
-    assert summary.total_cases == 40
+    assert summary.total_cases == 43
     assert summary.determinism_consistency_pct == 100.0
     assert summary.temporal_contamination_pct == 0.0
 
@@ -175,7 +175,7 @@ async def test_mcp_record_hitl_review_tool_14():
         )
         assert tools_res.status_code == 200
         tools = tools_res.json()["result"]["tools"]
-        assert len(tools) == 14
+        assert len(tools) == 15
         assert "record_hitl_review" in {t["name"] for t in tools}
 
         call_res = await client.post(

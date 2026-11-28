@@ -30,7 +30,9 @@ ALL_SUPPORTED_REGIMES: tuple[str, ...] = (
     "ACT_658",
     "ACT_864",
     "ACT_866",
+    "ACT_872",
     "ACT_873",
+    "ACT_882",
     "ACT_562",
     "ACT_563",
     "ACT_378",
@@ -179,6 +181,21 @@ _REGIME_ALIASES: dict[str, str] = {
     "ai ethics": "MOSTI_AIGE",
     "bnm outsourcing": "BNM_RMIT",
     "bnm/rh/pd 028-99": "BNM_RMIT",
+    "act_872": "ACT_872",
+    "act 872": "ACT_872",
+    "act872": "ACT_872",
+    "akta 872": "ACT_872",
+    "gig workers": "ACT_872",
+    "gig workers act": "ACT_872",
+    "pekerja gig": "ACT_872",
+    "perkeso gig": "ACT_872",
+    "act_882": "ACT_882",
+    "act 882": "ACT_882",
+    "act882": "ACT_882",
+    "akta 882": "ACT_882",
+    "government procurement": "ACT_882",
+    "perolehan kerajaan": "ACT_882",
+    "procurement appeal tribunal": "ACT_882",
 }
 
 
@@ -244,6 +261,15 @@ def normalize_regime_key(raw: str) -> str:
         return "ACT_53"
     if "aige" in cleaned or "mosti" in cleaned or "ai governance" in cleaned:
         return "MOSTI_AIGE"
+    if "872" in cleaned or "gig worker" in cleaned or "pekerja gig" in cleaned:
+        return "ACT_872"
+    if (
+        "882" in cleaned
+        or "government procurement" in cleaned
+        or "perolehan kerajaan" in cleaned
+        or "procurement appeal tribunal" in cleaned
+    ):
+        return "ACT_882"
     if (
         "854" in cleaned
         or "219/2024" in cleaned
@@ -334,7 +360,12 @@ def _constraint_rank_key(
     voluntary guidelines (`VOLUNTARY_GUIDELINE`) on shared metric keys.
     """
     c = cand.constraint
-    modality_rank = 1 if c.modality == "VOLUNTARY_GUIDELINE" else 0
+    if c.modality == "PRE_COMMENCEMENT_ADVISORY":
+        modality_rank = 2
+    elif c.modality == "VOLUNTARY_GUIDELINE":
+        modality_rank = 1
+    else:
+        modality_rank = 0
     tier = int(cand.authority_tier)
     val = c.threshold_value
 
@@ -431,62 +462,100 @@ class DeonticEnvelopeResolver:
             territorial_scope=scope_enum,
         )
 
-        # Group constraints by metric_key while avoiding EN/BM duplicate noise for the same node pair
-        candidates_by_metric: dict[str, list[RegimeConstraintCandidate]] = {}
-        recipient_candidates: dict[str, list[RegimeConstraintCandidate]] = {}
-        seen_per_regime_section: set[tuple[str, str, str, str]] = set()
+        def _collect_candidates(
+            nodes: list[StatutoryNode],
+            *,
+            override_modality: str | None = None,
+            filter_to_target_regimes: bool = True,
+        ) -> tuple[
+            dict[str, list[RegimeConstraintCandidate]],
+            dict[str, list[RegimeConstraintCandidate]],
+            list[str],
+        ]:
+            node_ids_in_scope: list[str] = []
+            by_metric: dict[str, list[RegimeConstraintCandidate]] = {}
+            by_recipient: dict[str, list[RegimeConstraintCandidate]] = {}
+            seen: set[tuple[str, str, str, str]] = set()
+            all_node_ids = {n.node_id for n in nodes}
 
-        for node in active_nodes:
-            if not node.deontic_constraints:
-                continue
-            regime_id = infer_node_regime(node)
-            if regime_id not in target_regimes:
-                continue
-            # Prefer English canonical nodes for numeric/constraint evaluation when bilingual pair shares identical constraints
-            if node.normalized_language == "ms" and node.translation_node_id in {
-                n.node_id for n in active_nodes
-            }:
-                continue
-
-            for constraint in node.deontic_constraints:
-                scoped_match = filter_by_territorial_scope(
-                    [
-                        node.model_copy(
-                            update={"territorial_scope": constraint.territorial_scope}
-                        )
-                    ],
-                    scope_enum,
-                )
-                if not scoped_match:
+            for node in nodes:
+                regime_id = infer_node_regime(node)
+                if filter_to_target_regimes and regime_id not in target_regimes:
+                    continue
+                node_ids_in_scope.append(node.node_id)
+                if not node.deontic_constraints:
+                    continue
+                # Prefer English canonical nodes for numeric/constraint evaluation when bilingual pair shares identical constraints
+                if (
+                    node.normalized_language == "ms"
+                    and node.translation_node_id in all_node_ids
+                ):
                     continue
 
-                dedup_key = (
-                    regime_id,
-                    node.act_number,
-                    node.section_code,
-                    constraint.metric_key,
-                )
-                if dedup_key in seen_per_regime_section:
-                    continue
-                seen_per_regime_section.add(dedup_key)
+                for constraint in node.deontic_constraints:
+                    scoped_match = filter_by_territorial_scope(
+                        [
+                            node.model_copy(
+                                update={
+                                    "territorial_scope": constraint.territorial_scope
+                                }
+                            )
+                        ],
+                        scope_enum,
+                    )
+                    if not scoped_match:
+                        continue
 
-                candidate = RegimeConstraintCandidate(
-                    regime_id=regime_id,
-                    node_id=node.node_id,
-                    act_name=node.act_name,
-                    act_number=node.act_number,
-                    section_code=node.section_code,
-                    gazette_ref=node.gazette_ref,
-                    authority_tier=node.authority_tier,
-                    constraint=constraint,
-                )
-                candidates_by_metric.setdefault(constraint.metric_key, []).append(
-                    candidate
-                )
-                if constraint.recipient:
-                    stage = constraint.notice_stage or constraint.metric_key
-                    recip_key = f"{constraint.recipient}:{stage}"
-                    recipient_candidates.setdefault(recip_key, []).append(candidate)
+                    dedup_key = (
+                        regime_id,
+                        node.act_number,
+                        node.section_code,
+                        constraint.metric_key,
+                    )
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
+
+                    eff_constraint = (
+                        constraint.model_copy(update={"modality": override_modality})
+                        if override_modality is not None
+                        else constraint
+                    )
+                    candidate = RegimeConstraintCandidate(
+                        regime_id=regime_id,
+                        node_id=node.node_id,
+                        act_name=node.act_name,
+                        act_number=node.act_number,
+                        section_code=node.section_code,
+                        gazette_ref=node.gazette_ref,
+                        authority_tier=node.authority_tier,
+                        constraint=eff_constraint,
+                    )
+                    by_metric.setdefault(eff_constraint.metric_key, []).append(
+                        candidate
+                    )
+                    if eff_constraint.recipient and override_modality is None:
+                        stage = eff_constraint.notice_stage or eff_constraint.metric_key
+                        recip_key = f"{eff_constraint.recipient}:{stage}"
+                        by_recipient.setdefault(recip_key, []).append(candidate)
+
+            return by_metric, by_recipient, node_ids_in_scope
+
+        candidates_by_metric, recipient_candidates, _ = _collect_candidates(
+            active_nodes
+        )
+
+        pending_nodes: list[StatutoryNode] = []
+        if hasattr(self._store, "query_pending_commencement"):
+            pending_nodes = self._store.query_pending_commencement(
+                as_of_date=as_of_date,
+                territorial_scope=scope_enum,
+                include_translations=True,
+            )
+        pending_by_metric, _, pending_node_ids = _collect_candidates(
+            pending_nodes,
+            override_modality="PRE_COMMENCEMENT_ADVISORY",
+        )
 
         resolved_bounds: dict[str, ResolvedMetricBound] = {}
         recipient_obligations: dict[str, RecipientNoticeObligation] = {}
@@ -534,6 +603,25 @@ class DeonticEnvelopeResolver:
                         )
                     )
 
+        pre_commencement_advisories: dict[str, ResolvedMetricBound] = {}
+        for metric_key in sorted(pending_by_metric.keys()):
+            p_cands = sorted(pending_by_metric[metric_key], key=_constraint_rank_key)
+            p_win = p_cands[0]
+            pw_c = p_win.constraint
+            adv_bound = ResolvedMetricBound(
+                metric_key=metric_key,
+                modality="PRE_COMMENCEMENT_ADVISORY",
+                operator=pw_c.operator,
+                strictest_value=pw_c.threshold_value,
+                unit=pw_c.unit,
+                dominating_regime=p_win.regime_id,
+                dominating_node_id=p_win.node_id,
+                dominating_citation=f"{p_win.act_number} {p_win.section_code}",
+                provenance_chain=p_cands,
+            )
+            pre_commencement_advisories[metric_key] = adv_bound
+            resolved_bounds.setdefault(metric_key, adv_bound)
+
         for recip_key in sorted(recipient_candidates.keys()):
             r_cands = sorted(recipient_candidates[recip_key], key=_constraint_rank_key)
             r_win = r_cands[0]
@@ -572,6 +660,15 @@ class DeonticEnvelopeResolver:
                     }
                     for k, v in recipient_obligations.items()
                 },
+                "pending_commencement_node_ids": pending_node_ids,
+                "pre_commencement_advisories": {
+                    k: {
+                        "val": v.strictest_value,
+                        "op": v.operator,
+                        "node": v.dominating_node_id,
+                    }
+                    for k, v in pre_commencement_advisories.items()
+                },
             },
             sort_keys=True,
         )
@@ -582,7 +679,9 @@ class DeonticEnvelopeResolver:
             territorial_scope=scope_enum,
             regimes_evaluated=target_regimes,
             active_node_ids=[n.node_id for n in active_nodes],
+            pending_commencement_node_ids=pending_node_ids,
             resolved_bounds=resolved_bounds,
+            pre_commencement_advisories=pre_commencement_advisories,
             recipient_obligations=recipient_obligations,
             inter_regime_conflicts=conflicts,
             envelope_hash=envelope_hash,

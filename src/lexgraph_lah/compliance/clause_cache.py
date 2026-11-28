@@ -132,6 +132,7 @@ def compute_clause_ast_digest(
     language: str | None = None,
     act_filter: str | None = None,
     abstention_threshold: float | None = None,
+    playbook_digest: str | None = None,
     cache_namespace: str = "compliance",
 ) -> str:
     """Compute canonical isomorphic SHA-256 digest of a parsed ContractASTGraph.
@@ -199,6 +200,7 @@ def compute_clause_ast_digest(
         "language": language,
         "act_filter": act_filter,
         "abstention_threshold": abstention_threshold,
+        "playbook_digest": playbook_digest,
         "clauses": clauses_payload,
         "edges": edges_payload,
         "normalized_text_sha256": hashlib.sha256(

@@ -233,6 +233,21 @@ class HITLReviewLedger:
             ).fetchall()
         return [HITLReviewRecord.model_validate_json(str(r[0])) for r in rows]
 
+    def get_review(self, review_id: str, *, tenant_id: str) -> HITLReviewRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT payload_json
+                FROM hitl_reviews
+                WHERE review_id = ? AND tenant_id = ?
+                LIMIT 1
+                """,
+                (review_id, tenant_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return HITLReviewRecord.model_validate_json(str(row[0]))
+
     def export_golden_jsonl(self, *, tenant_id: str) -> str:
         """
         Exports tenant-scoped HITL counsel adjudications as deterministic JSONL golden

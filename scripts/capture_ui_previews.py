@@ -59,7 +59,7 @@ def create_composite_sheet(preview_dir: Path) -> Path:
         ),
         (
             "04-portfolio-attestation-finops.png",
-            "04 / Portfolio Blast-Radius, Ed25519 & FinOps",
+            "04 / Portfolio, DLQ Monitor, Tenant Playbook & Ed25519",
         ),
     ]
     tiles: list[tuple[Image.Image, str]] = []
@@ -138,7 +138,7 @@ def capture_all() -> None:
                 )
                 page = desktop_ctx.new_page()
 
-                # 01: Contract & Redline Audit with Fixture 05 (PII + Traps + Crosswalk Inspector)
+                # 01: Contract & Redline Audit with Fixture 05 (PII + Traps + Playbook Promote Controls)
                 page.goto(f"{BASE_URL}/", wait_until="domcontentloaded")
                 page.wait_for_selector(
                     "#findingsContainer .finding-card", timeout=15000
@@ -154,12 +154,13 @@ def capture_all() -> None:
                     }""",
                     timeout=15000,
                 )
+                # Scroll to show persona/findings + Promote to House Playbook button cleanly
                 page.evaluate(
                     """() => {
-                        const pii = document.getElementById('piiScrubCard');
+                        const firstCard = document.querySelector('#findingsContainer .finding-card');
                         const ws = document.getElementById('worksurface');
-                        if (pii && ws) {
-                            ws.scrollTop = Math.max(0, pii.offsetTop - 12);
+                        if (firstCard && ws) {
+                            ws.scrollTop = Math.max(0, firstCard.offsetTop - 96);
                         }
                     }"""
                 )
@@ -167,6 +168,50 @@ def capture_all() -> None:
                 page.screenshot(
                     path=str(PREVIEW_DIR / "01-contract-redline-workbench.png")
                 )
+
+                # 06: Closed-Loop Counterparty Redline + Compile Counter-Markup + Retrieval Explainability Drawer
+                page.click("#subTabNegotiationBtn")
+                page.click("#loadCounterpartySampleBtn")
+                page.wait_for_selector(
+                    "#negDeltasContainer .finding-card", timeout=15000
+                )
+                page.evaluate(
+                    """() => {
+                        const b = document.getElementById('inspectorTabRetrievalBtn');
+                        if (b) b.click();
+                    }"""
+                )
+                page.wait_for_selector(
+                    "#drawerRetrievalContent .retrieval-score-card", timeout=15000
+                )
+                page.click("#compileCounterDocxBtn")
+                page.wait_for_function(
+                    """() => {
+                        const btn = document.getElementById('compileCounterDocxBtn');
+                        const box = document.getElementById('negCompileReceiptBox');
+                        return btn && !btn.disabled && box && !box.classList.contains('hidden');
+                    }""",
+                    timeout=15000,
+                )
+                page.evaluate(
+                    """() => {
+                        const ws = document.getElementById('worksurface');
+                        if (ws) ws.scrollTop = 120;
+                    }"""
+                )
+                wait_for_settled_fonts(page)
+                page.screenshot(
+                    path=str(PREVIEW_DIR / "06-counter-redline-retrieval-explain.png")
+                )
+                page.evaluate(
+                    """() => {
+                        const toast = document.getElementById('workbenchToast');
+                        if (toast) toast.classList.add('hidden');
+                        const b = document.getElementById('inspectorTabBilingualBtn');
+                        if (b) b.click();
+                    }"""
+                )
+                page.click("#subTabAuditBtn")
 
                 # 02: Statutory Graph & Bi-Temporal Lineage
                 page.click('.nav-item[data-view="graph"]')
@@ -195,7 +240,8 @@ def capture_all() -> None:
                     path=str(PREVIEW_DIR / "02-statutory-graph-lineage.png")
                 )
 
-                # 03: Deontic Envelope & Multi-Regulator Incident Playbook
+                # 03: Deontic Envelope (with Act 872 + Act 882 PRE_COMMENCEMENT_ADVISORY on 2026-06-15) & Incident Playbook
+                page.fill("#refDateInput", "2026-06-15")
                 page.click('.nav-item[data-view="deontic"]')
                 page.wait_for_selector("#playbookTimelineBody tr", timeout=15000)
                 page.click('button[onclick="applyAllDeonticRegimesPreset()"]')
@@ -204,7 +250,10 @@ def capture_all() -> None:
                         const btn = document.getElementById('runIncidentPlaybookBtn');
                         const rows = document.querySelectorAll('#playbookTimelineBody tr');
                         const matrixText = document.getElementById('deonticMatrixBody')?.innerText || '';
-                        return btn && !btn.disabled && rows.length >= 3 && matrixText.includes('VOLUNTARY_GUIDELINE');
+                        const advBox = document.getElementById('preCommencementAdvisoryBox');
+                        return btn && !btn.disabled && rows.length >= 3 &&
+                               matrixText.includes('VOLUNTARY_GUIDELINE') &&
+                               advBox && !advBox.classList.contains('hidden');
                     }""",
                     timeout=15000,
                 )
@@ -216,10 +265,36 @@ def capture_all() -> None:
                     path=str(PREVIEW_DIR / "03-deontic-incident-playbook.png")
                 )
 
-                # 04: Portfolio Blast-Radius, Ed25519 Attestation & FinOps
+                # Seed a compliant Tenant Playbook rule so #tenantPlaybookPanel renders populated in 04
+                page.evaluate(
+                    """async () => {
+                        await fetch('/api/v1/hitl/playbook/promote', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': 'default-tenant' },
+                            body: JSON.stringify({
+                                original_clause_text: 'SEC-12B Breach Notification: Data Processor notifies within 14 days.',
+                                tier_1_preferred: 'Data Processor notifies Controller within 24 hours and Commissioner within 72 hours under Act 709 s. 12B.',
+                                tier_2_fallback: 'Data Processor notifies Controller within 48 hours preserving PDPA s. 12B 72h floor.',
+                                regimes: ['ACT_709'],
+                                as_of_date: '2026-06-15',
+                                rationale: 'Standard tenant house SLA precedent.'
+                            })
+                        });
+                    }"""
+                )
+
+                # 04: Portfolio Blast-Radius, DLQ Monitor, Tenant Playbook, Ed25519 & FinOps
                 page.click('.nav-item[data-view="portfolio"]')
                 page.wait_for_selector("#portfolioBlastTableBody tr", timeout=15000)
                 page.wait_for_selector("#spanTableBody tr", timeout=15000)
+                page.wait_for_function(
+                    """() => {
+                        const pb = document.getElementById('tenantPlaybookBody')?.innerText || '';
+                        const dlq = document.getElementById('portfolioDlqBody')?.innerText || '';
+                        return pb.includes('PBR-') && dlq.length > 0;
+                    }""",
+                    timeout=15000,
+                )
                 page.click("#verifyAttestationBtn")
                 page.wait_for_function(
                     """() => {
@@ -231,7 +306,11 @@ def capture_all() -> None:
                     timeout=15000,
                 )
                 page.evaluate(
-                    "() => { const ws = document.getElementById('worksurface'); if (ws) ws.scrollTop = 96; }"
+                    """() => {
+                        const dlq = document.getElementById('portfolioDlqPanel');
+                        const ws = document.getElementById('worksurface');
+                        if (dlq && ws) ws.scrollTop = Math.max(0, dlq.offsetTop - 96);
+                    }"""
                 )
                 wait_for_settled_fonts(page)
                 page.screenshot(

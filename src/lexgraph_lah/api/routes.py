@@ -52,6 +52,10 @@ from lexgraph_lah.graph.portfolio_scanner import (
 )
 from lexgraph_lah.graph.reranker import filter_by_territorial_scope
 from lexgraph_lah.graph.temporal_store import build_point_in_time_cypher
+from lexgraph_lah.hitl.precedent_playbook import (
+    StatutoryFloorViolationError,
+    default_precedent_playbook_store,
+)
 from lexgraph_lah.hitl.review_store import default_hitl_review_ledger
 from lexgraph_lah.ingestion.contract_ast import build_contract_ast
 from lexgraph_lah.ingestion.ooxml_redliner import compile_track_changes_docx
@@ -61,6 +65,9 @@ from lexgraph_lah.middleware.pii_scrubber import (
     ReversiblePIIVault,
     default_pii_session_store,
     scrub_malaysian_pii,
+)
+from lexgraph_lah.negotiation.counter_docx_compiler import (
+    compile_counter_redline_docx,
 )
 from lexgraph_lah.negotiation.docx_redline_critic import (
     analyze_counterparty_docx_redlines,
@@ -85,6 +92,8 @@ from lexgraph_lah.schemas.domain import (
     ContractDeltaAuditResponse,
     CounterpartyRedlineDiff,
     CounterpartyRedlineJsonRequest,
+    CounterRedlineCompileRequest,
+    CounterRedlineCompileResult,
     DocumentSecurityFinding,
     DocumentSecurityReport,
     GraphTopologyResponse,
@@ -97,6 +106,8 @@ from lexgraph_lah.schemas.domain import (
     PDPAComplianceScanRequest,
     PDPAComplianceScanResponse,
     PIIScrubSummary,
+    PlaybookListResponse,
+    PlaybookPromoteRequest,
     PointInTimeResearchRequest,
     PointInTimeResearchResponse,
     PortfolioAsyncJobRequest,
@@ -104,6 +115,7 @@ from lexgraph_lah.schemas.domain import (
     PortfolioBlastRadiusResponse,
     PortfolioDLQListResponse,
     PortfolioJobStatusResponse,
+    PrecedentPlaybookRule,
     ProvisionLineageResponse,
     RakyatGuidance,
     RetrievalExplainRequest,
@@ -209,6 +221,9 @@ _SESSION_DOCX_CACHE: OrderedDict[tuple[str, str], bytes] = OrderedDict()
 _SESSION_AUDIT_SNAPSHOTS: OrderedDict[
     tuple[str, str], tuple[str, ContractAuditResponse]
 ] = OrderedDict()
+_SESSION_NEGOTIATION_CACHE: OrderedDict[
+    tuple[str, str], tuple[bytes | None, CounterpartyRedlineDiff]
+] = OrderedDict()
 _MAX_SESSION_ARTIFACTS = 256
 
 
@@ -248,6 +263,29 @@ def _get_session_audit_snapshot(
         return _SESSION_AUDIT_SNAPSHOTS.get((tenant_id, audit_session_id))
 
 
+def _store_session_negotiation(
+    tenant_id: str,
+    audit_session_id: str,
+    docx_bytes: bytes | None,
+    diff: CounterpartyRedlineDiff,
+) -> None:
+    if not audit_session_id:
+        return
+    with _SESSION_ARTIFACT_LOCK:
+        key = (tenant_id, audit_session_id)
+        _SESSION_NEGOTIATION_CACHE[key] = (docx_bytes, diff)
+        _SESSION_NEGOTIATION_CACHE.move_to_end(key)
+        while len(_SESSION_NEGOTIATION_CACHE) > _MAX_SESSION_ARTIFACTS:
+            _SESSION_NEGOTIATION_CACHE.popitem(last=False)
+
+
+def _get_session_negotiation(
+    tenant_id: str, audit_session_id: str
+) -> tuple[bytes | None, CounterpartyRedlineDiff] | None:
+    with _SESSION_ARTIFACT_LOCK:
+        return _SESSION_NEGOTIATION_CACHE.get((tenant_id, audit_session_id))
+
+
 _SEVERITY_RANK: dict[RiskSeverity, int] = {
     RiskSeverity.LOW: 1,
     RiskSeverity.MEDIUM: 2,
@@ -262,7 +300,12 @@ def _compute_overall_risk(clauses: list[ClauseAudit]) -> RiskSeverity:
     return max(clauses, key=lambda c: _SEVERITY_RANK[c.severity]).severity
 
 
-def _cache_key(req: ComplianceCheckRequest) -> str:
+def _cache_key(
+    req: ComplianceCheckRequest,
+    *,
+    tenant_id: str = "default-tenant",
+    playbook_digest: str = "",
+) -> str:
     scope_val = (
         req.territorial_scope.value
         if req.territorial_scope
@@ -271,7 +314,7 @@ def _cache_key(req: ComplianceCheckRequest) -> str:
     ref_d = req.as_of_date or req.reference_date or "TODAY"
     regimes_str = ",".join(normalize_regimes(req.regimes)) if req.regimes else "DEFAULT"
     payload = (
-        f"{req.raw_text.strip()}|{ref_d}|"
+        f"{tenant_id}|{playbook_digest}|{req.raw_text.strip()}|{ref_d}|"
         f"{req.act_filter or 'ALL'}|{regimes_str}|{scope_val}|{req.persona.value}|{req.language}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -348,6 +391,8 @@ def _build_initial_agent_state(
     payload: ComplianceCheckRequest,
     effective_date: date,
     scope: TerritorialScope,
+    *,
+    tenant_id: str | None = None,
 ) -> AgentState:
     return {
         "document_id": payload.document_id,
@@ -358,6 +403,7 @@ def _build_initial_agent_state(
         "territorial_scope": scope.value,
         "persona": payload.persona.value,
         "language": payload.language,
+        "tenant_id": tenant_id,
         "abstention_threshold": payload.abstention_threshold
         or settings.abstention_threshold,
         "extracted_clauses": [],
@@ -512,7 +558,10 @@ async def _execute_compliance_check(
     effective_date = payload.as_of_date or payload.reference_date or date.today()
     scope = payload.territorial_scope or TerritorialScope.ALL_MALAYSIA
     cache_enabled = bool(use_cache and not payload.cache_bypass)
-    key = _cache_key(payload)
+    playbook_digest = default_precedent_playbook_store.get_tenant_playbook_digest(
+        tenant_id
+    )
+    key = _cache_key(payload, tenant_id=tenant_id, playbook_digest=playbook_digest)
 
     regimes_norm = normalize_regimes(payload.regimes) if payload.regimes else None
     reg_hash = compute_regime_set_hash(regimes_norm)
@@ -537,6 +586,7 @@ async def _execute_compliance_check(
         language=payload.language,
         act_filter=payload.act_filter,
         abstention_threshold=payload.abstention_threshold,
+        playbook_digest=playbook_digest,
         cache_namespace="compliance",
     )
 
@@ -601,7 +651,9 @@ async def _execute_compliance_check(
         )
 
     graph = build_compliance_graph()
-    initial_state = _build_initial_agent_state(payload, effective_date, scope)
+    initial_state = _build_initial_agent_state(
+        payload, effective_date, scope, tenant_id=tenant_id
+    )
     if exceeded and budget_policy == "deterministic_fallback":
         initial_state["force_deterministic_fallback"] = True
 
@@ -674,16 +726,21 @@ def _sse_frame(event_name: str, data: dict[str, Any]) -> str:
 
 
 @router.post("/compliance/stream")
-async def stream_compliance(payload: ComplianceCheckRequest) -> StreamingResponse:
+async def stream_compliance(
+    payload: ComplianceCheckRequest, request: Request
+) -> StreamingResponse:
     """
     Real-time Server-Sent Events (`text/event-stream`) endpoint streaming live 5-node
     LangGraph state transitions, PII scrub counts, 0.78 Abstention Gate telemetry,
     counterfactual retry diffs, and real-time USD + MYR FinOps burn ticker.
     """
+    tenant_id = get_request_tenant_id(request)
     effective_date = payload.as_of_date or payload.reference_date or date.today()
     scope = payload.territorial_scope or TerritorialScope.ALL_MALAYSIA
     graph = build_compliance_graph()
-    initial_state = _build_initial_agent_state(payload, effective_date, scope)
+    initial_state = _build_initial_agent_state(
+        payload, effective_date, scope, tenant_id=tenant_id
+    )
 
     async def _event_generator():
         accumulated_state: dict[str, Any] = dict(initial_state)
@@ -1592,6 +1649,43 @@ async def api_v1_export_hitl_jsonl(request: Request) -> PlainTextResponse:
     )
 
 
+@router.get("/api/v1/hitl/playbook", response_model=PlaybookListResponse)
+async def api_v1_list_playbook(request: Request) -> PlaybookListResponse:
+    """Lists active tenant-scoped 3-Tier Counsel Precedent Playbook rules (`viewer`/`auditor`/`admin`)."""
+    tenant_id = get_request_tenant_id(request)
+    return default_precedent_playbook_store.list_rules(tenant_id=tenant_id)
+
+
+@router.post("/api/v1/hitl/playbook/promote", response_model=PrecedentPlaybookRule)
+async def api_v1_promote_playbook_rule(
+    payload: PlaybookPromoteRequest, request: Request
+) -> PrecedentPlaybookRule:
+    """
+    Promotes an adjudicated HITL review or custom fallback into the tenant-isolated
+    3-tier Precedent Playbook while enforcing mandatory IN_FORCE DeonticEnvelopeResolver
+    statutory floors (`422 STATUTORY_FLOOR_VIOLATION` unless `admin` supplies
+    `statutory_risk_waiver=true` + rationale, recorded in Ed25519 AttestationLedger).
+    """
+    tenant_id = get_request_tenant_id(request)
+    state = getattr(request, "state", None)
+    ctx = getattr(state, "tenant_context", None) if state is not None else None
+    actor_id = str(getattr(ctx, "subject", None) or "counsel")
+    actor_role = str(getattr(ctx, "role", None) or "auditor").strip().lower()
+    try:
+        return default_precedent_playbook_store.promote_rule(
+            tenant_id=tenant_id,
+            request=payload,
+            actor_id=actor_id,
+            actor_role=actor_role,
+        )
+    except StatutoryFloorViolationError as exc:
+        raise HTTPException(status_code=422, detail=exc.to_detail_dict()) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post(
     "/api/v1/negotiation/diff-docx",
     response_model=CounterpartyRedlineDiff,
@@ -1622,8 +1716,8 @@ async def api_v1_negotiation_diff_docx(request: Request) -> CounterpartyRedlineD
                 if fields.get("regimes")
                 else None
             )
-            scope = fields.get("territorial_scope")
-            return analyze_counterparty_docx_redlines(
+            scope = fields.get("territorial_scope") or TerritorialScope.ALL_MALAYSIA
+            diff_res = analyze_counterparty_docx_redlines(
                 document_id=doc_id,
                 docx_bytes=file_bytes,
                 filename=filename,
@@ -1638,6 +1732,11 @@ async def api_v1_negotiation_diff_docx(request: Request) -> CounterpartyRedlineD
                 ledger=default_attestation_ledger,
                 pii_store=default_pii_session_store,
             )
+            if diff_res.audit_session_id:
+                _store_session_negotiation(
+                    tenant_id, diff_res.audit_session_id, file_bytes, diff_res
+                )
+            return diff_res
         except (ZipBombError, ValidationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1649,7 +1748,7 @@ async def api_v1_negotiation_diff_docx(request: Request) -> CounterpartyRedlineD
             if json_req.docx_base64
             else None
         )
-        return analyze_counterparty_docx_redlines(
+        diff_res = analyze_counterparty_docx_redlines(
             document_id=json_req.document_id,
             docx_bytes=docx_bytes,
             filename=json_req.filename,
@@ -1666,8 +1765,173 @@ async def api_v1_negotiation_diff_docx(request: Request) -> CounterpartyRedlineD
             ledger=default_attestation_ledger,
             pii_store=default_pii_session_store,
         )
+        if diff_res.audit_session_id:
+            _store_session_negotiation(
+                tenant_id, diff_res.audit_session_id, docx_bytes, diff_res
+            )
+        return diff_res
     except (ZipBombError, ValidationError, ValueError, binascii.Error) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/negotiation/compile-counter-docx", response_model=None)
+async def api_v1_compile_counter_docx(
+    request: Request,
+    response_format: Annotated[
+        Literal["json", "docx"],
+        Query(
+            description="Return structured CounterRedlineCompileResult JSON or raw '.docx' binary stream"
+        ),
+    ] = "json",
+) -> CounterRedlineCompileResult | Response:
+    """
+    Zero-Token Closed-Loop Counter-Redline `.docx` Compiler (`$0.00 USD / 0 tokens`):
+    mutates counterparty `.docx` revisions or synthesizes valid `<w:del>`/`<w:ins>` +
+    `word/comments.xml` counter-markup with bilingual statutory / tenant playbook fallbacks
+    and strict tenant-scoped PII re-hydration (`auditor`/`admin`).
+    """
+    tenant_id = get_request_tenant_id(request)
+    content_type = request.headers.get("content-type", "").lower()
+
+    if "multipart/form-data" in content_type:
+        fields, file_bytes, filename = await _parse_multipart_upload(request)
+        try:
+            disp_raw = fields.get("dispositions")
+            dispositions_obj = json.loads(disp_raw) if disp_raw else {}
+            req_model = CounterRedlineCompileRequest.model_validate(
+                {
+                    "document_id": fields.get("document_id")
+                    or filename
+                    or f"COUNTER-{uuid.uuid4().hex[:6]}",
+                    "audit_session_id": fields.get("audit_session_id"),
+                    "filename": filename,
+                    "baseline_text": fields.get("baseline_text"),
+                    "proposed_text": fields.get("proposed_text"),
+                    "dispositions": dispositions_obj,
+                    "counsel_author": fields.get("counsel_author")
+                    or settings.counter_redline_default_author,
+                    "counsel_initials": fields.get("counsel_initials")
+                    or settings.counter_redline_default_initials,
+                    "as_of_date": (
+                        date.fromisoformat(fields["as_of_date"])
+                        if fields.get("as_of_date")
+                        else None
+                    ),
+                    "regimes": (
+                        _parse_regimes_field(fields.get("regimes"))
+                        if fields.get("regimes")
+                        else None
+                    ),
+                    "territorial_scope": fields.get("territorial_scope")
+                    or TerritorialScope.ALL_MALAYSIA.value,
+                    "rehydrate_pii": fields.get("rehydrate_pii", "true").lower()
+                    in {"true", "1", "yes"},
+                    "use_tenant_playbook": fields.get(
+                        "use_tenant_playbook", "true"
+                    ).lower()
+                    in {"true", "1", "yes"},
+                    "preferred_playbook_tier": fields.get("preferred_playbook_tier")
+                    or "TIER_2_FALLBACK",
+                }
+            )
+            docx_bytes = file_bytes
+        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    else:
+        raw_body = await request.body()
+        try:
+            req_model = CounterRedlineCompileRequest.model_validate_json(raw_body)
+            docx_bytes = (
+                base64.b64decode(req_model.docx_base64, validate=True)
+                if req_model.docx_base64
+                else None
+            )
+        except (ValidationError, ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    diff_obj = req_model.diff
+    if (
+        docx_bytes is None
+        and diff_obj is None
+        and not req_model.baseline_text
+        and not req_model.proposed_text
+        and not req_model.revisions
+    ):
+        if req_model.audit_session_id:
+            cached_neg = _get_session_negotiation(tenant_id, req_model.audit_session_id)
+            if cached_neg is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Negotiation session '{req_model.audit_session_id}' not found "
+                        f"for tenant '{tenant_id}'."
+                    ),
+                )
+            cached_bytes, cached_diff = cached_neg
+            docx_bytes = cached_bytes
+            diff_obj = cached_diff
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Provide a counterparty '.docx', 'audit_session_id', 'diff', or "
+                    "baseline_text/proposed_text payload."
+                ),
+            )
+
+    try:
+        out_bytes, compile_res = compile_counter_redline_docx(
+            document_id=req_model.document_id,
+            docx_bytes=docx_bytes,
+            filename=req_model.filename,
+            diff=diff_obj,
+            baseline_text=req_model.baseline_text,
+            proposed_text=req_model.proposed_text,
+            revisions=req_model.revisions,
+            comments=req_model.comments,
+            dispositions=req_model.dispositions,
+            counsel_author=req_model.counsel_author,
+            counsel_initials=req_model.counsel_initials,
+            as_of_date=req_model.as_of_date,
+            regimes=req_model.regimes,
+            territorial_scope=req_model.territorial_scope,
+            tenant_id=tenant_id,
+            audit_session_id=req_model.audit_session_id,
+            rehydrate_pii=req_model.rehydrate_pii,
+            use_tenant_playbook=req_model.use_tenant_playbook,
+            preferred_playbook_tier=req_model.preferred_playbook_tier,
+            store=_DEFAULT_TEMPORAL_STORE,
+            ledger=default_attestation_ledger,
+            pii_store=default_pii_session_store,
+            playbook_store=default_precedent_playbook_store,
+        )
+    except (ZipBombError, ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if response_format == "docx":
+        manifest_id = (
+            compile_res.attestation_manifest.manifest_id
+            if compile_res.attestation_manifest
+            else ""
+        )
+        return Response(
+            content=out_bytes,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{compile_res.filename}"'
+                ),
+                "X-Tenant-ID": tenant_id,
+                "X-Output-Docx-SHA256": compile_res.output_docx_sha256,
+                "X-Attestation-Manifest-ID": manifest_id,
+                "X-Rehydrated-PII-Count": str(compile_res.rehydrated_pii_count),
+                "X-Total-Tokens": "0",
+            },
+        )
+    return compile_res
 
 
 @router.post(

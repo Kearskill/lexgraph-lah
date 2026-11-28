@@ -1226,16 +1226,39 @@ def _strip_hidden_runs_from_elem(elem: ET.Element, parent_hidden: bool = False) 
                 # Neutralize inline IPI tokens and Unicode steganography/homoglyphs in visible runs
                 for t_elem in child.iter():
                     if t_elem.tag in {f"{_W_NS}t", f"{_W_NS}delText"} and t_elem.text:
+                        orig_txt = t_elem.text
                         tmp_findings: list[DocumentSecurityFinding] = []
                         tmp_quar: list[str] = []
                         cleaned_txt = _filter_visible_line_for_ipi(
-                            t_elem.text,
+                            orig_txt,
                             source_format="docx",
                             location="sanitize",
                             findings=tmp_findings,
                             quarantined=tmp_quar,
                         )
-                        if tmp_findings or cleaned_txt != t_elem.text:
+                        if (
+                            not tmp_findings
+                            and not cleaned_txt
+                            and not orig_txt.strip()
+                        ):
+                            # Preserve pure whitespace separator runs across adjacent OOXML elements
+                            continue
+                        if not tmp_findings:
+                            lead = (
+                                " "
+                                if orig_txt[0] == " "
+                                and not cleaned_txt.startswith(" ")
+                                else ""
+                            )
+                            trail = (
+                                " "
+                                if orig_txt[-1] == " " and not cleaned_txt.endswith(" ")
+                                else ""
+                            )
+                            restored = f"{lead}{cleaned_txt}{trail}"
+                            if restored != orig_txt:
+                                t_elem.text = restored
+                        elif cleaned_txt != orig_txt:
                             t_elem.text = cleaned_txt
         else:
             _strip_hidden_runs_from_elem(child, parent_hidden=parent_hidden)

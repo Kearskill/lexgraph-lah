@@ -26,6 +26,7 @@ class StatutoryStatus(str, Enum):
     ACTIVE = "ACTIVE"
     AMENDED = "AMENDED"
     REPEALED = "REPEALED"
+    GAZETTED_PENDING_COMMENCEMENT = "GAZETTED_PENDING_COMMENCEMENT"
 
 
 class TemporalEdgeType(str, Enum):
@@ -260,6 +261,7 @@ class DeonticModality(str, Enum):
     PROHIBITION = "PROHIBITION"
     PERMISSION = "PERMISSION"
     VOLUNTARY_GUIDELINE = "VOLUNTARY_GUIDELINE"
+    PRE_COMMENCEMENT_ADVISORY = "PRE_COMMENCEMENT_ADVISORY"
 
 
 class DeonticOperator(str, Enum):
@@ -278,7 +280,11 @@ class DeonticConstraint(BaseModel):
         description="Canonical regime code, e.g., ACT_709, ACT_854, BNM_RMIT",
     )
     modality: Literal[
-        "OBLIGATION", "PROHIBITION", "PERMISSION", "VOLUNTARY_GUIDELINE"
+        "OBLIGATION",
+        "PROHIBITION",
+        "PERMISSION",
+        "VOLUNTARY_GUIDELINE",
+        "PRE_COMMENCEMENT_ADVISORY",
     ] = Field(default="OBLIGATION")
     metric_key: str = Field(
         ...,
@@ -469,7 +475,11 @@ class StatutoryNode(BaseModel):
             raise ValueError(
                 f"valid_to ({self.valid_to}) must be strictly after valid_from ({self.valid_from})"
             )
-        if self.status in {StatutoryStatus.AMENDED, StatutoryStatus.REPEALED}:
+        if self.status in {
+            StatutoryStatus.AMENDED,
+            StatutoryStatus.REPEALED,
+            StatutoryStatus.GAZETTED_PENDING_COMMENCEMENT,
+        }:
             self.is_in_force = False
         if not self.amendment_act_ref and self.gazette_ref:
             self.amendment_act_ref = self.gazette_ref
@@ -515,6 +525,15 @@ class StatutoryNode(BaseModel):
         return eff_from <= as_of_date and (
             self.valid_to is None or self.valid_to > as_of_date
         )
+
+    def is_gazetted_pending_on(self, as_of_date: date) -> bool:
+        """True when provision is gazetted as GAZETTED_PENDING_COMMENCEMENT and as_of_date precedes commencement."""
+        if self.status != StatutoryStatus.GAZETTED_PENDING_COMMENCEMENT:
+            return False
+        if self.gazette_date is None:
+            return False
+        eff_from = self.effective_from or self.valid_from
+        return self.gazette_date <= as_of_date < eff_from
 
 
 TemporalProvisionNode = StatutoryNode
@@ -689,7 +708,13 @@ class InterRegimeConflictDelta(BaseModel):
 
 class ResolvedMetricBound(BaseModel):
     metric_key: str
-    modality: Literal["OBLIGATION", "PROHIBITION", "PERMISSION", "VOLUNTARY_GUIDELINE"]
+    modality: Literal[
+        "OBLIGATION",
+        "PROHIBITION",
+        "PERMISSION",
+        "VOLUNTARY_GUIDELINE",
+        "PRE_COMMENCEMENT_ADVISORY",
+    ]
     operator: Literal["<=", ">=", "==", "FORBIDDEN_CLAUSE"]
     strictest_value: float | str | bool
     unit: str = ""
@@ -719,7 +744,11 @@ class CompositeDeonticEnvelope(BaseModel):
     territorial_scope: TerritorialScope = TerritorialScope.ALL_MALAYSIA
     regimes_evaluated: list[str] = Field(default_factory=list)
     active_node_ids: list[str] = Field(default_factory=list)
+    pending_commencement_node_ids: list[str] = Field(default_factory=list)
     resolved_bounds: dict[str, ResolvedMetricBound] = Field(default_factory=dict)
+    pre_commencement_advisories: dict[str, ResolvedMetricBound] = Field(
+        default_factory=dict
+    )
     recipient_obligations: dict[str, RecipientNoticeObligation] = Field(
         default_factory=dict
     )
@@ -909,14 +938,35 @@ class ClauseAudit(BaseModel):
         description="True when counterfactual redline simulation satisfies the strictest composite deontic envelope.",
     )
     deontic_modality: (
-        Literal["OBLIGATION", "PROHIBITION", "PERMISSION", "VOLUNTARY_GUIDELINE"] | None
+        Literal[
+            "OBLIGATION",
+            "PROHIBITION",
+            "PERMISSION",
+            "VOLUNTARY_GUIDELINE",
+            "PRE_COMMENCEMENT_ADVISORY",
+        ]
+        | None
     ) = Field(
         default=None,
-        description="Optional deontic modality discriminating mandatory statutory duties vs voluntary guidelines.",
+        description="Optional deontic modality discriminating mandatory statutory duties vs voluntary guidelines or pre-commencement advisories.",
     )
     is_voluntary_guideline: bool = Field(
         default=False,
         description="True when finding arises from a voluntary governance guideline (e.g. MOSTI AIGE) rather than mandatory statute.",
+    )
+    is_pre_commencement_advisory: bool = Field(
+        default=False,
+        description="True when finding arises from a gazetted statute pending Ministerial commencement (e.g. Act 882).",
+    )
+    playbook_rule_id: str | None = Field(
+        default=None,
+        description="Active tenant PrecedentPlaybookRule ID applied during deterministic audit.",
+    )
+    playbook_tier_applied: (
+        Literal["TIER_1_PREFERRED", "TIER_2_FALLBACK", "TIER_3_STATUTORY_FLOOR"] | None
+    ) = Field(
+        default=None,
+        description="Negotiation playbook tier applied to recommended_redline.",
     )
 
 
@@ -1853,3 +1903,144 @@ class HITLReviewRecord(BaseModel):
     attestation_chain_hash: str
     signing_key_id: str
     recorded_at: str
+
+
+# =============================================================================
+# Phase 7: Closed-Loop Counter-Redline .docx Compiler & Tenant Playbook Engine
+# =============================================================================
+
+CounselDisposition = Literal[
+    "ACCEPT_COUNTERPARTY",
+    "COUNTER_PROPOSE_FALLBACK",
+    "REJECT_REVERT_BASELINE",
+    "ESCALATE_COMMENT_ONLY",
+]
+
+PlaybookTier = Literal[
+    "TIER_1_PREFERRED",
+    "TIER_2_FALLBACK",
+    "TIER_3_STATUTORY_FLOOR",
+]
+
+
+class ClauseDispositionOverride(BaseModel):
+    clause_id: str
+    disposition: CounselDisposition
+    custom_text: str | None = None
+    custom_comment: str | None = None
+    playbook_tier: PlaybookTier = "TIER_2_FALLBACK"
+
+
+class CounterRedlineCompileRequest(BaseModel):
+    document_id: str = Field(default="COUNTER-REDLINE-001", min_length=1)
+    audit_session_id: str | None = None
+    docx_base64: str | None = None
+    filename: str | None = None
+    diff: CounterpartyRedlineDiff | None = None
+    baseline_text: str | None = None
+    proposed_text: str | None = None
+    revisions: list[RedlineRevisionInput] = Field(default_factory=list)
+    comments: list[CommentAnnotation] = Field(default_factory=list)
+    dispositions: dict[str, CounselDisposition | ClauseDispositionOverride] = Field(
+        default_factory=dict
+    )
+    counsel_author: str = Field(default="LexGraph Counsel")
+    counsel_initials: str = Field(default="LGC")
+    as_of_date: date | None = None
+    regimes: list[str] | None = None
+    territorial_scope: TerritorialScope = Field(default=TerritorialScope.ALL_MALAYSIA)
+    rehydrate_pii: bool = True
+    use_tenant_playbook: bool = True
+    preferred_playbook_tier: PlaybookTier = "TIER_2_FALLBACK"
+
+
+class CompiledClauseAction(BaseModel):
+    clause_id: str
+    classification: RedlineClassification
+    disposition: CounselDisposition
+    counter_text_source: Literal[
+        "COUNTERPARTY_ACCEPTED",
+        "COUNSEL_OVERRIDE",
+        "TENANT_PLAYBOOK",
+        "STATUTORY_REMEDIATION",
+        "BASELINE_REVERT",
+        "COMMENT_ONLY",
+    ]
+    playbook_rule_id: str | None = None
+    playbook_tier: PlaybookTier | None = None
+    comment_id: str | None = None
+    cited_provisions: list[str] = Field(default_factory=list)
+    emitted_del: bool = False
+    emitted_ins: bool = False
+
+
+class CounterRedlineCompileResult(BaseModel):
+    document_id: str
+    filename: str
+    audit_session_id: str
+    as_of_date: date
+    regimes: list[str] = Field(default_factory=list)
+    territorial_scope: TerritorialScope = TerritorialScope.ALL_MALAYSIA
+    counsel_author: str
+    in_place_ooxml_mutation: bool = False
+    accepted_count: int = 0
+    counter_proposed_count: int = 0
+    reverted_count: int = 0
+    escalated_count: int = 0
+    comments_appended: int = 0
+    rehydrated_pii_count: int = 0
+    output_docx_sha256: str
+    docx_base64: str
+    clause_actions: list[CompiledClauseAction] = Field(default_factory=list)
+    attestation_manifest: ComplianceAttestationManifest | None = None
+    telemetry: TelemetrySummary
+    disclaimer: str = DEFAULT_LEGAL_DISCLAIMER
+
+
+class PrecedentPlaybookRule(BaseModel):
+    rule_id: str
+    tenant_id: str
+    clause_archetype: str
+    ast_fingerprint: str
+    regimes: list[str] = Field(default_factory=list)
+    territorial_scope: str = TerritorialScope.ALL_MALAYSIA.value
+    as_of_date: date
+    tier_1_preferred: str
+    tier_2_fallback: str | None = None
+    tier_3_statutory_floor: str
+    statutory_floor_bounds: dict[str, Any] = Field(default_factory=dict)
+    source_review_id: str | None = None
+    source_decision: HITLDecision | None = None
+    rationale: str = ""
+    statutory_risk_waiver: bool = False
+    waiver_rationale: str | None = None
+    waiver_approved_by: str | None = None
+    waiver_attestation_manifest_id: str | None = None
+    attestation_manifest_id: str
+    attestation_signature_b64: str = ""
+    attestation_chain_hash: str = ""
+    signing_key_id: str = ""
+    created_by: str = "counsel"
+    created_at: str
+    updated_at: str
+
+
+class PlaybookPromoteRequest(BaseModel):
+    review_id: str | None = None
+    clause_archetype: str | None = None
+    original_clause_text: str | None = None
+    tier_1_preferred: str | None = None
+    tier_2_fallback: str | None = None
+    regimes: list[str] | None = None
+    territorial_scope: str | None = None
+    as_of_date: date | None = None
+    rationale: str = ""
+    statutory_risk_waiver: bool = False
+    waiver_rationale: str | None = None
+
+
+class PlaybookListResponse(BaseModel):
+    tenant_id: str
+    playbook_digest: str
+    total: int = 0
+    rules: list[PrecedentPlaybookRule] = Field(default_factory=list)

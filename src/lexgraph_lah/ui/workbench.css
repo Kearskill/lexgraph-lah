@@ -1244,6 +1244,104 @@ a:focus-visible {
   animation: lex-pulse 1.2s ease-in-out infinite;
 }
 
+/* Phase 7 Institutional Studio Controls & Retrieval Explainability */
+.status-advisory {
+  background-color: var(--status-warning-bg);
+  color: var(--status-warning-ink);
+  border: 1px solid var(--border-strong);
+}
+
+.disposition-select {
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-primary);
+  background-color: var(--surface-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.retrieval-score-card {
+  background-color: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.retrieval-bar-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 56px;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.retrieval-bar-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-secondary);
+}
+
+.retrieval-bar-track {
+  height: 6px;
+  background-color: var(--surface-hover);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.retrieval-bar-fill {
+  height: 100%;
+  background-color: var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.retrieval-bar-fill.is-rrf {
+  background-color: var(--status-compliant-ink);
+}
+
+.retrieval-bar-fill.is-dense {
+  background-color: var(--ink-secondary);
+}
+
+.retrieval-bar-val {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-primary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.workbench-toast {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(var(--footer-h) + var(--space-3));
+  z-index: 65;
+  max-width: 420px;
+  background-color: var(--surface-elevated);
+  color: var(--ink-primary);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.workbench-toast.is-breach {
+  border-left-color: var(--status-breach-ink);
+}
+
+.workbench-toast.is-compliant {
+  border-left-color: var(--status-compliant-ink);
+}
+
 /* Mobile Menu Button (hidden on desktop) */
 .mobile-menu-btn {
   display: none;

@@ -18,6 +18,9 @@ from lexgraph_lah.graph.temporal_store import get_default_temporal_store
 from lexgraph_lah.hitl.review_store import default_hitl_review_ledger
 from lexgraph_lah.ingestion.contract_ast import build_contract_ast
 from lexgraph_lah.middleware.pii_scrubber import scrub_malaysian_pii
+from lexgraph_lah.negotiation.counter_docx_compiler import (
+    compile_counter_redline_docx,
+)
 from lexgraph_lah.negotiation.docx_redline_critic import (
     analyze_counterparty_docx_redlines,
 )
@@ -25,6 +28,7 @@ from lexgraph_lah.schemas.domain import (
     CommentAnnotation,
     ComplianceAttestationManifest,
     ContractDeltaAuditRequest,
+    CounterRedlineCompileRequest,
     HITLReviewRequest,
     IncidentPlaybookRequest,
     OutputPersona,
@@ -416,6 +420,51 @@ MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             ],
         },
     },
+    {
+        "name": "compile_counter_redline_docx",
+        "description": (
+            "Zero-token round-trip Counterparty .docx Compiler ($0.00 USD / 0 LLM tokens). "
+            "Mutates counterparty .docx OOXML track changes (<w:del>, <w:ins>, word/comments.xml) "
+            "or synthesizes a counter-markup .docx from baseline/proposed text or CounterpartyRedlineDiff, "
+            "applying counsel dispositions, bilingual statutory remediations or Tenant Playbook "
+            "fallbacks, strict tenant-bound PII re-hydration, and Ed25519 AttestationLedger signing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "audit_session_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "docx_base64": {"type": "string"},
+                "filename": {"type": "string"},
+                "diff": {"type": "object"},
+                "baseline_text": {"type": "string"},
+                "proposed_text": {"type": "string"},
+                "revisions": {"type": "array", "items": {"type": "object"}},
+                "comments": {"type": "array", "items": {"type": "object"}},
+                "dispositions": {"type": "object"},
+                "counsel_author": {"type": "string"},
+                "counsel_initials": {"type": "string"},
+                "as_of_date": {"type": "string", "format": "date"},
+                "regimes": {"type": "array", "items": {"type": "string"}},
+                "territorial_scope": {
+                    "type": "string",
+                    "enum": [s.value for s in TerritorialScope],
+                },
+                "rehydrate_pii": {"type": "boolean"},
+                "use_tenant_playbook": {"type": "boolean"},
+                "preferred_playbook_tier": {
+                    "type": "string",
+                    "enum": [
+                        "TIER_1_PREFERRED",
+                        "TIER_2_FALLBACK",
+                        "TIER_3_STATUTORY_FLOOR",
+                    ],
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 _SEVERITY_RANK: dict[RiskSeverity, int] = {
@@ -695,6 +744,40 @@ def _dispatch_sync_only(
         return default_hitl_review_ledger.record_review(
             hitl_req, tenant_id=tenant
         ).model_dump(mode="json")
+
+    if tool_name == "compile_counter_redline_docx":
+        req_dict = {
+            k: v for k, v in arguments.items() if k != "tenant_id" and v is not None
+        }
+        req_model = CounterRedlineCompileRequest.model_validate(req_dict)
+        docx_bytes = (
+            base64.b64decode(req_model.docx_base64, validate=True)
+            if req_model.docx_base64
+            else None
+        )
+        tenant = str(arguments.get("tenant_id") or "default-tenant")
+        _, compile_res = compile_counter_redline_docx(
+            document_id=req_model.document_id,
+            docx_bytes=docx_bytes,
+            filename=req_model.filename,
+            diff=req_model.diff,
+            baseline_text=req_model.baseline_text,
+            proposed_text=req_model.proposed_text,
+            revisions=req_model.revisions,
+            comments=req_model.comments,
+            dispositions=req_model.dispositions,
+            counsel_author=req_model.counsel_author,
+            counsel_initials=req_model.counsel_initials,
+            as_of_date=req_model.as_of_date,
+            regimes=req_model.regimes,
+            territorial_scope=req_model.territorial_scope,
+            tenant_id=tenant,
+            audit_session_id=req_model.audit_session_id,
+            rehydrate_pii=req_model.rehydrate_pii,
+            use_tenant_playbook=req_model.use_tenant_playbook,
+            preferred_playbook_tier=req_model.preferred_playbook_tier,
+        )
+        return compile_res.model_dump(mode="json")
 
     return None
 

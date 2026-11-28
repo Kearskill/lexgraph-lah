@@ -4,21 +4,21 @@
 [![Security Audit](https://github.com/Kearskill/lexgraph-lah/actions/workflows/security.yml/badge.svg)](https://github.com/Kearskill/lexgraph-lah/actions/workflows/security.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.162%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.165%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-1C3C3C?logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 ## 60-Second Executive Architecture Summary
 
-- **The Problem:** Auditing Malaysian commercial contracts across overlapping 2025–2026 statutes (`Act 709` PDPA A1727, `Act 854` Cyber Security, `BNM RMiT`, `Act 378` Stamp SDSAS, `Act 53` MyInvois `>RM10k`, `Act 873` Consumer Credit, `MOSTI AIGE`) breaks flat vector RAG: pre/post-amendment provisions leak across dates, stochastic LLMs fail numeric deadline arithmetic (`1h` vs `6h` vs `72h` vs `7d`), and hidden OOXML/PDF prompt injections or Unicode bidi overrides bypass naive parsers.
-- **Neuro-Symbolic Unit Economics:** Deterministic $O(V + E)$ symbolic engines handle document firewalling, PII scrubbing (`<50ms`, AES-256-GCM AAD vault), Contract AST trap detection, deontic envelope solving, OOXML track-changes diffing, and SLA cascades at **`$0.00 USD` (`0` LLM tokens)**, keeping full multi-node benchmark audits at **`$0.000120 USD` (`RM 0.000528 MYR`)** mean spend with `ClauseASTCache` hits dropping repeat clauses to **`$0.00`**.
+- **The Problem:** Auditing Malaysian commercial contracts across overlapping 2025–2026 statutes (`Act 709` PDPA A1727, `Act 854` Cyber Security, `BNM RMiT`, `Act 378` Stamp SDSAS, `Act 53` MyInvois `>RM10k`, `Act 872` Gig Workers, `Act 873` Consumer Credit, `Act 882` Government Procurement `GAZETTED_PENDING_COMMENCEMENT`, `MOSTI AIGE`) breaks flat vector RAG: pre/post-amendment provisions leak across dates, stochastic LLMs fail numeric deadline arithmetic (`1h` vs `6h` vs `72h` vs `7d`), and hidden OOXML/PDF prompt injections or Unicode bidi overrides bypass naive parsers.
+- **Neuro-Symbolic Unit Economics:** Deterministic $O(V + E)$ symbolic engines handle document firewalling, PII scrubbing (`<50ms`, AES-256-GCM AAD vault), Contract AST trap detection, deontic envelope solving, OOXML track-changes diffing, counter-redline `.docx` compilation, 3-tier tenant playbooks, and SLA cascades at **`$0.00 USD` (`0` LLM tokens)**, keeping full multi-node benchmark audits at **`$0.000111 USD` (`RM 0.000488 MYR`)** mean spend with `ClauseASTCache` hits dropping repeat clauses to **`$0.00`**.
 - **Zero Temporal Leakage & Calibrated Retrieval:** Bi-temporal (`as_of_date`) and 5-tier territorial (`Sabah`, `Sarawak`, `Labuan`, `Peninsular`, `Federal`) filters execute **before** bilingual `BM25F + Subword/Dense + RRF (k=60)` retrieval (`0.00%` temporal contamination, `0.78` calibrated abstention gate).
 - **3-Line Zero-Config Quickstart:**
   ```bash
   uv sync --all-extras --dev --frozen && uv run lexgraph-lah
   # Open http://localhost:8000/demo -> click any 1-click "Load Sample Scenario" preset
   ```
-- **Deep Dives:** [Staff Architecture Decisions (ADR-001..006)](./docs/ARCHITECTURE_DECISIONS.md) &bull; [Evaluation, Calibration (`ECE`/Brier/`Recall@K`) & Limitations](./docs/EVALUATION_AND_LIMITATIONS.md)
+- **Deep Dives:** [Staff Architecture Decisions (ADR-001..007)](./docs/ARCHITECTURE_DECISIONS.md) &bull; [Evaluation, Calibration (`ECE`/Brier/`Recall@K`) & Limitations](./docs/EVALUATION_AND_LIMITATIONS.md)
 
 ---
 
@@ -30,6 +30,8 @@
 - **Enacted 2025–2026 & Companion Malaysian Statutes:**
   - **Data Sharing Act 2025 [Act 864]** (eff. `2025-04-28`), including **s. 17(1)** extension of public-sector statutory duties to third-party contractors/vendors.
   - **Online Safety Act 2025 [Act 866]** (eff. `2026-01-01`) & **Risk Mitigation / Child Protection Codes** (eff. `2026-06-01`, under-16 MyKad/passport verification, RM10M non-compliance penalty ceiling).
+  - **Gig Workers Act 2025 [Act 872]** (commenced 2026): Detects omitted mandatory written service agreement schedules (`s. 4`), unilateral algorithmic deactivation/rate-reduction traps (`s. 12`), Gig Workers Tribunal jurisdiction waivers (`s. 25`), and PERKESO deduction omissions (`s. 38`).
+  - **Government Procurement Act 2026 [Act 882]** (`GAZETTED_PENDING_COMMENCEMENT`, gazetted May 2026): Surfaces distinct `PRE_COMMENCEMENT_ADVISORY` modality prior to Ministerial commencement (never conflated with active statutory breaches), covering unauthorized tender sub-contracting/rent-seeking transfers (`s. 28`) and Procurement Appeal Tribunal jurisdiction alongside `Act 864 s. 17(1)` (`s. 45`).
   - **Consumer Credit Act 2025 [Act 873]** (eff. `2026-03-01`) & **SKP BNPL/Debt-Collector Licensing** (eff. `2026-06-01`, Rule-of-78 / flat-rate prohibition).
   - **Stamp Act 1949 [Act 378] & Tax Measures Act 2025 (SDSAS, eff. `2026-01-01`):** Section 52 evidentiary inadmissibility, 30-day SDSAS self-assessment return & payment window, employment contract stamp duty exemption threshold shift from `RM300` to `RM3,000/month`, and `8%` foreign residential property transfer duty tier.
   - **Income Tax Act 1967 [Act 53] s. 82C & s. 120(1)(d) (LHDN `MyInvois` e-Invoicing):** Phased commencement (`2024-08-01`, `2025-01-01`, `2025-07-01`, `2026-01-01`), `> RM10,000` single-transaction consolidated e-invoice prohibition (eff. `2026-01-01`), `RM3,000,000` annual revenue exemption update (eff. `2026-08-30` with related/holding-company non-exemption carve-out), `72-hour` UIN cancellation/rejection window, self-billed foreign import duties, `<w:tbl>` `Jadual Pembayaran` checks, and `s. 120(1)(d)` penalties (`RM200–RM20,000` / `6m`).
@@ -127,6 +129,7 @@ uv run python -m lexgraph_lah.portfolio.worker --poll-interval 2.0
 | `/compliance/upload` | `POST` | Multipart `.docx`, `.pdf`, or `.txt` upload with pre-AST firewall, `<w:tbl>` / OCR handling, and PII scrubbing. |
 | `/compliance/export-docx` | `POST` | Streams Track-Changes `.docx` with cross-worker PII re-hydration (`audit_session_id`) and Ed25519 headers. |
 | `/api/v1/negotiation/diff-docx` | `POST` | Zero-token counterparty OOXML track-changes & comment-thread negotiation critic returning `CounterpartyRedlineDiff` + attestation. |
+| `/api/v1/negotiation/compile-counter-docx` | `POST` | Zero-token round-trip `.docx` compiler (`<w:del>`/`<w:ins>` + `word/comments.xml` + tenant playbook + strict PII re-hydration + Ed25519). |
 | `/api/v1/deontic/envelope` | `GET` | Zero-token `DeonticEnvelopeResolver` returning strictest bounds, `VOLUNTARY_GUIDELINE` separation, and `recipient_obligations`. |
 | `/api/v1/deontic/incident-playbook` | `POST` | Zero-token multi-regulator incident timeline compiler (`UTC` + `Asia/Kuala_Lumpur`, `Act 388 s. 54`) + SLA cascade warnings. |
 | `/api/v1/lineage/diff` | `GET` / `POST` | Zero-token bi-temporal statutory diff across `AMENDED_BY` and `REPEALED_BY` chains. |
@@ -142,6 +145,8 @@ uv run python -m lexgraph_lah.portfolio.worker --poll-interval 2.0
 | `/api/v1/retrieval/search` | `GET` | Bilingual statutory span search with 5-tier authority reranking, territorial scope filter, and `0.78` abstention gate. |
 | `/api/v1/retrieval/explain` | `POST` | Bilingual hybrid `BM25F + Subword/Dense + RRF (k=60)` retrieval explainability (`viewer`/`auditor`/`admin`). |
 | `/api/v1/hitl/reviews` | `POST` | Records PII-scrubbed counsel HITL adjudication (`ACCEPT_REDLINE`, `MODIFY_REDLINE`, `REJECT_FALSE_POSITIVE`, `ESCALATE_TO_COUNSEL`) signed in Ed25519 ledger (`auditor`/`admin`). |
+| `/api/v1/hitl/playbook` | `GET` | Lists active tenant-isolated 3-tier Precedent Playbook rules & cache-busting `playbook_digest` (`viewer`/`auditor`/`admin`). |
+| `/api/v1/hitl/playbook/promote` | `POST` | Promotes HITL review or custom fallback into 3-tier Tenant Playbook enforcing `422 STATUTORY_FLOOR_VIOLATION` (`auditor`/`admin`, admin waiver logged). |
 | `/api/v1/hitl/export-jsonl` | `GET` | Exports tenant-scoped PII-free counsel adjudications as deterministic JSONL golden regression cases (`admin`). |
 | `/api/v1/attestation/public-key` | `GET` | Returns Ed25519 PEM/raw public key and SHA-256 fingerprint for offline attestation verification. |
 | `/api/v1/attestation/{manifest_id}` | `GET` | Retrieves an immutable hash-chained & Ed25519-signed `AttestationLedgerRecord`. |
@@ -149,7 +154,7 @@ uv run python -m lexgraph_lah.portfolio.worker --poll-interval 2.0
 | `/api/v1/attestation/verify` | `POST` | Cryptographically verifies digest, `as_of_date`, citations, SHA-256 chain, and Ed25519 signature. |
 | `/api/v1/finops/tenant-usage` | `GET` | Returns tenant-scoped cumulative USD/MYR FinOps telemetry, cache hits, fallback runs, and budget guardrail status. |
 | `/api/v1/security/scan` | `POST` | Zero-token OOXML `.docx` / `.pdf` / raw-text IPI, Unicode bidi/zero-width/homoglyph, `comments.xml`/`footnotes.xml`, and zip-bomb firewall scanner. |
-| `/mcp` | `POST` | Streamable HTTP JSON-RPC 2.0 MCP server (`14` tools including `record_hitl_review`; stdio via `python -m lexgraph_lah.mcp.jsonrpc --stdio`). |
+| `/mcp` | `POST` | Streamable HTTP JSON-RPC 2.0 MCP server (`15` tools including `compile_counter_redline_docx`; stdio via `python -m lexgraph_lah.mcp.jsonrpc --stdio`). |
 
 ---
 
@@ -164,7 +169,7 @@ uv run mypy src tests evals
 uv run pytest -q
 ```
 
-### 2. Run the 36-Scenario Determinism, Oblique Stress & Calibration Benchmarks
+### 2. Run the 39-Scenario Determinism, Oblique Stress & Calibration Benchmarks
 
 ```bash
 uv run python -m evals.run_benchmark --mode mock --trials 3
@@ -178,7 +183,7 @@ uv run python -m evals.run_benchmark --mode live --trials 3
 
 | Metric | Observed (`--mode mock --trials 3`) | SLA Target | Status |
 | :--- | :--- | :--- | :--- |
-| **Scenarios x Trials** | `36 scenarios x 3 trials (108 runs)` | `>= 18 scenarios` | PASS |
+| **Scenarios x Trials** | `39 scenarios x 3 trials (117 runs)` | `>= 18 scenarios` | PASS |
 | **Determinism Consistency (%)** | `100.00%` | `100.00%` | PASS |
 | **Cross-Trial Verdict Stability (%)** | `100.00%` | `100.00%` | PASS |
 | **Verdict Accuracy (%)** | `100.00%` | `>= 95.00%` | PASS |
@@ -188,9 +193,9 @@ uv run python -m evals.run_benchmark --mode live --trials 3
 | **Abstention Precision (%)** | `100.00%` | `100.00%` | PASS |
 | **Temporal Context Recall (%)** | `100.00%` | `100.00%` | PASS |
 | **Temporal Contamination Rate (%)** | `0.00%` | `0.00%` | PASS |
-| **Latency p50 / p95 (ms)** | `32.44 ms / 194.69 ms` | `< 5000.00 ms` | PASS |
-| **Mean Tokens per Audit** | `477.4 tokens` | `< 15000 tokens` | PASS |
-| **Mean Cost per Audit (USD & MYR)** | `$0.000120 USD / RM 0.000528 MYR` | `< $0.005000 USD` | PASS |
+| **Latency p50 / p95 (ms)** | `36.28 ms / 187.53 ms` | `< 5000.00 ms` | PASS |
+| **Mean Tokens per Audit** | `440.6 tokens` | `< 15000 tokens` | PASS |
+| **Mean Cost per Audit (USD & MYR)** | `$0.000111 USD / RM 0.000488 MYR` | `< $0.005000 USD` | PASS |
 
 ---
 

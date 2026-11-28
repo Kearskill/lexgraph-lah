@@ -1035,6 +1035,169 @@ def _extract_clause_metrics(
     ):
         metrics["bnm_subcontractor_unrestricted"] = True
 
+    # Act 872 (Gig Workers Act 2025) metrics
+    if any(
+        kw in low
+        for kw in (
+            "gig worker",
+            "pekerja gig",
+            "platform provider",
+            "penyedia platform",
+            "e-hailing",
+            "p-hailing",
+            "ride-hailing",
+            "freelance rider",
+            "freelance driver",
+            "gig service",
+            "act 872",
+            "akta 872",
+            "gig workers tribunal",
+            "tribunal pekerja gig",
+            "perkeso",
+        )
+    ):
+        metrics["gig_context_present"] = True
+
+    if any(
+        kw in low
+        for kw in (
+            "no written service schedule",
+            "no written schedule",
+            "without a written service agreement",
+            "without mandatory schedule",
+            "waives mandatory service agreement",
+            "waives service agreement schedule",
+            "excludes mandatory schedule",
+            "verbal engagement only",
+            "oral engagement only",
+            "tiada jadual perjanjian perkhidmatan",
+            "mengecualikan jadual perjanjian",
+            "perkhidmatan lisan sahaja",
+            "tanpa perjanjian perkhidmatan bertulis",
+        )
+    ):
+        metrics["gig_service_schedule_omitted"] = True
+
+    if any(
+        kw in low
+        for kw in (
+            "unilateral algorithmic deactivation",
+            "algorithmic deactivation without notice",
+            "deactivate account without notice",
+            "deactivate the gig worker",
+            "deactivation at its sole discretion",
+            "terminate platform access without notice",
+            "unilateral rate reduction",
+            "unilateral rate cut",
+            "reduce commission or rate without notice",
+            "modify fee rates unilaterally",
+            "algorithmic suspension without review",
+            "menyahaktifkan akaun secara sepihak",
+            "pemotongan kadar bayaran secara sepihak",
+            "penyahaktifan algoritma tanpa notis",
+        )
+    ):
+        metrics["gig_unilateral_algo_deactivation"] = True
+
+    if any(
+        kw in low
+        for kw in (
+            "waive gig workers tribunal",
+            "waives gig workers tribunal",
+            "waiver of gig workers tribunal",
+            "excludes gig workers tribunal",
+            "ouster of gig tribunal",
+            "no recourse to the gig workers tribunal",
+            "forfeit right to refer dispute to the tribunal",
+            "mengetepikan tribunal pekerja gig",
+            "mengecualikan bidang kuasa tribunal pekerja gig",
+        )
+    ):
+        metrics["gig_tribunal_waiver"] = True
+
+    if any(
+        kw in low
+        for kw in (
+            "no perkeso deduction",
+            "excludes perkeso",
+            "exclude perkeso",
+            "shall not deduct perkeso",
+            "without perkeso deduction",
+            "no socso deduction",
+            "exempt from perkeso remittance",
+            "contractor bears all social security",
+            "tiada caruman perkeso",
+            "tiada potongan perkeso",
+            "tidak akan memotong caruman perkeso",
+        )
+    ):
+        metrics["gig_perkeso_omitted"] = True
+
+    # Act 882 (Government Procurement Act 2026) metrics
+    if any(
+        kw in low
+        for kw in (
+            "government procurement",
+            "public procurement",
+            "perolehan kerajaan",
+            "federal procurement",
+            "ministry tender",
+            "government tender",
+            "procurement contract",
+            "kontrak perolehan",
+            "act 882",
+            "akta 882",
+            "procurement appeal tribunal",
+            "tribunal rayuan perolehan",
+        )
+    ):
+        metrics["gov_procurement_context_present"] = True
+
+    if any(
+        kw in low
+        for kw in (
+            "sub-contract government procurement without",
+            "subcontract procurement obligations without",
+            "sub-contract procurement obligations without",
+            "subcontract procurement without",
+            "sub-contract procurement without",
+            "sub-contracted without procuring authority",
+            "subcontracted without procuring authority",
+            "sub-contracting without procuring authority",
+            "subcontracting without procuring authority",
+            "without procuring authority approval",
+            "without approval of procuring authority",
+            "without approval of the procuring authority",
+            "sub-contract or assign this procurement contract without",
+            "assign procurement award without approval",
+            "transfer tender award to third party",
+            "rent-seeking transfer",
+            "subcontract tender deliverables at its sole discretion",
+            "without prior written approval of the procuring authority",
+            "mensubkontrak obligasi perolehan tanpa kelulusan",
+            "menyerah hak kontrak perolehan tanpa kebenaran",
+            "pemindahan mengaut sewa",
+        )
+    ):
+        metrics["gov_procurement_unauth_subcontract"] = True
+
+    if any(
+        kw in low
+        for kw in (
+            "waive procurement appeal tribunal",
+            "waives procurement appeal tribunal",
+            "excludes procurement appeal tribunal",
+            "ouster of procurement appeal tribunal",
+            "no recourse to procurement appeal tribunal",
+            "final and unappealable procurement decision",
+            "overrides act 864 s. 17",
+            "excludes data sharing act 2025",
+            "mengetepikan tribunal rayuan perolehan",
+            "mengecualikan semakan tribunal rayuan perolehan",
+        )
+    ):
+        metrics["gov_procurement_tribunal_ouster"] = True
+
     return metrics
 
 

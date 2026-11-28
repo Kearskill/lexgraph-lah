@@ -51,6 +51,11 @@ from lexgraph_lah.graph.diff_engine import (
 from lexgraph_lah.graph.portfolio_scanner import scan_portfolio_blast_radius
 from lexgraph_lah.graph.reranker import rerank_statutes_and_spans
 from lexgraph_lah.graph.temporal_store import get_default_temporal_store
+from lexgraph_lah.hitl.precedent_playbook import (
+    InMemoryPlaybookBackend,
+    PrecedentPlaybookStore,
+    StatutoryFloorViolationError,
+)
 from lexgraph_lah.ingestion.contract_ast import build_contract_ast
 from lexgraph_lah.ingestion.ooxml_redliner import (
     compile_track_changes_docx,
@@ -58,6 +63,9 @@ from lexgraph_lah.ingestion.ooxml_redliner import (
 )
 from lexgraph_lah.mcp.jsonrpc import handle_jsonrpc_message
 from lexgraph_lah.middleware.pii_scrubber import EncryptedPIISessionStore
+from lexgraph_lah.negotiation.counter_docx_compiler import (
+    compile_counter_redline_docx,
+)
 from lexgraph_lah.negotiation.docx_redline_critic import (
     analyze_counterparty_docx_redlines,
 )
@@ -70,6 +78,7 @@ from lexgraph_lah.schemas.domain import (
     ContractClauseNode,
     ContractDeltaAuditRequest,
     IncidentPlaybookRequest,
+    PlaybookPromoteRequest,
     PortfolioBlastRadiusRequest,
     PortfolioContractInput,
     RiskSeverity,
@@ -151,6 +160,9 @@ class BenchmarkCase(BaseModel):
         "counterparty_docx_redline",
         "sla_cascade_playbook",
         "lexpack_cache_finops",
+        "counter_docx_roundtrip",
+        "playbook_floor_guardrail",
+        "act872_act882_statutes",
         "hitl_golden",
     ] = "langgraph"
     contract_text: str
@@ -1330,6 +1342,64 @@ def get_benchmark_dataset() -> list[BenchmarkCase]:
             expected_clause_ids={"LEXPACK-CACHE-FINOPS"},
             mock_attempts=[],
         ),
+        BenchmarkCase(
+            case_id="BENCH-37-COUNTER-DOCX-ROUNDTRIP",
+            title="Zero-Token Round-Trip Counterparty .docx OOXML Mutation, Comments & Strict PII Re-Hydration",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_709"],
+            check_kind="counter_docx_roundtrip",
+            contract_text=(
+                "SEC-12B Breach Notice: Processor notifies Customer NRIC 880101-14-5678 "
+                "within 14 days and bears zero statutory liability."
+            ),
+            expected_overall_risk=RiskSeverity.CRITICAL,
+            expected_active_statute_ids={"PDPA-2010-SEC-9-V2", "PDPA-2010-SEC-12B-V1"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"COUNTER-DOCX-ROUNDTRIP"},
+            mock_attempts=[],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-38-PLAYBOOK-FLOOR-GUARDRAIL",
+            title="Tenant-Isolated 3-Tier Playbook Promotion, 422 Statutory Floor Guardrail & Admin Waiver",
+            reference_date=date(2026, 3, 15),
+            act_filter=None,
+            regimes=["ACT_709", "BNM_RMIT"],
+            check_kind="playbook_floor_guardrail",
+            contract_text=(
+                "SEC-12B Breach Notification: Data Processor notifies within 14 days."
+            ),
+            expected_overall_risk=RiskSeverity.HIGH,
+            expected_active_statute_ids={"PDPA-2010-SEC-12B-V1"},
+            forbidden_statute_ids={"PDPA-2010-SEC-9-V1"},
+            expected_clause_ids={"PLAYBOOK-FLOOR-GUARDRAIL"},
+            mock_attempts=[],
+        ),
+        BenchmarkCase(
+            case_id="BENCH-39-ACT872-ACT882-PRE-COMMENCEMENT",
+            title="Act 872 Gig Workers Protections & Act 882 GAZETTED_PENDING_COMMENCEMENT Temporal Advisory",
+            reference_date=date(2026, 6, 15),
+            act_filter=None,
+            regimes=["ACT_872", "ACT_882", "ACT_864"],
+            check_kind="act872_act882_statutes",
+            contract_text=(
+                "Gig Worker Agreement: Engagement operates with no written schedule, "
+                "permits unilateral algorithmic deactivation without notice, waives Gig Workers Tribunal, "
+                "and excludes PERKESO deduction. Government procurement obligations may be sub-contracted "
+                "without procuring authority approval and waive Procurement Appeal Tribunal."
+            ),
+            expected_overall_risk=RiskSeverity.CRITICAL,
+            expected_active_statute_ids={
+                "ACT-872-SEC-4-V1",
+                "ACT-872-SEC-12-V1",
+                "ACT-872-SEC-25-V1",
+                "ACT-872-SEC-38-V1",
+                "ACT-864-SEC-17-V1",
+            },
+            forbidden_statute_ids={"ACT-882-SEC-28-V1", "ACT-882-SEC-45-V1"},
+            expected_clause_ids={"ACT872-ACT882-PACK"},
+            mock_attempts=[],
+        ),
     ]
 
 
@@ -1802,7 +1872,7 @@ async def _run_single_trial(
             == "lexgraph-lah"
             and isinstance(ping_res, dict)
             and ping_res.get("result") == {}
-            and len(tools_payload) == 14
+            and len(tools_payload) == 15
             and rpc_sec.get("passed") is False
             and sec_rep.telemetry.total_tokens == 0
         )
@@ -2697,6 +2767,317 @@ async def _run_single_trial(
             cost_myr=0.0,
             latency_ms=telemetry.latency_ms,
             signature=f"LEXPACK_CACHE|{verify_ok['status']}|{verify_tampered['status']}|{d1 == d2}|{exceeded}|{ok}",
+        )
+
+    if case.check_kind == "counter_docx_roundtrip":
+        store = get_default_temporal_store()
+        isolated_ledger = AttestationLedger(":memory:")
+        pii_store = EncryptedPIISessionStore(backend="memory")
+        pb_store = PrecedentPlaybookStore(
+            backend=InMemoryPlaybookBackend(),
+            store=store,
+            attestation_ledger=isolated_ledger,
+        )
+        sample_doc_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            "<w:p>"
+            '<w:r><w:t xml:space="preserve">SEC-12B Breach Notice for 880101-14-5678: Data Processor shall notify within </w:t></w:r>'
+            '<w:del w:id="1" w:author="Counterparty" w:date="2026-03-10T09:00:00Z"><w:r><w:delText>24 hours</w:delText></w:r></w:del>'
+            '<w:ins w:id="2" w:author="Counterparty" w:date="2026-03-10T09:00:00Z"><w:r><w:t>14 days</w:t></w:r></w:ins>'
+            "</w:p>"
+            '<w:p><w:r><w:t xml:space="preserve">SEC-99 Governing Law: Laws of Malaysia.</w:t></w:r></w:p>'
+            "<w:sectPr/></w:body></w:document>"
+        )
+        sample_ct = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            "</Types>"
+        )
+        sample_rels = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            "</Relationships>"
+        )
+        in_buf = io.BytesIO()
+        with zipfile.ZipFile(in_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("[Content_Types].xml", sample_ct)
+            zf.writestr("_rels/.rels", sample_rels)
+            zf.writestr("word/document.xml", sample_doc_xml)
+
+        with measure_latency_ms() as elapsed_holder:
+            diff_a = analyze_counterparty_docx_redlines(
+                document_id=case.case_id,
+                docx_bytes=in_buf.getvalue(),
+                filename="counter_turn.docx",
+                as_of_date=case.reference_date,
+                regimes=["ACT_709"],
+                tenant_id="bench37-tenant",
+                audit_session_id="sess-bench37",
+                store=store,
+                ledger=isolated_ledger,
+                pii_store=pii_store,
+            )
+            out_bytes, comp_res = compile_counter_redline_docx(
+                document_id=case.case_id,
+                docx_bytes=in_buf.getvalue(),
+                filename="counter_turn.docx",
+                diff=diff_a,
+                as_of_date=case.reference_date,
+                regimes=["ACT_709"],
+                tenant_id="bench37-tenant",
+                audit_session_id="sess-bench37",
+                rehydrate_pii=True,
+                store=store,
+                ledger=isolated_ledger,
+                pii_store=pii_store,
+                playbook_store=pb_store,
+            )
+            inspected = inspect_ooxml_docx(out_bytes)
+            cross_bytes, cross_res = compile_counter_redline_docx(
+                document_id=f"{case.case_id}-CROSS",
+                diff=diff_a,
+                as_of_date=case.reference_date,
+                regimes=["ACT_709"],
+                tenant_id="other-tenant",
+                audit_session_id="sess-bench37",
+                rehydrate_pii=True,
+                store=store,
+                ledger=isolated_ledger,
+                pii_store=pii_store,
+                playbook_store=pb_store,
+            )
+            _ = cross_bytes
+        ok = (
+            comp_res.in_place_ooxml_mutation is True
+            and comp_res.counter_proposed_count >= 1
+            and comp_res.comments_appended >= 1
+            and comp_res.rehydrated_pii_count >= 1
+            and inspected["track_revisions_enabled"] is True
+            and any(d["author"] == "LexGraph Counsel" for d in inspected["deletions"])
+            and any(i["author"] == "LexGraph Counsel" for i in inspected["insertions"])
+            and any(
+                "880101-14-5678" in entry["text"]
+                for entry in (inspected["deletions"] + inspected["insertions"])
+            )
+            and cross_res.rehydrated_pii_count == 0
+            and comp_res.telemetry.total_tokens == 0
+            and cross_res.attestation_manifest is not None
+            and comp_res.attestation_manifest is not None
+        )
+        active_nodes = store.query_point_in_time(as_of_date=case.reference_date)
+        ctx_recall, ctx_contamination = evaluate_temporal_context(
+            retrieved_statutes=active_nodes,
+            expected_ids=case.expected_active_statute_ids,
+            forbidden_ids=case.forbidden_statute_ids,
+        )
+        telemetry = compute_telemetry_summary(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=elapsed_holder[0],
+            retry_count=0,
+            is_verified_grounded=ok,
+        )
+        assert_within_budget(telemetry)
+        return CaseTrialResult(
+            case_id=case.case_id,
+            trial_index=trial_index,
+            overall_risk=case.expected_overall_risk,
+            verdict_correct=ok,
+            is_grounded=ok,
+            retry_count=0,
+            temporal_recall=ctx_recall,
+            temporal_contamination=ctx_contamination,
+            clause_recall=1.0,
+            grounding_precision=1.0 if ok else 0.0,
+            total_tokens=0,
+            cost_usd=0.0,
+            cost_myr=0.0,
+            latency_ms=telemetry.latency_ms,
+            signature=f"COUNTER_DOCX|{comp_res.counter_proposed_count}|{comp_res.comments_appended}|{comp_res.rehydrated_pii_count}|{ok}",
+        )
+
+    if case.check_kind == "playbook_floor_guardrail":
+        store = get_default_temporal_store()
+        isolated_ledger = AttestationLedger(":memory:")
+        pb_store = PrecedentPlaybookStore(
+            backend=InMemoryPlaybookBackend(),
+            store=store,
+            attestation_ledger=isolated_ledger,
+        )
+        with measure_latency_ms() as elapsed_holder:
+            blocked_auditor = False
+            try:
+                pb_store.promote_rule(
+                    tenant_id="tenant-pb-a",
+                    request=PlaybookPromoteRequest(
+                        original_clause_text=case.contract_text,
+                        tier_1_preferred="Notify within 14 days of written discovery.",
+                        regimes=["ACT_709"],
+                        as_of_date=case.reference_date,
+                        rationale="Auditor try weakening to 14d",
+                    ),
+                    actor_id="aud-1",
+                    actor_role="auditor",
+                )
+            except StatutoryFloorViolationError as exc:
+                blocked_auditor = exc.code == "STATUTORY_FLOOR_VIOLATION"
+
+            compliant_rule = pb_store.promote_rule(
+                tenant_id="tenant-pb-a",
+                request=PlaybookPromoteRequest(
+                    original_clause_text=case.contract_text,
+                    tier_1_preferred="Notify within 24 hours of discovery and notify Commissioner within 72 hours under Act 709 s. 12B.",
+                    tier_2_fallback="Notify within 48 hours of discovery and notify Commissioner within 72 hours under Act 709 s. 12B.",
+                    regimes=["ACT_709"],
+                    as_of_date=case.reference_date,
+                    rationale="Compliant 3-tier fallback",
+                ),
+                actor_id="aud-1",
+                actor_role="auditor",
+            )
+            waiver_rule = pb_store.promote_rule(
+                tenant_id="tenant-pb-waiver",
+                request=PlaybookPromoteRequest(
+                    original_clause_text=case.contract_text,
+                    tier_1_preferred="Notify within 14 days subject to transitional indemnity.",
+                    regimes=["ACT_709"],
+                    as_of_date=case.reference_date,
+                    statutory_risk_waiver=True,
+                    waiver_rationale="Board risk acceptance during legacy wind-down.",
+                ),
+                actor_id="gc-admin",
+                actor_role="admin",
+            )
+            tenant_b_rules = pb_store.list_rules(tenant_id="tenant-pb-b")
+            digest_a = pb_store.get_tenant_playbook_digest("tenant-pb-a")
+            digest_b = pb_store.get_tenant_playbook_digest("tenant-pb-b")
+        ok = (
+            blocked_auditor
+            and compliant_rule.tier_2_fallback is not None
+            and "72" in compliant_rule.tier_3_statutory_floor
+            and waiver_rule.statutory_risk_waiver is True
+            and waiver_rule.waiver_attestation_manifest_id is not None
+            and tenant_b_rules.total == 0
+            and digest_a != digest_b
+        )
+        active_nodes = store.query_point_in_time(as_of_date=case.reference_date)
+        ctx_recall, ctx_contamination = evaluate_temporal_context(
+            retrieved_statutes=active_nodes,
+            expected_ids=case.expected_active_statute_ids,
+            forbidden_ids=case.forbidden_statute_ids,
+        )
+        telemetry = compute_telemetry_summary(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=elapsed_holder[0],
+            retry_count=0,
+            is_verified_grounded=ok,
+        )
+        assert_within_budget(telemetry)
+        return CaseTrialResult(
+            case_id=case.case_id,
+            trial_index=trial_index,
+            overall_risk=case.expected_overall_risk,
+            verdict_correct=ok,
+            is_grounded=ok,
+            retry_count=0,
+            temporal_recall=ctx_recall,
+            temporal_contamination=ctx_contamination,
+            clause_recall=1.0,
+            grounding_precision=1.0 if ok else 0.0,
+            total_tokens=0,
+            cost_usd=0.0,
+            cost_myr=0.0,
+            latency_ms=telemetry.latency_ms,
+            signature=f"PLAYBOOK_GUARD|{blocked_auditor}|{waiver_rule.statutory_risk_waiver}|{tenant_b_rules.total}|{ok}",
+        )
+
+    if case.check_kind == "act872_act882_statutes":
+        store = get_default_temporal_store()
+        resolver = DeonticEnvelopeResolver(store)
+        with measure_latency_ms() as elapsed_holder:
+            env_pending = resolver.resolve(
+                regimes=["ACT_872", "ACT_882", "ACT_864"],
+                as_of_date=case.reference_date,
+                territorial_scope=TerritorialScope.ALL_MALAYSIA,
+            )
+            ast_graph, _ = build_contract_ast(
+                document_id=case.case_id,
+                raw_text=case.contract_text,
+                token_style="vault",
+            )
+            findings_pending = evaluate_fiscal_aige_clauses(
+                ast_graph=ast_graph,
+                envelope=env_pending,
+                as_of_date=case.reference_date,
+                store=store,
+            )
+            env_commenced = resolver.resolve(
+                regimes=["ACT_882", "ACT_864"],
+                as_of_date=date(2027, 2, 1),
+                territorial_scope=TerritorialScope.ALL_MALAYSIA,
+            )
+            findings_commenced = evaluate_fiscal_aige_clauses(
+                ast_graph=ast_graph,
+                envelope=env_commenced,
+                as_of_date=date(2027, 2, 1),
+                store=store,
+            )
+        pending_adv = [f for f in findings_pending if f.is_pre_commencement_advisory]
+        gig_findings = [f for f in findings_pending if "Gig Workers Act" in f.category]
+        commenced_act882 = [
+            f for f in findings_commenced if "Government Procurement Act" in f.category
+        ]
+        ok = (
+            len(gig_findings) == 4
+            and len(pending_adv) == 2
+            and all(
+                f.deontic_modality == "PRE_COMMENCEMENT_ADVISORY" for f in pending_adv
+            )
+            and "ACT-882-SEC-28-V1" not in env_pending.active_node_ids
+            and "ACT-882-SEC-28-V1" in env_pending.pending_commencement_node_ids
+            and "gov_procurement_unauthorized_subcontract_prohibited"
+            in env_pending.pre_commencement_advisories
+            and "ACT-882-SEC-28-V1" in env_commenced.active_node_ids
+            and len(commenced_act882) == 2
+            and all(not f.is_pre_commencement_advisory for f in commenced_act882)
+        )
+        active_nodes = store.query_point_in_time(as_of_date=case.reference_date)
+        ctx_recall, ctx_contamination = evaluate_temporal_context(
+            retrieved_statutes=active_nodes,
+            expected_ids=case.expected_active_statute_ids,
+            forbidden_ids=case.forbidden_statute_ids,
+        )
+        telemetry = compute_telemetry_summary(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=elapsed_holder[0],
+            retry_count=0,
+            is_verified_grounded=ok,
+        )
+        assert_within_budget(telemetry)
+        return CaseTrialResult(
+            case_id=case.case_id,
+            trial_index=trial_index,
+            overall_risk=case.expected_overall_risk,
+            verdict_correct=ok,
+            is_grounded=ok,
+            retry_count=0,
+            temporal_recall=ctx_recall,
+            temporal_contamination=ctx_contamination,
+            clause_recall=1.0,
+            grounding_precision=1.0 if ok else 0.0,
+            total_tokens=0,
+            cost_usd=0.0,
+            cost_myr=0.0,
+            latency_ms=telemetry.latency_ms,
+            signature=f"ACT872_ACT882|{len(gig_findings)}|{len(pending_adv)}|{len(commenced_act882)}|{ok}",
         )
 
     if case.check_kind == "hitl_golden":

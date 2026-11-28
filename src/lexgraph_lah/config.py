@@ -97,6 +97,13 @@ class Settings(BaseSettings):
 
     hitl_db_path: str = ":memory:"
 
+    # Phase 7: Tenant-isolated Precedent Playbook store & counter-redline author defaults
+    playbook_store_backend: str = "memory"
+    playbook_db_path: str = ":memory:"
+    playbook_postgres_dsn: str = ""
+    counter_redline_default_author: str = "LexGraph Counsel"
+    counter_redline_default_initials: str = "LGC"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

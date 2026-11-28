@@ -23,6 +23,7 @@ from lexgraph_lah.graph.temporal_store import (
     TemporalGraphStore,
     get_default_temporal_store,
 )
+from lexgraph_lah.hitl.precedent_playbook import default_precedent_playbook_store
 from lexgraph_lah.ingestion.contract_ast import (
     build_contract_ast,
     extract_numeric_sla_from_text,
@@ -34,6 +35,7 @@ from lexgraph_lah.schemas.domain import (
     ComplianceAttestationManifest,
     CompositeDeonticEnvelope,
     ContractASTGraph,
+    PlaybookTier,
     RiskSeverity,
     ShadowOverrideTrap,
     StatutoryNode,
@@ -76,6 +78,9 @@ _LEGAL_DOMAIN_ANCHOR_RE = re.compile(
     r"act\s+53|akta\s+53|income\s+tax|myinvois|e-?invoic|e-?invois|82c|120\(1\)\(d\)|"
     r"mosti|aige|ai\s+governance|human-in-the-loop|kecerdasan\s+buatan|"
     r"cryptographic\s+key|byok|sub-?contract|outsourcing|penyumberan\s+luar|"
+    r"gig\s+worker|pekerja\s+gig|perkeso|platform\s+provider|algorithmic\s+deactivation|"
+    r"government\s+procurement|perolehan\s+kerajaan|procurement\s+appeal\s+tribunal|"
+    r"rent-seeking|act\s*872|act\s*882|akta\s*872|akta\s*882|"
     r"service\s+agreement|employment\s+contract|commercial\s+contract|"
     r"jadual\s+pembayaran|billing\s+schedule|payment\s+schedule|monthly\s+salary)\b",
     re.IGNORECASE,
@@ -780,6 +785,8 @@ def _offline_deterministic_assess(
                     "MyInvois",
                     "MOSTI AIGE",
                     "BNM Outsourcing",
+                    "Gig Workers Act",
+                    "Government Procurement Act",
                 )
             ):
                 clauses.append(fg)
@@ -837,6 +844,48 @@ def _offline_deterministic_assess(
                     proposed_notice_hours=proposed_h if is_risky else None,
                 )
             )
+
+    tenant_id = str(state.get("tenant_id") or "").strip()
+    if tenant_id:
+        env_regimes = (
+            list(envelope.regimes_evaluated)
+            if envelope is not None
+            else list(state.get("regimes") or [])
+        )
+        env_scope = (
+            envelope.territorial_scope.value
+            if envelope is not None
+            else str(
+                state.get("territorial_scope") or TerritorialScope.ALL_MALAYSIA.value
+            )
+        )
+        for clause in clauses:
+            matched_rule = default_precedent_playbook_store.match_clause(
+                tenant_id=tenant_id,
+                clause_text=clause.exact_quote,
+                regimes=env_regimes,
+                territorial_scope=env_scope,
+            )
+            if matched_rule is not None:
+                tier_used: PlaybookTier = (
+                    "TIER_2_FALLBACK"
+                    if matched_rule.tier_2_fallback
+                    else "TIER_1_PREFERRED"
+                )
+                playbook_text = (
+                    matched_rule.tier_2_fallback or matched_rule.tier_1_preferred
+                )
+                clause.playbook_rule_id = matched_rule.rule_id
+                clause.playbook_tier_applied = tier_used
+                if (
+                    playbook_text
+                    and playbook_text not in clause.recommended_redline
+                    and clause.severity != RiskSeverity.LOW
+                ):
+                    clause.recommended_redline = (
+                        f"[Tenant Playbook {tier_used}: {matched_rule.rule_id}] "
+                        f"{playbook_text} | {clause.recommended_redline}"
+                    )
 
     est_prompt_tokens = max(420, len(safe_text) // 3 + 380)
     est_completion_tokens = max(140, len(clauses) * 95 + 45)
@@ -1373,12 +1422,25 @@ async def counterfactual_auditor_node(state: AgentState) -> dict[str, Any]:
             clause_ok = False
             clause_hallucinated = True
 
+        pending_statute_ids = (
+            set(envelope.pending_commencement_node_ids)
+            if envelope is not None
+            else set()
+        )
+        allowed_statute_ids = (
+            active_statute_ids | pending_statute_ids
+            if (
+                clause.is_pre_commencement_advisory
+                or clause.deontic_modality == "PRE_COMMENCEMENT_ADVISORY"
+            )
+            else active_statute_ids
+        )
         # (b) Active Lineage Provenance Invariant (0% temporal contamination)
-        if active_statute_ids and clause.violated_statute_ids:
+        if allowed_statute_ids and clause.violated_statute_ids:
             stale_ids = [
                 sid
                 for sid in clause.violated_statute_ids
-                if sid not in active_statute_ids
+                if sid not in allowed_statute_ids
             ]
             if stale_ids:
                 failures.append(

@@ -555,4 +555,227 @@ def evaluate_fiscal_aige_clauses(
                 )
                 fired_rules.add("BNM-SUBCONTRACTOR")
 
+    # ── Act 872: Gig Workers Act 2025 (commenced 2026-01-01) ───────────────
+    if "ACT_872" in regimes and as_of_date >= date(2026, 1, 1):
+        for cnode in ordered_clauses:
+            m = cnode.extracted_metrics
+            if (
+                m.get("gig_service_schedule_omitted")
+                and "ACT872-S4-SCHEDULE" not in fired_rules
+            ):
+                v_ids = _active_filter(active_ids, ["ACT-872-SEC-4-V1"])
+                findings.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Gig Workers Act 2025 Missing Mandatory Service Agreement Schedule",
+                        exact_quote=cnode.text,
+                        severity=RiskSeverity.HIGH,
+                        rationale=(
+                            "Gig Worker engagement omits or waives the mandatory written service agreement "
+                            "schedule detailing remuneration rates, payment intervals, and dispute channels "
+                            "required under Gig Workers Act 2025 [Act 872] Section 4."
+                        ),
+                        recommended_redline=(
+                            "Platform provider shall execute and furnish a mandatory written service agreement "
+                            "schedule pursuant to Gig Workers Act 2025 [Act 872] s. 4 setting transparent fee "
+                            "calculation formulas, settlement timelines, and statutory dispute procedures. | "
+                            "BM: Penyedia platform hendaklah menyempurnakan dan menyerahkan jadual perjanjian "
+                            "perkhidmatan bertulis mandatori menurut Seksyen 4 Akta Pekerja Gig 2025 [Akta 872]."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids(store, v_ids),
+                        deontic_modality="OBLIGATION",
+                    )
+                )
+                fired_rules.add("ACT872-S4-SCHEDULE")
+
+            if (
+                m.get("gig_unilateral_algo_deactivation")
+                and "ACT872-S12-ALGO" not in fired_rules
+            ):
+                v_ids = _active_filter(active_ids, ["ACT-872-SEC-12-V1"])
+                findings.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Gig Workers Act 2025 Unilateral Algorithmic Deactivation / Rate Reduction",
+                        exact_quote=cnode.text,
+                        severity=RiskSeverity.CRITICAL,
+                        rationale=(
+                            "Unilateral algorithmic account deactivation or arbitrary fee/rate reduction without "
+                            "prior written reason, notice, and human review violates Gig Workers Act 2025 "
+                            "[Act 872] Section 12."
+                        ),
+                        recommended_redline=(
+                            "Platform provider shall not deactivate a gig worker account or reduce agreed rates "
+                            "unilaterally without written notice stating grounds and affording a structured "
+                            "human-review appeal pursuant to Gig Workers Act 2025 [Act 872] s. 12. | "
+                            "BM: Penyedia platform tidak boleh menyahaktifkan akaun pekerja gig atau mengurangkan "
+                            "kadar bayaran secara sepihak tanpa notis bertulis bersebab dan hak semakan manusia "
+                            "menurut Seksyen 12 Akta Pekerja Gig 2025 [Akta 872]."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids(store, v_ids),
+                        deontic_modality="PROHIBITION",
+                    )
+                )
+                fired_rules.add("ACT872-S12-ALGO")
+
+            if (
+                m.get("gig_tribunal_waiver")
+                and "ACT872-S25-TRIBUNAL" not in fired_rules
+            ):
+                v_ids = _active_filter(active_ids, ["ACT-872-SEC-25-V1"])
+                findings.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Gig Workers Act 2025 Tribunal Jurisdiction Waiver",
+                        exact_quote=cnode.text,
+                        severity=RiskSeverity.CRITICAL,
+                        rationale=(
+                            "Any contractual provision purporting to waive, contract out of, or exclude Gig Workers "
+                            "Tribunal recourse is void under Gig Workers Act 2025 [Act 872] Section 25."
+                        ),
+                        recommended_redline=(
+                            "Nothing in this Agreement waives or ousts either party's statutory right to refer a "
+                            "dispute to the Gig Workers Tribunal under Gig Workers Act 2025 [Act 872] s. 25. | "
+                            "BM: Tiada apa-apa dalam Perjanjian ini mengetepikan atau mengecualikan hak statutori "
+                            "untuk merujuk pertikaian ke Tribunal Pekerja Gig di bawah Seksyen 25 Akta Pekerja Gig "
+                            "2025 [Akta 872]."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids(store, v_ids),
+                        deontic_modality="PROHIBITION",
+                    )
+                )
+                fired_rules.add("ACT872-S25-TRIBUNAL")
+
+            if m.get("gig_perkeso_omitted") and "ACT872-S38-PERKESO" not in fired_rules:
+                v_ids = _active_filter(active_ids, ["ACT-872-SEC-38-V1"])
+                findings.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Gig Workers Act 2025 PERKESO Deduction Omission",
+                        exact_quote=cnode.text,
+                        severity=RiskSeverity.HIGH,
+                        rationale=(
+                            "Excluding mandatory PERKESO (SOCSO) social security contribution deduction and "
+                            "remittance breaches Gig Workers Act 2025 [Act 872] Section 38."
+                        ),
+                        recommended_redline=(
+                            "Platform provider shall deduct and remit mandatory PERKESO social security contributions "
+                            "in respect of eligible gig worker earnings pursuant to Gig Workers Act 2025 "
+                            "[Act 872] s. 38. | "
+                            "BM: Penyedia platform hendaklah memotong dan menyerahkan caruman keselamatan sosial "
+                            "PERKESO mandatori bagi pendapatan pekerja gig yang layak menurut Seksyen 38 Akta "
+                            "Pekerja Gig 2025 [Akta 872]."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids(store, v_ids),
+                        deontic_modality="OBLIGATION",
+                    )
+                )
+                fired_rules.add("ACT872-S38-PERKESO")
+
+    # ── Act 882: Government Procurement Act 2026 (Gazetted May 2026) ───────
+    if "ACT_882" in regimes and as_of_date >= date(2026, 5, 1):
+        is_pending = as_of_date < date(2027, 1, 1)
+        pending_ids = (
+            set(envelope.pending_commencement_node_ids)
+            if envelope and envelope.pending_commencement_node_ids
+            else {"ACT-882-SEC-28-V1", "ACT-882-SEC-45-V1"}
+        )
+
+        def _act882_ids(candidates: list[str]) -> list[str]:
+            if is_pending:
+                matched = [
+                    cid for cid in candidates if cid in pending_ids or cid in active_ids
+                ]
+                return matched or candidates
+            return _active_filter(active_ids, candidates)
+
+        for cnode in ordered_clauses:
+            m = cnode.extracted_metrics
+            if (
+                m.get("gov_procurement_unauth_subcontract")
+                or (
+                    m.get("gov_procurement_context_present")
+                    and m.get("bnm_subcontractor_unrestricted")
+                )
+            ) and "ACT882-S28-SUBCONTRACT" not in fired_rules:
+                v_ids = _act882_ids(["ACT-882-SEC-28-V1"])
+                findings.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Government Procurement Act 2026 Unauthorized Sub-Contracting / Rent-Seeking Transfer",
+                        exact_quote=cnode.text,
+                        severity=(
+                            RiskSeverity.MEDIUM if is_pending else RiskSeverity.CRITICAL
+                        ),
+                        rationale=(
+                            (
+                                "[PRE-COMMENCEMENT ADVISORY — Gazetted May 2026, Ministerial commencement pending]: "
+                                if is_pending
+                                else ""
+                            )
+                            + "Public-sector tender sub-contracting, assignment, or rent-seeking transfer without "
+                            "prior written procuring authority approval is restricted under Government Procurement "
+                            "Act 2026 [Act 882] Section 28."
+                        ),
+                        recommended_redline=(
+                            "Contractor shall not sub-contract, assign, or effect a rent-seeking transfer of any "
+                            "government procurement obligation without prior written approval of the procuring "
+                            "authority (Act 882 s. 28; gazetted May 2026). | "
+                            "BM: Kontraktor tidak boleh mensubkontrak, menyerah hak, atau memindahkan obligasi "
+                            "perolehan kerajaan tanpa kelulusan bertulis terdahulu pihak berkuasa perolehan "
+                            "(Akta 882 s. 28; diwartakan Mei 2026)."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids(store, v_ids),
+                        deontic_modality=(
+                            "PRE_COMMENCEMENT_ADVISORY" if is_pending else "PROHIBITION"
+                        ),
+                        is_pre_commencement_advisory=is_pending,
+                    )
+                )
+                fired_rules.add("ACT882-S28-SUBCONTRACT")
+
+            if (
+                m.get("gov_procurement_tribunal_ouster")
+                and "ACT882-S45-TRIBUNAL" not in fired_rules
+            ):
+                v_ids = _act882_ids(["ACT-882-SEC-45-V1", "ACT-864-SEC-17-V1"])
+                findings.append(
+                    ClauseAudit(
+                        clause_id=cnode.clause_id,
+                        category="Government Procurement Act 2026 Appeal Tribunal Jurisdiction Ouster",
+                        exact_quote=cnode.text,
+                        severity=(
+                            RiskSeverity.MEDIUM if is_pending else RiskSeverity.HIGH
+                        ),
+                        rationale=(
+                            (
+                                "[PRE-COMMENCEMENT ADVISORY — Gazetted May 2026, Ministerial commencement pending]: "
+                                if is_pending
+                                else ""
+                            )
+                            + "Public-sector vendor terms cannot oust Procurement Appeal Tribunal jurisdiction or "
+                            "public-sector vendor accountability alongside Data Sharing Act 2025 [Act 864] Section 17(1)."
+                        ),
+                        recommended_redline=(
+                            "Procurement terms preserve Procurement Appeal Tribunal review jurisdiction (Act 882 s. 45) "
+                            "and statutory vendor oversight alongside Data Sharing Act 2025 [Act 864] s. 17(1). | "
+                            "BM: Terma perolehan mengekalkan bidang kuasa semakan Tribunal Rayuan Perolehan "
+                            "(Akta 882 s. 45) serta kebertanggungjawaban vendor bersama Akta Perkongsian Data 2025 "
+                            "[Akta 864] s. 17(1)."
+                        ),
+                        violated_statute_ids=v_ids,
+                        source_span_ids=_span_ids(store, v_ids),
+                        deontic_modality=(
+                            "PRE_COMMENCEMENT_ADVISORY" if is_pending else "OBLIGATION"
+                        ),
+                        is_pre_commencement_advisory=is_pending,
+                    )
+                )
+                fired_rules.add("ACT882-S45-TRIBUNAL")
+
     return findings

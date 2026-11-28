@@ -16,12 +16,12 @@ async def test_benchmark_runner_mock_mode_and_markdown_table():
     report with p50/p95 latency and USD/MYR cost metrics.
     """
     dataset = get_benchmark_dataset()
-    assert len(dataset) == 36
+    assert len(dataset) == 39
 
     summary = await run_benchmark_async(mode="mock", trials=2)
     assert summary.total_cases == len(dataset)
     assert summary.trials_per_case == 2
-    assert summary.total_runs == 72
+    assert summary.total_runs == 78
     assert summary.determinism_consistency_pct == 100.0
     assert summary.verdict_accuracy_pct == 100.0
     assert summary.verbatim_grounding_pct == 100.0

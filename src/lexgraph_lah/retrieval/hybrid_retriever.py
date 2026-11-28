@@ -591,6 +591,41 @@ _CONCEPT_CLUSTERS: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...]
         ),
         "employment working hours overtime rates sabah cap 67 sarawak cap 76 labuan act 704 peninsular act 265",
     ),
+    (
+        "CONCEPT_GIG_WORKERS_ACT872",
+        ("ACT-872",),
+        (
+            "gig workers",
+            "pekerja gig",
+            "act 872",
+            "akta 872",
+            "perkeso",
+            "algorithmic deactivation",
+            "penyahaktifan algoritma",
+            "gig workers tribunal",
+            "tribunal pekerja gig",
+            "service agreement schedule",
+            "jadual perjanjian perkhidmatan",
+        ),
+        "gig workers act 872 perkeso remittance algorithmic deactivation tribunal waiver service agreement schedule",
+    ),
+    (
+        "CONCEPT_GOVERNMENT_PROCUREMENT_ACT882",
+        ("ACT-882", "ACT-864"),
+        (
+            "government procurement",
+            "perolehan kerajaan",
+            "act 882",
+            "akta 882",
+            "procurement appeal tribunal",
+            "tribunal rayuan perolehan",
+            "rent-seeking transfer",
+            "pre-commencement advisory",
+            "gazetted pending commencement",
+            "act 864 s. 17(1)",
+        ),
+        "government procurement act 882 gazetted pending commencement pre-commencement advisory rent-seeking sub-contracting procurement appeal tribunal act 864",
+    ),
 )
 
 _FOREIGN_LAW_MARKERS: tuple[str, ...] = (
@@ -658,6 +693,14 @@ _MALAYSIAN_NEXUS_MARKERS: tuple[str, ...] = (
     "rm ",
     "rm10",
     "rm3",
+    "perkeso",
+    "pekerja gig",
+    "gig workers",
+    "act 872",
+    "act 882",
+    "perolehan kerajaan",
+    "government procurement",
+    "procurement appeal tribunal",
 )
 
 _LIGATURE_MAP = str.maketrans(
